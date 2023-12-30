@@ -159,7 +159,7 @@ func TestGcLog(t *testing.T) {
 	t.Run("normal case", func(t *testing.T) {
 		storer := makeStorer(15, 3)
 		// [0, (2-9)], [10,(12-19)], [20,(22-29)]
-		storer.gcUnusedRdbs()
+		storer.gcRdbs()
 		assert.Equal(t, 2, len(storer.rdbs))
 		// [,(15-19)], [20,(22-29)]
 		assert.True(t, storer.rdbs[1].rdb.Left == 20)
@@ -171,7 +171,7 @@ func TestGcLog(t *testing.T) {
 		storer := makeStorer(15, 3)
 		// [0, (2-9)], [10,(12-19)], [20,(22-29)]
 		storer.rdbs[1].aofs[5].ref = 1
-		storer.gcUnusedRdbs()
+		storer.gcRdbs()
 		assert.Equal(t, 2, len(storer.rdbs))
 		// [,(15-19)], [20,(22-29)]
 		assert.True(t, storer.rdbs[1].rdb.Left == 20)

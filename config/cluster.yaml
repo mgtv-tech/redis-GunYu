@@ -10,7 +10,7 @@ input:
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster
-    maxSize: 10737418240
+    maxSize: 10485760
 output:
   redis:
     addresses: [127.0.0.1:6310]

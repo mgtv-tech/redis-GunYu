@@ -60,6 +60,7 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 	sy.channel = NewStoreChannel(StorerConf{
 		Dir:     config.Get().Channel.Storer.DirPath,
 		MaxSize: config.Get().Channel.Storer.MaxSize,
+		LogSize: config.Get().Channel.Storer.LogSize,
 	})
 	sy.wait = usync.NewWaitCloser(nil)
 	return sy
@@ -168,6 +169,7 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 
 	outputCfg := RedisOutputConfig{
 		Id:                         s.cfg.Id,
+		InputName:                  s.cfg.Input.Address(),
 		Redis:                      s.cfg.Output,
 		Parallel:                   config.Get().Output.ReplayRdbParallel,
 		EnableResumeFromBreakPoint: config.Get().Output.ResumeFromBreakPoint,

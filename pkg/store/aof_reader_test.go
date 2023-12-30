@@ -24,7 +24,7 @@ func (ts *aofReaderTestSuite) SetupSuite() {
 	dir, err := os.MkdirTemp("", "test_aof_reader")
 	ts.Nil(err)
 	ts.tempDir = dir
-	ts.storer = NewStorer(ts.tempDir, 100*1024)
+	ts.storer = NewStorer(ts.tempDir, 100*1024, 100000000)
 }
 
 func (ts *aofReaderTestSuite) TearDownSuite() {
@@ -46,7 +46,7 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 
 	newAof := func() {
 		ts.storer.rdbs = nil
-		writer, err := NewAofRotater(ts.tempDir, 0, ts.storer)
+		writer, err := NewAofRotater(ts.tempDir, 0, ts.storer, 100000000)
 		ts.Nil(err)
 		ts.Nil(writer.Write(data))
 		writer.Close()

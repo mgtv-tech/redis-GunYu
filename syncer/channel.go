@@ -31,7 +31,7 @@ type StoreChannel struct {
 }
 
 func NewStoreChannel(cfg StorerConf) *StoreChannel {
-	storer := store.NewStorer(cfg.Dir, cfg.MaxSize)
+	storer := store.NewStorer(cfg.Dir, cfg.MaxSize, cfg.LogSize)
 	return &StoreChannel{
 		storer: storer,
 		logger: log.WithLogger("[StoreChannel] "),

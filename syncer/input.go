@@ -80,6 +80,7 @@ type RedisInput struct {
 type StorerConf struct {
 	Dir     string
 	MaxSize int64
+	LogSize int64
 }
 
 func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {
@@ -93,7 +94,7 @@ func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {
 			Namespace:   config.AppName,
 			Subsystem:   "input",
 			Name:        "offset",
-			ConstLabels: map[string]string{"redis": redisCfg.Address()},
+			ConstLabels: map[string]string{"input": redisCfg.Address()},
 		}),
 	}
 	// @TODO check config
@@ -409,6 +410,7 @@ func (ri *RedisInput) run() error {
 	ri.logger.Infof("run")
 	ri.fsm.Reset()
 
+	// @TODO stop output first,
 	// @TODO wait需要等待所有wait相关执行线程全部停止，包括同步文件IO/异步网络IO，要实现IO超时机制
 	runWait := usync.NewWaitCloserFromParent(ri.wait, nil)
 

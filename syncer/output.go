@@ -49,6 +49,7 @@ type RedisOutput struct {
 }
 
 func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
+	labels := map[string]string{"id": strconv.Itoa(cfg.Id), "input": cfg.InputName}
 	ro := &RedisOutput{
 		cfg:    cfg,
 		logger: log.WithLogger(fmt.Sprintf("[RedisOutput(%d)] ", cfg.Id)),
@@ -56,49 +57,49 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "send_cmd",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		filterCounter: metric.NewCounter(metric.CounterOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "filter_cmd",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		sendSizeCounter: metric.NewCounter(metric.CounterOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "send_size",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		failCounter: metric.NewCounter(metric.CounterOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "fail_cmd",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		succCounter: metric.NewCounter(metric.CounterOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "success_cmd",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		fullSyncProgress: metric.NewGauge(metric.GaugeOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "full_sync",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		sendOffsetGauge: metric.NewGauge(metric.GaugeOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "send_offset",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 		ackOffsetGauge: metric.NewGauge(metric.GaugeOpts{
 			Namespace:   config.AppName,
 			Subsystem:   "output",
 			Name:        "ack_offset",
-			ConstLabels: map[string]string{"id": strconv.Itoa(cfg.Id)},
+			ConstLabels: labels,
 		}),
 	}
 	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
@@ -110,6 +111,7 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 
 type RedisOutputConfig struct {
 	Id                         int
+	InputName                  string
 	Redis                      config.RedisConfig
 	Parallel                   int
 	EnableResumeFromBreakPoint bool

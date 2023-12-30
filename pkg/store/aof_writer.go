@@ -23,7 +23,6 @@ import (
 // header : 16B [ version(1) + crc(8) + data size(4) + reserved(3) ]
 // data
 // *
-const AofMaxFileSize = 200 * 1024 * 1024
 const headerSize = 16
 
 var fixHeader = [headerSize]byte{1} // version is 1
@@ -34,8 +33,8 @@ type AofWriter struct {
 	closed atomic.Bool
 }
 
-func NewAofWriter(dir string, offset int64, reader io.Reader, storer *Storer) (*AofWriter, error) {
-	a, e := NewAofRotater(dir, offset, storer)
+func NewAofWriter(dir string, offset int64, reader io.Reader, storer *Storer, maxLogSize int64) (*AofWriter, error) {
+	a, e := NewAofRotater(dir, offset, storer, maxLogSize)
 	if e != nil {
 		return nil, e
 	}
@@ -106,14 +105,16 @@ type AofRotater struct {
 
 	updateAofSize updateAofSizeFunc
 
-	storer *Storer
-	logger log.Logger
+	storer     *Storer
+	logger     log.Logger
+	maxLogSize int64
 }
 
-func NewAofRotater(dir string, offset int64, storer *Storer) (*AofRotater, error) {
+func NewAofRotater(dir string, offset int64, storer *Storer, maxLogSize int64) (*AofRotater, error) {
 	w := new(AofRotater)
 	w.dir = dir
 	w.storer = storer
+	w.maxLogSize = maxLogSize
 	w.logger = log.WithLogger("[AofRotater] ")
 	err := w.openFile(offset)
 	if err != nil {
@@ -175,7 +176,7 @@ func (w *AofRotater) Write(buf []byte) error {
 	w.updateAofSize(int64(len(buf)))
 	w.right.Add(int64(len(buf)))
 	w.filesize += int64(len(buf))
-	if w.filesize > AofMaxFileSize {
+	if w.filesize > w.maxLogSize {
 		err = w.Close()
 		if err != nil {
 			return err

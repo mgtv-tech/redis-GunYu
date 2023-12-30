@@ -22,6 +22,7 @@ type Storer struct {
 	baseDir       string // storage directory
 	dir           string // baseDir + runId
 	maxSize       int64
+	logSize       int64
 	runId         string
 	rdbs          []*RdbAof
 	rdbLocker     sync.RWMutex // private functions aren't thread safe
@@ -31,10 +32,11 @@ type Storer struct {
 	logger        log.Logger
 }
 
-func NewStorer(baseDir string, maxSize int64) *Storer {
+func NewStorer(baseDir string, maxSize, logSize int64) *Storer {
 	ss := &Storer{
 		baseDir:     baseDir,
 		maxSize:     maxSize,
+		logSize:     logSize,
 		readBufSize: 10 * 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
 		logger:      log.WithLogger("[Storer] "),
@@ -443,7 +445,7 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 	s.rdbLocker.Unlock()
 
 	// NewAofWriter will hold the locker
-	w, err := NewAofWriter(dir, offset, r, s)
+	w, err := NewAofWriter(dir, offset, r, s, s.logSize)
 	if err != nil {
 		return nil, err
 	}
@@ -710,7 +712,7 @@ func (s *Storer) gcLog() {
 	s.gcRedundantRdbs()
 
 	// remove unused rdb and aof
-	s.gcUnusedRdbs()
+	s.gcRdbs()
 
 }
 
@@ -729,7 +731,7 @@ func (s *Storer) gcRedundantRdbs() {
 	}
 }
 
-func (s *Storer) gcUnusedRdbs() {
+func (s *Storer) gcRdbs() {
 
 	size := int64(0)
 	// walk from newest to oldest

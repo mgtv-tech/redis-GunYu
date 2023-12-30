@@ -154,6 +154,7 @@ func (cc *ChannelConfig) fix() error {
 type StorerConfig struct {
 	DirPath string `yaml:"dirPath"`
 	MaxSize int64  `yaml:"maxSize"` // -1 is unlimited, default is 50GiB
+	LogSize int64  `yaml:"logSize"` // default is 100MiB
 }
 
 func (sc *StorerConfig) fix() error {
@@ -163,6 +164,9 @@ func (sc *StorerConfig) fix() error {
 
 	if sc.MaxSize == 0 {
 		sc.MaxSize = 50 * (1024 * 1024 * 1024) // 50 GiB
+	}
+	if sc.LogSize <= 0 {
+		sc.LogSize = 100 * (1024 * 1024)
 	}
 
 	_, err := os.Stat(sc.DirPath)
