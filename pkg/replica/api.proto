@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package replica;
+
+option go_package = "./golang";
+
+service ReplService {
+    rpc Sync (SyncRequest) returns (stream SyncResponse) {}
+}
+
+message node {
+    string node_id = 1;
+    string address = 2;
+    string run_id = 3;
+}
+
+message SyncRequest {
+    node node = 1;
+    int64 offset = 2;
+}
+
+message SyncResponse {
+    message Meta {
+        string run_id = 1;
+        string msg = 2;
+        bool aof = 3;
+    }
+    enum Code {
+        // FAULT -> ERROR -> FAILURE
+        META = 0;
+        CONTINUE = 1;
+        HANDOVER = 2;
+        FAULT = 10;    // network or lower level 
+        ERROR = 11;    // logical 
+        FAILURE = 12;  // service, should be restart
+    }
+    Code code = 1;
+    Meta meta = 2;
+    int64 offset = 3;
+    int64 size = 4;
+    bytes data = 5;
+}
