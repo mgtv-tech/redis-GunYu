@@ -119,13 +119,21 @@ func (sc *StoreChannel) NewAofWritter(r io.Reader, offset int64) (*store.AofWrit
 
 func (sc *StoreChannel) SetRunId(runId string) error {
 	err := sc.storer.SetRunId(runId)
-	sc.logger.Log(err, "set run id : runId(%s), err(%v)", runId, err)
+	if err != nil {
+		sc.logger.Errorf("SetRunId : runId(%s), err(%v)", runId, err)
+	} else {
+		sc.logger.Infof("SetRunId : runId(%s)", runId)
+	}
 	return err
 }
 
 func (sc *StoreChannel) DelRunId(runId string) error {
 	err := sc.storer.DelRunId(runId)
-	sc.logger.Log(err, "del run id : runId(%s), err(%v)", runId, err)
+	if err != nil {
+		sc.logger.Errorf("DelRunId : runId(%s), err(%v)", runId, err)
+	} else {
+		sc.logger.Infof("DelRunId : runId(%s)", runId)
+	}
 	return err
 }
 
@@ -135,6 +143,8 @@ func (sc *StoreChannel) RunId() string {
 
 func (sc *StoreChannel) Close() error {
 	err := sc.storer.Close()
-	sc.logger.Log(err, "close storer : err(%v)", err)
+	if err != nil {
+		sc.logger.Errorf("close storer : err(%v)", err)
+	}
 	return err
 }

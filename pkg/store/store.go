@@ -452,7 +452,7 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 	return w, nil
 }
 
-func (s *Storer) getAofReader(w io.Writer, dir string, offset int64, verifyCrc bool) (*AofReader, error) {
+func (s *Storer) getAofReader(w io.WriteCloser, dir string, offset int64, verifyCrc bool) (*AofReader, error) {
 	return NewAofReader(dir, offset, w, s, verifyCrc)
 }
 

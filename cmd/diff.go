@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/redis"
-	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 type DiffCmd struct {
@@ -45,18 +43,28 @@ func (rc *DiffCmd) Run() error {
 
 func (dc *DiffCmd) Scan() {
 
-	if !strings.HasPrefix(config.GetFlag().DiffCmd.A, "redis") {
-		panic(fmt.Errorf("dsn : %s", config.GetFlag().DiffCmd.A))
-	}
-	if !strings.HasPrefix(config.GetFlag().DiffCmd.B, "redis") {
-		panic(fmt.Errorf("dsn : %s", config.GetFlag().DiffCmd.B))
-	}
+	// if !strings.HasPrefix(config.GetFlag().DiffCmd.A, "redis") {
+	// 	panic(fmt.Errorf("dsn : %s", config.GetFlag().DiffCmd.A))
+	// }
+	// if !strings.HasPrefix(config.GetFlag().DiffCmd.B, "redis") {
+	// 	panic(fmt.Errorf("dsn : %s", config.GetFlag().DiffCmd.B))
+	// }
 
-	dsna := dc.toRedisConfig(config.GetFlag().DiffCmd.A)
-	dsnb := dc.toRedisConfig(config.GetFlag().DiffCmd.B)
+	// dsna := dc.toRedisConfig(config.GetFlag().DiffCmd.A)
+	// dsnb := dc.toRedisConfig(config.GetFlag().DiffCmd.B)
 
-	util.PanicIfErr(redis.FixTopology(dsna))
-	util.PanicIfErr(redis.FixTopology(dsnb))
+	// util.PanicIfErr(redis.FixTopology(dsna))
+	// util.PanicIfErr(redis.FixTopology(dsnb))
+
+	// for _, sharda := range dsna.GetClusterShards() {
+	// 	node := sharda.Get(config.SelNodeStrategyPreferSlave)
+	// 	clia := goredis.NewClient(&goredis.Options{
+	// 		Addr: node.Endpoint,
+	// 	})
+	// 	cursor := uint64(0)
+	// 	res := clia.Scan(context.Background(), cursor, "", 100)
+
+	// }
 
 }
 

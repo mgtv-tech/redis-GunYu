@@ -129,7 +129,8 @@ func (r *RdbReader) Run(ctx context.Context) (err error) {
 	case err = <-errCh:
 		// EOF or others
 	}
-	r.writer.Close()
+	r.Close()
+
 	r.storer.releaseRdbAof(r.dir, r.offset, r.size, true)
 	return err
 }
@@ -171,7 +172,8 @@ func (r *RdbReader) pump() error {
 
 func (r *RdbReader) Close() error {
 	if r.closed.CompareAndSwap(false, true) {
-		return r.reader.Close()
+		err := r.writer.Close()
+		return errors.Join(err, r.reader.Close())
 	}
 	return nil
 }

@@ -403,6 +403,7 @@ func (ri *RedisInput) Run() (err error) {
 	})
 
 	ri.wait.WgWait()
+	ri.metricOffset.Close()
 	return ri.wait.Error()
 }
 

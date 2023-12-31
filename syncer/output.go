@@ -31,6 +31,7 @@ type Output interface {
 	StartPoint(runIds []string) (StartPoint, error)
 	Send(ctx context.Context, reader *store.Reader) error
 	SetRunId(ctx context.Context, runId string) error
+	Close()
 }
 
 type RedisOutput struct {
@@ -46,6 +47,17 @@ type RedisOutput struct {
 	fullSyncProgress metric.Gauge
 	sendOffsetGauge  metric.Gauge
 	ackOffsetGauge   metric.Gauge
+}
+
+func (ro *RedisOutput) Close() {
+	ro.sendCounter.Close()
+	ro.filterCounter.Close()
+	ro.sendSizeCounter.Close()
+	ro.failCounter.Close()
+	ro.succCounter.Close()
+	ro.fullSyncProgress.Close()
+	ro.sendOffsetGauge.Close()
+	ro.ackOffsetGauge.Close()
 }
 
 func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {

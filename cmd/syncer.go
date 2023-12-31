@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/pprof"
+	_ "net/http/pprof"
 	"sync"
 	"time"
 
@@ -355,24 +355,16 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 		cfg := tmp
 		usync.SafeGo(func() {
 			defer runWait.WgDone()
-
 			key := fmt.Sprintf("/redis-gunyu/%s/input-election/%s/", config.Get().Cluster.GroupName, cfg.Input.Address())
 			elect := cli.NewElection(runWait.Context(), key)
-			selfCure := 0
 			role := cluster.RoleCandidate
 
 			for !runWait.IsClosed() {
-				if selfCure > 5 { // self kill
-					sc.logger.Errorf("self cure, restart...")
-					runWait.Close(syncer.ErrRestart)
-					return
-				}
-
 				if role == cluster.RoleCandidate {
 					newRole, err := sc.clusterCampaign(runWait.Context(), elect)
 					if err != nil {
-						selfCure++
-						runWait.Sleep(time.Second)
+						runWait.Close(syncer.ErrRestart)
+						break
 					} else {
 						role = newRole
 					}
@@ -397,6 +389,8 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 								// @TODO resign
 							}
 							err = sy.RunFollower(leader)
+						} else if err != cluster.ErrNoLeader {
+							err = errors.Join(err, syncer.ErrBreak)
 						}
 					}
 					sc.logger.Infof("syncer is stopped : %v", err)
@@ -409,11 +403,13 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 				// wait
 				sy.Stop()
 				syncerWait.WgWait()
+				err := syncerWait.Error()
 				if role == cluster.RoleLeader {
 					ctx, cancel := context.WithTimeout(context.Background(), config.Get().Server.GracefullStopTimeout)
-					err := elect.Resign(ctx)
-					if err != nil {
-						sc.logger.Errorf("resign leadership error : %v", err)
+					terr := elect.Resign(ctx)
+					if terr != nil {
+						err = errors.Join(err, terr, syncer.ErrBreak)
+						sc.logger.Errorf("resign leadership error : %v", terr)
 					} else {
 						sc.logger.Infof("resign leadership")
 					}
@@ -424,7 +420,7 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 
 				// try to take over the leadership within 10 seconds
 				// @TODO maybe endless in some corner cases
-				err := syncerWait.Error()
+
 				if err != nil {
 					if errors.Is(err, syncer.ErrLeaderHandover) {
 						// hand over
@@ -476,7 +472,6 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 		case <-ticker.C:
 		}
 
-		selfCure := 0
 		changed, err := func() (bool, error) {
 			if role == cluster.RoleLeader {
 				err := sc.clusterRenew(wait.Context(), elect)
@@ -497,13 +492,8 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 			return false, nil
 		}()
 		if err != nil {
-			selfCure++
-			wait.Close(err)
-			if selfCure > 5 {
-				sc.runWait.Close(syncer.ErrRestart)
-			}
+			wait.Close(errors.Join(err, syncer.ErrBreak))
 		}
-		selfCure = 0
 		if changed {
 			wait.Close(nil)
 		}
@@ -705,18 +695,18 @@ func (sc *SyncerCmd) startHttpServer() {
 	router := httprouter.New()
 
 	// pprof
-	router.HandlerFunc(http.MethodGet, "/", (pprof.Index))
-	router.HandlerFunc(http.MethodGet, "/cmdline", (pprof.Cmdline))
-	router.HandlerFunc(http.MethodGet, "/profile", (pprof.Profile))
-	router.HandlerFunc(http.MethodPost, "/symbol", (pprof.Symbol))
-	router.HandlerFunc(http.MethodGet, "/symbol", (pprof.Symbol))
-	router.HandlerFunc(http.MethodGet, "/trace", (pprof.Trace))
-	router.Handler(http.MethodGet, "/allocs", (pprof.Handler("allocs")))
-	router.Handler(http.MethodGet, "/block", (pprof.Handler("block")))
-	router.Handler(http.MethodGet, "/goroutine", (pprof.Handler("goroutine")))
-	router.Handler(http.MethodGet, "/heap", (pprof.Handler("heap")))
-	router.Handler(http.MethodGet, "/mutex", (pprof.Handler("mutex")))
-	router.Handler(http.MethodGet, "/threadcreate", (pprof.Handler("threadcreate")))
+	// router.HandlerFunc(http.MethodGet, "/", (pprof.Index))
+	// router.HandlerFunc(http.MethodGet, "/cmdline", (pprof.Cmdline))
+	// router.HandlerFunc(http.MethodGet, "/profile", (pprof.Profile))
+	// router.HandlerFunc(http.MethodPost, "/symbol", (pprof.Symbol))
+	// router.HandlerFunc(http.MethodGet, "/symbol", (pprof.Symbol))
+	// router.HandlerFunc(http.MethodGet, "/trace", (pprof.Trace))
+	// router.Handler(http.MethodGet, "/allocs", (pprof.Handler("allocs")))
+	// router.Handler(http.MethodGet, "/block", (pprof.Handler("block")))
+	// router.Handler(http.MethodGet, "/goroutine", (pprof.Handler("goroutine")))
+	// router.Handler(http.MethodGet, "/heap", (pprof.Handler("heap")))
+	// router.Handler(http.MethodGet, "/mutex", (pprof.Handler("mutex")))
+	// router.Handler(http.MethodGet, "/threadcreate", (pprof.Handler("threadcreate")))
 
 	// prometheus
 	router.Handler(http.MethodGet, "/prometheus", promhttp.Handler())

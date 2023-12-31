@@ -152,6 +152,7 @@ func (s *syncer) RunLeader() error {
 	<-s.wait.Done()
 	s.leader.Stop()
 	s.input.Stop()
+	output.Close()
 	s.channel.Close()
 
 	s.wait.WgWait()
@@ -210,7 +211,9 @@ func (s *syncer) updateCheckpoint(wait usync.WaitCloser, localCheckpoint string,
 		defer cli.Close()
 
 		err = checkpoint.UpdateCheckpoint(cli, localCheckpoint, ids)
-		s.logger.Log(err, "update checkpoint : redis(%s), local(%s), ids(%v)", s.cfg.Output.Address(), localCheckpoint, ids)
+		if err != nil {
+			s.logger.Errorf("update checkpoint : redis(%s), local(%s), ids(%v), error(%v)", s.cfg.Output.Address(), localCheckpoint, ids, err)
+		}
 		return err
 	}, 5, time.Second*1, 0.3)
 }

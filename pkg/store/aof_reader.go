@@ -21,11 +21,11 @@ var (
 
 type AofReader struct {
 	reader *AofRotaterReader
-	writer io.Writer
+	writer io.WriteCloser
 	closed atomic.Bool
 }
 
-func NewAofReader(dir string, offset int64, writer io.Writer, storer *Storer, verifyCrc bool) (*AofReader, error) {
+func NewAofReader(dir string, offset int64, writer io.WriteCloser, storer *Storer, verifyCrc bool) (*AofReader, error) {
 	a, e := NewAofRotaterReader(dir, offset, storer, verifyCrc)
 	if e != nil {
 		return nil, e
@@ -50,17 +50,20 @@ func (r *AofReader) Run(ctx context.Context) error {
 		errCh <- fmt.Errorf("panic : %v", i)
 	})
 
+	var err error
 	select {
 	case <-ctx.Done():
-		return ctx.Err() // cancel
-	case err := <-errCh:
-		return err // eof or others
+		err = ctx.Err() // cancel
+	case err = <-errCh:
+		// eof or others
 	}
+	return errors.Join(err, r.Close())
 }
 
-func (r *AofReader) Close() error {
+func (r *AofReader) Close() (err error) {
 	if r.closed.CompareAndSwap(false, true) {
-		return r.reader.Close()
+		err = r.writer.Close()
+		return errors.Join(err, r.reader.Close())
 	}
 	return nil
 }
@@ -225,7 +228,7 @@ func (r *AofRotaterReader) isCorrupted() error {
 }
 
 func (r *AofRotaterReader) tryReadNextFile(offset int64) error {
-	filepath := aofFilePath(r.dir, r.right)
+	filepath := aofFilePath(r.dir, r.right) // @TODO
 	_, err := os.Stat(filepath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -307,6 +310,7 @@ func (r *AofRotaterReader) close() error {
 		r.storer.releaseRdbAof(r.dir, r.left, 0, false)
 		err := r.file.Close()
 		if err != nil {
+			r.logger.Errorf("close error : file(%s), error(%v)", r.filepath, err)
 			return err
 		}
 	}
