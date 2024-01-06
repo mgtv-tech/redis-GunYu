@@ -50,11 +50,7 @@ func NewGauge(o GaugeOpts) Gauge {
 }
 
 // NewGaugeVec returns a GaugeVec.
-func NewGaugeVec(cfg *GaugeVecOpts) GaugeVec {
-	if cfg == nil {
-		return nil
-	}
-
+func NewGaugeVec(cfg GaugeVecOpts) GaugeVec {
 	vec := prom.NewGaugeVec(
 		prom.GaugeOpts{
 			Namespace: cfg.Namespace,

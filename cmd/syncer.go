@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,7 +21,9 @@ import (
 
 	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/cluster"
+	ufs "github.com/ikenchina/redis-GunYu/pkg/io/fs"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/ikenchina/redis-GunYu/pkg/metric"
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
@@ -60,6 +64,7 @@ func (sc *SyncerCmd) Name() string {
 func (sc *SyncerCmd) Stop() error {
 	sc.logger.Infof("stopped")
 	sc.waitCloser.Close(nil)
+	sc.waitCloser.WgWait()
 	return sc.waitCloser.Error()
 }
 
@@ -71,7 +76,7 @@ func (sc *SyncerCmd) stop() {
 func (sc *SyncerCmd) Run() error {
 	defer sc.stop()
 
-	sc.gc()
+	sc.cron()
 	sc.startGrpcServer()
 	sc.startHttpServer()
 	var err error
@@ -325,6 +330,8 @@ func (sc *SyncerCmd) run() error {
 		}
 	}
 
+	// @TODO should remove directories of stale runID
+
 	sc.runWait.WgWait()
 	return sc.runWait.Error()
 }
@@ -500,44 +507,53 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 	}
 }
 
-func (sc *SyncerCmd) gc() {
-	usync.SafeGo(func() {
-		checkpointTicker := time.NewTicker(time.Hour * 5)
-		defer checkpointTicker.Stop()
-		for {
-			select {
-			case <-sc.waitCloser.Done():
-				return
-			case <-checkpointTicker.C:
-				sc.gcLegacyCheckpoint()
-			}
-		}
-	}, nil)
+func (sc *SyncerCmd) cron() {
+
+	util.CronWithCtx(sc.waitCloser.Context(), time.Hour*5, sc.legacyCheckpoint)
+
+	util.CronWithCtx(sc.waitCloser.Context(), time.Minute, sc.storageSize)
 }
 
-func (sc *SyncerCmd) gcLegacyCheckpoint() {
-	// if sync from slave, then get run sids from slave
-	var inputs []config.RedisConfig
-	if config.Get().Input.Mode == config.InputModeStatic {
-		inputs = config.Get().Input.Redis.SelNodes(false, config.Get().Input.SyncFrom)
-	} else {
-		inputs = config.Get().Input.Redis.SelNodes(true, config.Get().Input.SyncFrom)
-	}
-	runIdMap := make(map[string]struct{}, len(inputs)*2)
+var (
+	storerSizeGauge = metric.NewGauge(metric.GaugeOpts{
+		Namespace: config.AppName,
+		Subsystem: "storage",
+		Name:      "size",
+	})
+)
 
+func (sc *SyncerCmd) storageSize() {
+	if config.Get().Channel == nil || config.Get().Channel.Storer == nil {
+		return
+	}
+	dirPath := config.Get().Channel.Storer.DirPath
+	size, _, err := ufs.GetDirectorySize(dirPath)
+	if err != nil {
+		sc.logger.Errorf("%v", err)
+	} else {
+		storerSizeGauge.Set(float64(size))
+	}
+}
+
+func (sc *SyncerCmd) legacyCheckpoint() {
 	sc.logger.Infof("gc legacy checkpoints...")
+
+	// masters and slaves
+	inputs := config.Get().Input.Redis.SelNodes(true, config.SelNodeStrategyMaster)
+	inputs = append(inputs, config.Get().Input.Redis.SelNodes(true, config.SelNodeStrategySlave)...)
+	runIdMap := make(map[string]struct{}, len(inputs)*2)
 
 	// collect all run IDs
 	for _, input := range inputs {
 		input.Type = config.RedisTypeStandalone
 		cli, err := client.NewRedis(input)
 		if err != nil {
-			sc.logger.Errorf("new redis error : addr(%s), err(%v)", input.Address(), err)
+			sc.logger.Errorf("new redis : addr(%s), err(%v)", input.Address(), err)
 			return
 		}
 		id1, id2, err := redis.GetRunIds(cli)
 		if err != nil {
-			sc.logger.Errorf("get run ids error : addr(%s), err(%v)", input.Address(), err)
+			sc.logger.Errorf("get run ids : addr(%s), err(%v)", input.Address(), err)
 			cli.Close()
 			return
 		}
@@ -563,7 +579,7 @@ func (sc *SyncerCmd) gcLegacyCheckpoint() {
 
 			// run id maybe obsolete or a new run id
 			// delete stale checkpoints that have not been updated in the last 24 hours
-			total, deleted, err := checkpoint.DelStaleCheckpoint(cli, cpn, runId, time.Hour*24, exist)
+			total, deleted, err := checkpoint.DelStaleCheckpoint(cli, cpn, runId, time.Hour*24*10, exist)
 			sc.logger.Log(err, "delete stale checkpoint : cpName(%s), runId(%s), total(%d), deleted(%d), err(%v)", cpn, runId, total, deleted, err)
 
 			if !exist && total == deleted {
@@ -592,6 +608,35 @@ func (sc *SyncerCmd) gcLegacyCheckpoint() {
 			cli.Close()
 		}
 	}
+
+	gcStaleStorer := func() {
+		dirPath := config.Get().Channel.Storer.DirPath
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			sc.logger.Errorf("ReadDir : dir(%s), error(%v)", dirPath, err)
+			return
+		}
+		for _, entry := range entries {
+			runId := entry.Name()
+			_, exist := runIdMap[runId]
+			if exist {
+				continue
+			}
+
+			path := filepath.Join(dirPath, runId)
+			size, modTime, err := ufs.GetDirectorySize(path)
+			if err != nil {
+				sc.logger.Errorf("GetDirectorySize : path(%s), error(%v)", path, err)
+				continue
+			}
+			if time.Since(modTime) > 5*time.Hour {
+				sc.logger.Infof("remove the directory of run id : path(%s), modTime(%s), size(%d)", path, modTime, size)
+				os.RemoveAll(path)
+			}
+		}
+	}
+
+	gcStaleStorer()
 }
 
 func (sc *SyncerCmd) diffTypology(preShards []*config.RedisClusterShard, redisCfg config.RedisConfig) (bool, []*config.RedisClusterShard, error) {
@@ -689,29 +734,11 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser, redisCfg config.RedisC
 }
 
 func (sc *SyncerCmd) startHttpServer() {
-
 	listen := fmt.Sprintf("%s:%d", config.Get().Server.HttpListen, config.Get().Server.HttpPort)
-
 	router := httprouter.New()
-
-	// pprof
-	// router.HandlerFunc(http.MethodGet, "/", (pprof.Index))
-	// router.HandlerFunc(http.MethodGet, "/cmdline", (pprof.Cmdline))
-	// router.HandlerFunc(http.MethodGet, "/profile", (pprof.Profile))
-	// router.HandlerFunc(http.MethodPost, "/symbol", (pprof.Symbol))
-	// router.HandlerFunc(http.MethodGet, "/symbol", (pprof.Symbol))
-	// router.HandlerFunc(http.MethodGet, "/trace", (pprof.Trace))
-	// router.Handler(http.MethodGet, "/allocs", (pprof.Handler("allocs")))
-	// router.Handler(http.MethodGet, "/block", (pprof.Handler("block")))
-	// router.Handler(http.MethodGet, "/goroutine", (pprof.Handler("goroutine")))
-	// router.Handler(http.MethodGet, "/heap", (pprof.Handler("heap")))
-	// router.Handler(http.MethodGet, "/mutex", (pprof.Handler("mutex")))
-	// router.Handler(http.MethodGet, "/threadcreate", (pprof.Handler("threadcreate")))
 
 	// prometheus
 	router.Handler(http.MethodGet, "/prometheus", promhttp.Handler())
-
-	//
 	router.HandlerFunc(http.MethodDelete, "/", func(w http.ResponseWriter, r *http.Request) {
 		sc.Stop()
 	})
@@ -726,20 +753,21 @@ func (sc *SyncerCmd) startHttpServer() {
 			sc.waitCloser.Close(err)
 		}
 	}, nil)
-
 }
 
 func (sc *SyncerCmd) stopHttpServer() {
-	if sc.httpSvr != nil {
-		ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.Get().Server.GracefullStopTimeout)
-		defer cancel()
-		err := sc.httpSvr.Shutdown(ctx)
-		if err != nil {
-			sc.logger.Errorf("stop http server error : %v", err)
-		} else {
-			sc.logger.Infof("stop http server")
-		}
+	if sc.httpSvr == nil {
+		return
 	}
+	sc.logger.Infof("stop http server")
+
+	ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.Get().Server.GracefullStopTimeout)
+	defer cancel()
+	err := sc.httpSvr.Shutdown(ctx)
+	if err != nil {
+		sc.logger.Errorf("stop http server error : %v", err)
+	}
+	sc.httpSvr = nil
 }
 
 func (sc *SyncerCmd) startGrpcServer() {
@@ -770,31 +798,18 @@ func (sc *SyncerCmd) startGrpcServer() {
 	})
 }
 
-func (sc *SyncerCmd) stopGrpcServer() error {
+func (sc *SyncerCmd) stopGrpcServer() {
 	if sc.grpcSvr == nil {
-		return nil
+		return
 	}
 	sc.logger.Infof("stop grpc server")
 
-	stopped := make(chan struct{})
-	usync.SafeGo(func() {
-		sc.grpcSvr.GracefulStop()
-		close(stopped)
-	}, func(i interface{}) {
-		close(stopped)
-	})
+	ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.Get().Server.GracefullStopTimeout)
+	defer cancel()
 
-	t := time.NewTimer(config.Get().Server.GracefullStopTimeout)
-	select {
-	case <-t.C:
-		sc.grpcSvr.Stop()
-	case <-stopped:
-		if !t.Stop() {
-			<-t.C
-		}
-	}
+	util.StopWithCtx(ctx, sc.grpcSvr.GracefulStop)
+	sc.grpcSvr.Stop()
 	sc.grpcSvr = nil
-	return nil
 }
 
 func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ReplService_SyncServer) error {

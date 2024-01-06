@@ -6,11 +6,11 @@ input:
     addresses: [127.0.0.1:6300]
     type: cluster
   rdbParallel: 4
-  mode: static
+  mode: dynamic
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster2
-    maxSize: 10737418240
+    maxSize: 6291456000
 output:
   redis:
     addresses: [127.0.0.1:6310]

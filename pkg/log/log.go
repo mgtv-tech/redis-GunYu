@@ -27,6 +27,7 @@ var (
 
 func InitLog(cfg config.LogConfig) error {
 	//return nil
+	var err error
 	syncers := []zapcore.WriteSyncer{}
 	if cfg.Hander.File != nil {
 		syncers = append(syncers, zapcore.AddSync(&lumberjack.Logger{
@@ -43,9 +44,19 @@ func InitLog(cfg config.LogConfig) error {
 		return ErrNoHandler
 	}
 
-	level, err := zapcore.ParseLevel(cfg.LevelStr)
-	if err != nil {
-		return err
+	level := zapcore.InfoLevel
+	stLevel := zapcore.PanicLevel
+	if len(cfg.LevelStr) > 0 {
+		level, err = zapcore.ParseLevel(cfg.LevelStr)
+		if err != nil {
+			return err
+		}
+	}
+	if len(cfg.StacktraceLevelStr) > 0 {
+		stLevel, err = zapcore.ParseLevel(cfg.StacktraceLevelStr)
+		if err != nil {
+			return err
+		}
 	}
 
 	w := zapcore.NewMultiWriteSyncer(syncers...)
@@ -72,7 +83,7 @@ func InitLog(cfg config.LogConfig) error {
 		w,
 		level,
 	)
-	glogger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
+	glogger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(stLevel))
 	sugar = glogger.Sugar()
 
 	return nil

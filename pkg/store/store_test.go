@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/ikenchina/redis-GunYu/pkg/log"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -17,19 +16,18 @@ type rdbAofTestSuite struct {
 	suite.Suite
 }
 
-func (ts *rdbAofTestSuite) createdGap(gaps []int) *RdbAof {
-	rdb := &RdbAof{
-		dir: "dir",
-		rdb: &Rdb{},
+func (ts *rdbAofTestSuite) createdGap(gaps []int) *dataSet {
+	ds := &dataSet{
+		rdb: &dataSetRdb{},
 	}
 	left := int64(0)
 	for _, g := range gaps {
-		aof := &Aof{Left: left}
+		aof := &dataSetAof{left: left}
 		aof.rtSize.Store(100 - int64(g))
-		rdb.aofs = append(rdb.aofs, aof)
+		ds.AppendAof(aof)
 		left += 100
 	}
-	return rdb
+	return ds
 }
 
 func (ts *rdbAofTestSuite) TestTruncateGap() {
@@ -62,13 +60,16 @@ func (ts *rdbAofTestSuite) TestTruncateGap() {
 
 	for _, ca := range cases {
 		rdb := ts.createdGap(ca.gaps)
-		st := &Storer{}
+		st := &Storer{
+			logger: log.WithLogger("test"),
+		}
 		st.truncateGap(rdb)
-		ts.Equal(ca.exp[0], rdb.aofs[0].Left)
+		ts.Equal(ca.exp[0], rdb.aofSegs[0].left)
 		ts.Equal(ca.exp[1], rdb.Right())
 	}
 }
 
+/*
 func (ts *rdbAofTestSuite) TestSplitRdbAof() {
 
 	cases := []struct {
@@ -116,67 +117,52 @@ func (ts *rdbAofTestSuite) TestSplitRdbAof() {
 			ts.Equal(int64(ca.exp[i]), res[i].Right())
 		}
 	}
+
 }
+*/
 
 func TestGcLog(t *testing.T) {
 
-	makeRdb := func(left int64) *RdbAof {
-		rdbaof := &RdbAof{
-			rdb: &Rdb{RdbSize: 2, Left: left},
+	makeRdb := func(left int64, size int64) *dataSet {
+		ds := &dataSet{
+			rdb: &dataSetRdb{rdbSize: 2, left: left},
 		}
-		for i := int64(0); i < 8; i++ {
-			aof := &Aof{
-				Left: left + 2 + i,
+		for i := int64(0); i < size-2; i++ {
+			aof := &dataSetAof{
+				left: left + 2 + i,
 			}
 			aof.rtSize.Store(1)
-			rdbaof.aofs = append(rdbaof.aofs, aof)
+			ds.AppendAof(aof)
 		}
-		return rdbaof
+		return ds
 	}
-	makeRdbs := func(c int) (ra []*RdbAof) {
-		for i := 0; i < c; i++ {
-			ra = append(ra, makeRdb(int64(i*10)))
-		}
-		return
-	}
-	makeStorer := func(max int64, cur int) *Storer {
+
+	makeStorer := func(max int64, size int64) *Storer {
 		storer := &Storer{
 			logger: log.WithLogger(""),
 		}
 		storer.maxSize = max
-		storer.rdbs = makeRdbs(cur)
+		storer.dataSet = makeRdb(0, size)
 		return storer
 	}
 
-	t.Run("redundant rdbaof", func(t *testing.T) {
-		storer := makeStorer(20, 30)
-		last := storer.rdbs[len(storer.rdbs)-1]
-		storer.gcRedundantRdbs()
-		assert.Equal(t, 1, len(storer.rdbs))
-		assert.Equal(t, last, storer.rdbs[0])
-	})
-
 	t.Run("normal case", func(t *testing.T) {
-		storer := makeStorer(15, 3)
-		// [0, (2-9)], [10,(12-19)], [20,(22-29)]
-		storer.gcRdbs()
-		assert.Equal(t, 2, len(storer.rdbs))
-		// [,(15-19)], [20,(22-29)]
-		assert.True(t, storer.rdbs[1].rdb.Left == 20)
-		assert.Nil(t, storer.rdbs[0].rdb)
-		assert.True(t, storer.rdbs[0].aofs[0].Left == 15)
+		storer := makeStorer(5, 10)
+		// [0, 2] ([2,3]...[9,10])
+		storer.gcDataSet()
+		assert.Nil(t, storer.dataSet.rdb)
+		assert.Equal(t, 5, len(storer.dataSet.aofSegs))
+		assert.Equal(t, int64(5), storer.dataSet.aofSegs[0].left)
 	})
 
 	t.Run("ref case", func(t *testing.T) {
-		storer := makeStorer(15, 3)
-		// [0, (2-9)], [10,(12-19)], [20,(22-29)]
-		storer.rdbs[1].aofs[5].ref = 1
-		storer.gcRdbs()
-		assert.Equal(t, 2, len(storer.rdbs))
-		// [,(15-19)], [20,(22-29)]
-		assert.True(t, storer.rdbs[1].rdb.Left == 20)
-		assert.Nil(t, storer.rdbs[0].rdb)
-		assert.True(t, storer.rdbs[0].aofs[0].Left == 15)
+		storer := makeStorer(5, 10)
+		// [0, 2] ([2,3]...[9,10])
+		storer.dataSet.aofSegs[1].rwRef.Add(1)
+		storer.gcDataSet()
+		assert.Nil(t, storer.dataSet.rdb)
+		assert.Equal(t, 7, len(storer.dataSet.aofSegs))
+		assert.Equal(t, int64(3), storer.dataSet.aofSegs[0].left)
 	})
 
 }

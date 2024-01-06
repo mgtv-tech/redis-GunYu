@@ -10,15 +10,38 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/pkg/cluster"
-	"github.com/ikenchina/redis-GunYu/pkg/io/pipe"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
-
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/cluster"
+	"github.com/ikenchina/redis-GunYu/pkg/io/pipe"
+	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/ikenchina/redis-GunYu/pkg/metric"
+	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
+	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+)
+
+var (
+	leaderSendData = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "replica_leader",
+		Name:      "send",
+		Labels:    []string{"input"},
+	})
+	followerRecvData = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "replica_follower",
+		Name:      "recv",
+		Labels:    []string{"input"},
+	})
+	followerOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "replica_follower",
+		Name:      "recv_offset",
+		Labels:    []string{"input"},
+	})
 )
 
 type ReplicaLeader struct {
@@ -82,7 +105,6 @@ func (rl *ReplicaLeader) selfInspection(stream pb.ReplService_SyncServer) error 
 }
 
 func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ReplService_SyncServer) error {
-
 	err := rl.selfInspection(stream)
 	if err != nil {
 		return err
@@ -100,7 +122,10 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 			Offset: sp.Offset,
 		})
 		if err != nil {
+			err = fmt.Errorf("server handshake : startPoint(%v), error(%v)", sp, err)
 			return rl.handleError(stream, err, pb.SyncResponse_FAULT, "internal error", "")
+		} else {
+			rl.logger.Infof("server handshake : startPoint(%v)", sp)
 		}
 		return nil
 	}
@@ -165,15 +190,15 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 	if sendSize == 0 {
 		sendSize = math.MaxInt64
 	}
-	for !wait.IsClosed() && sendSize > 0 {
-		// @TODO metrics
 
+	inputId := rl.input.Id()
+	for !wait.IsClosed() && sendSize > 0 {
 		// @TODO @OPTIMIZE reuse, array of []byte, notice that stream.Send is async
 		buf := make([]byte, 1024*4)
 		n, err := ioReader.Read(buf)
 		if err != nil {
-			rl.logger.Errorf("reader error : %v", err)
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) && n > 0 {
+				buf = buf[:n]
 				return stream.Send(&pb.SyncResponse{
 					Code: pb.SyncResponse_CONTINUE, Offset: offset + int64(n), Size: int64(n),
 					Data: buf,
@@ -191,6 +216,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 		}
 		offset += int64(n)
 		sendSize -= uint64(n)
+		leaderSendData.Add(float64(n), inputId)
 	}
 
 	return nil
@@ -202,16 +228,14 @@ type ReplicaFollower struct {
 	wait         usync.WaitCloser
 	logger       log.Logger
 	inputAddress string
-	input        Input
 	channel      Channel
 	leader       *cluster.RoleInfo
 }
 
-func NewReplicaFollower(inputAddress string, input Input, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
+func NewReplicaFollower(inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
 	replica := &ReplicaFollower{
 		logger:       log.WithLogger("[ReplicaFollower] "),
 		wait:         usync.NewWaitCloser(nil),
-		input:        input,
 		channel:      channel,
 		leader:       leader,
 		inputAddress: inputAddress,
@@ -287,7 +311,6 @@ func (rf *ReplicaFollower) Stop() {
 
 func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse) error {
 	if err != nil {
-		rf.logger.Errorf("%s", err.Error())
 		return err
 	}
 	if resp != nil {
@@ -405,6 +428,7 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ReplService_
 		return err
 	}
 
+	syncOffset := resp.GetOffset()
 	rdbWait.WgAdd(1)
 	usync.SafeGo(func() { // sync from leader
 		defer rdbWait.WgDone()
@@ -418,24 +442,30 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ReplService_
 				return
 			}
 			chunk := resp.GetData()
-			_, err = pipew.Write(chunk)
-			if err != nil {
-				rdbWait.Close(err)
-				return
+			size := resp.GetSize()
+			if size > 0 {
+				_, err = pipew.Write(chunk[:size])
+				if err != nil {
+					rdbWait.Close(err)
+					return
+				}
+				rdbSize -= int64(size)
+				followerRecvData.Add(float64(size), rf.inputAddress)
+				syncOffset += size
+				followerOffsetGauge.Set(float64(syncOffset), rf.inputAddress)
 			}
-			rdbSize -= int64(len(chunk))
 		}
 	}, func(i interface{}) { rdbWait.Close(fmt.Errorf("panic: %v", i)) })
 
 	// rdb writer
-	rdbWait.Close(writer.Run(rdbWait.Context()))
-
+	writer.Start()
+	rdbWait.Close(writer.Wait(rdbWait.Context()))
+	writer.Close()
 	rdbWait.WgWait()
 	return rdbWait.Error()
 }
 
 func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ReplService_SyncClient, resp *pb.SyncResponse) error {
-
 	sp, err := rf.channel.StartPoint([]string{followerSp.RunId})
 	if err != nil {
 		return errors.Join(ErrRestart, fmt.Errorf("channel.StartPoint error : startPoint(%v), error(%v)", followerSp, err))
@@ -455,13 +485,15 @@ func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ReplService_
 	rf.logger.Infof("start to sync aof from leader : offset(%d)", resp.GetOffset())
 
 	aofWait := usync.NewWaitCloserFromParent(rf.wait, nil)
-	piper, pipew := pipe.NewSize(1024 * 1024 * 10)
+	piper, pipew := pipe.NewSize(1024 * 1024)
 	reader := bufio.NewReaderSize(piper, 1024*64)
 	writer, err := rf.channel.NewAofWritter(reader, resp.GetOffset())
 	if err != nil {
 		return err
 	}
-	aofSize := uint64(reader.Size())
+
+	syncOffset := resp.GetOffset()
+	aofSize := uint64(resp.GetSize())
 	aofWait.WgAdd(1)
 	usync.SafeGo(func() { // sync from leader
 		defer aofWait.WgDone()
@@ -475,18 +507,25 @@ func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ReplService_
 				return
 			}
 			chunk := resp.GetData()
-			_, err = pipew.Write(chunk)
-			if err != nil {
-				aofWait.Close(err)
-				return
+			size := resp.GetSize()
+			if size > 0 {
+				_, err = pipew.Write(chunk[:size])
+				if err != nil {
+					aofWait.Close(err)
+					return
+				}
+				aofSize -= uint64(size)
+				followerRecvData.Add(float64(size), rf.inputAddress)
+				syncOffset += size
+				followerOffsetGauge.Set(float64(syncOffset), rf.inputAddress)
 			}
-			aofSize -= uint64(len(chunk))
 		}
 	}, func(i interface{}) { aofWait.Close(fmt.Errorf("panic: %v", i)) })
 
 	// aof writer
-	aofWait.Close(writer.Run(aofWait.Context()))
-
+	writer.Start()
+	aofWait.Close(writer.Wait(aofWait.Context()))
+	writer.Close()
 	aofWait.WgWait()
 	return errors.Join(writer.Close(), aofWait.Error())
 }

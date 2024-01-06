@@ -179,7 +179,7 @@ func (sc *StorerConfig) fix() error {
 
 type OutputConfig struct {
 	Redis                    *RedisConfig
-	ResumeFromBreakPoint     bool        `yaml:"resumeFromBreakPoint"`
+	ResumeFromBreakPoint     *bool       `yaml:"resumeFromBreakPoint"`
 	ReplaceHashTag           bool        `yaml:"replaceHashTag"`
 	FakeExpireTime           FakeTime    `yaml:"fakeExpireTime"`
 	KeyExists                string      `yaml:"keyExists"` // replace|ignore|error
@@ -203,7 +203,10 @@ func (of *OutputConfig) fix() error {
 	if err := of.Redis.fix(); err != nil {
 		return err
 	}
-	if of.ResumeFromBreakPoint && of.TargetDb != -1 {
+	if of.ResumeFromBreakPoint == nil {
+		*of.ResumeFromBreakPoint = true
+	}
+	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
 		return newConfigError("resume from breakpoint, but targetdb is not -1 : db(%d)", of.TargetDb)
 	}
 
@@ -262,9 +265,11 @@ type LogHandlerConfig struct {
 }
 
 type LogConfig struct {
-	LevelStr string `yaml:"level"`
-	level    zapcore.Level
-	Hander   LogHandlerConfig `yaml:"handler"`
+	LevelStr           string `yaml:"level"`
+	level              zapcore.Level
+	StacktraceLevelStr string `yaml:"StacktraceLevel"`
+	stacktraceLevel    zapcore.Level
+	Hander             LogHandlerConfig `yaml:"handler"`
 }
 
 func SetLogLevel(l zapcore.Level) {
@@ -279,6 +284,7 @@ func (lc *LogConfig) fix() error {
 	if lc.Hander.File == nil && !lc.Hander.StdOut {
 		lc.Hander.StdOut = true
 	}
+
 	return nil
 }
 

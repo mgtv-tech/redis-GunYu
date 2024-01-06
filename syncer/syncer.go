@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -50,6 +51,7 @@ type Syncer interface {
 	RunFollower(leader *cluster.RoleInfo) error
 	Stop()
 	ServiceReplica(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ReplService_SyncServer) error
+	RunIds() []string
 }
 
 func NewSyncer(cfg SyncerConfig) Syncer {
@@ -70,9 +72,19 @@ type syncer struct {
 	cfg     SyncerConfig
 	logger  log.Logger
 	wait    usync.WaitCloser
+	mux     sync.RWMutex
 	input   Input
 	channel Channel
 	leader  *ReplicaLeader
+}
+
+func (s *syncer) RunIds() []string {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	if s.input == nil {
+		return nil
+	}
+	return s.input.RunIds()
 }
 
 func (s *syncer) getInputRunIds() (string, string, error) {
@@ -99,14 +111,16 @@ func ClientUnaryCallInterceptor(opts0 ...grpc.CallOption) grpc.UnaryClientInterc
 }
 
 func (s *syncer) Stop() {
-	s.logger.Infof("stop syncer")
+	s.logger.Debugf("stop syncer")
 	s.wait.Close(nil)
 }
 
 func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
 	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
 
-	follower := NewReplicaFollower(s.cfg.Input.Address(), s.input, s.channel, leader)
+	s.mux.RLock()
+	follower := NewReplicaFollower(s.cfg.Input.Address(), s.channel, leader)
+	s.mux.RUnlock()
 
 	s.wait.WgAdd(1)
 	usync.SafeGo(func() {
@@ -119,11 +133,8 @@ func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
 
 	<-s.wait.Done()
 	follower.Stop()
-
 	s.wait.WgWait()
-	err := s.wait.Error()
-	s.logger.Infof("RunFollower stopped")
-	return err
+	return s.wait.Error()
 }
 
 func (s *syncer) RunLeader() error {
@@ -134,31 +145,36 @@ func (s *syncer) RunLeader() error {
 		return err
 	}
 
-	s.input = NewRedisInput(s.cfg.Id, s.cfg.Input)
-	s.input.AddOutput(output)
-	s.input.SetChannel(s.channel)
-	s.leader = NewReplicaLeader(s.input, s.channel)
-	s.leader.Start()
+	s.mux.Lock()
+	input := NewRedisInput(s.cfg.Id, s.cfg.Input)
+	input.SetOutput(output)
+	input.SetChannel(s.channel)
+	leader := NewReplicaLeader(input, s.channel)
+	s.input = input
+	s.leader = leader
+	s.logger.Infof("set leader : %p", leader)
+	channel := s.channel
+	s.mux.Unlock()
+
+	leader.Start()
 
 	s.wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer s.wait.WgDone()
-		err := s.input.Run()
+		err := input.Run()
 		s.wait.Close(err)
 	}, func(i interface{}) {
 		s.wait.Close(fmt.Errorf("panic: %v", i))
 	})
 
 	<-s.wait.Done()
-	s.leader.Stop()
-	s.input.Stop()
+	leader.Stop()
+	input.Stop()
 	output.Close()
-	s.channel.Close()
+	channel.Close()
 
 	s.wait.WgWait()
-	err = s.wait.Error()
-	s.logger.Infof("RunLeader stopped")
-	return err
+	return s.wait.Error()
 }
 
 func (s *syncer) newOutput() (*RedisOutput, error) {
@@ -173,11 +189,11 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		InputName:                  s.cfg.Input.Address(),
 		Redis:                      s.cfg.Output,
 		Parallel:                   config.Get().Output.ReplayRdbParallel,
-		EnableResumeFromBreakPoint: config.Get().Output.ResumeFromBreakPoint,
+		EnableResumeFromBreakPoint: *config.Get().Output.ResumeFromBreakPoint,
 		RunId:                      id1,
 		CanTransaction:             s.cfg.CanTransaction,
 	}
-	if config.Get().Output.ResumeFromBreakPoint {
+	if *config.Get().Output.ResumeFromBreakPoint {
 		var localCheckpoint string
 		if s.cfg.CanTransaction && s.cfg.Output.IsCluster() {
 			localCheckpoint = choseKeyInSlots(config.CheckpointKey, s.cfg.Output.GetAllSlots())

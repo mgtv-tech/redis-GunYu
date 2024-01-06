@@ -396,12 +396,13 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 
 	if redisCfg.Type == config.RedisTypeCluster {
 		cli, err := client.NewRedis(*redisCfg)
-		defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
 
 		// fix addresses
 		if err != nil {
 			return fmt.Errorf("new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
 		}
+		defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
+
 		masters, slaves, err := GetAllClusterAddress(cli)
 		if err != nil {
 			return err

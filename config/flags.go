@@ -19,6 +19,7 @@ type Flags struct {
 	Cmd        string
 	RdbCmd     RdbCmdFlags
 	DiffCmd    DiffCmdFlags
+	AofCmd     AofCmdFlags
 }
 
 type RdbCmdFlags struct {
@@ -34,6 +35,13 @@ type DiffCmdFlags struct {
 	Parallel int
 }
 
+type AofCmdFlags struct {
+	Action string
+	Path   string
+	Offset int64
+	Size   int64
+}
+
 func LoadFlags() error {
 	flag.StringVar(&flagVar.Cmd, "cmd", "sync", "command name : sync/rdb/diff")
 	flag.StringVar(&flagVar.ConfigPath, "conf", "", "config file path")
@@ -46,6 +54,11 @@ func LoadFlags() error {
 	flag.StringVar(&flagVar.DiffCmd.A, "diff.a", "", "")
 	flag.StringVar(&flagVar.DiffCmd.B, "diff.b", "", "")
 	flag.IntVar(&flagVar.DiffCmd.Parallel, "diff.parallel", -1, "")
+
+	flag.StringVar(&flagVar.AofCmd.Action, "aof.action", "parse", "parse/verify")
+	flag.StringVar(&flagVar.AofCmd.Path, "aof.path", "", "aof path")
+	flag.Int64Var(&flagVar.AofCmd.Offset, "aof.offset", 0, "aof offset")
+	flag.Int64Var(&flagVar.AofCmd.Size, "aof.size", -1, "aof size")
 
 	flag.Parse()
 	return nil

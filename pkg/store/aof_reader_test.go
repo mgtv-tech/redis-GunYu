@@ -33,9 +33,9 @@ func (ts *aofReaderTestSuite) TearDownSuite() {
 }
 
 func (ts *aofReaderTestSuite) isCorrupted(offset int64) error {
-	reader, err := NewAofRotaterReader(ts.tempDir, offset, ts.storer, true)
+	reader, err := NewAofRotateReader(ts.tempDir, offset, ts.storer, nil, true)
 	if err == nil {
-		reader.Close()
+		reader.closeAof()
 	}
 	return err
 }
@@ -45,11 +45,11 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 	filePath := aofFilePath(ts.tempDir, 0)
 
 	newAof := func() {
-		ts.storer.rdbs = nil
-		writer, err := NewAofRotater(ts.tempDir, 0, ts.storer, 100000000)
+		ts.storer.dataSet = &dataSet{}
+		writer, err := NewAofRotater(ts.tempDir, 0, 100000000)
 		ts.Nil(err)
-		ts.Nil(writer.Write(data))
-		writer.Close()
+		ts.Nil(writer.write(data))
+		writer.close()
 	}
 
 	ts.Run("check pass", func() {
@@ -85,7 +85,8 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 		ts.True(strings.Contains(err.Error(), "check size"))
 
 		// writting file
-		ts.storer.rdbs[0].aofs[0].Size = -1
+		aof := &dataSetAof{size: -1}
+		ts.storer.dataSet.AppendAof(aof)
 		ts.Nil(ts.isCorrupted(0))
 		file.Close()
 	})

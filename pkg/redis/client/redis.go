@@ -7,6 +7,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/conn"
 )
 
+// Redis interface
 type Redis interface {
 	Close() error
 	Do(string, ...interface{}) (interface{}, error)

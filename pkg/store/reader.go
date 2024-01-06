@@ -2,10 +2,7 @@ package store
 
 import (
 	"bufio"
-	"context"
-	"errors"
 	"fmt"
-	"io"
 
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
@@ -13,7 +10,7 @@ import (
 
 type Reader struct {
 	rdb    *RdbReader
-	aof    *AofReader
+	aof    *AofRotateReader
 	reader *bufio.Reader
 	size   int64
 	runId  string
@@ -27,14 +24,16 @@ func (r *Reader) Start(wait usync.WaitCloser) {
 		defer wait.WgDone()
 		var err error
 		if r.aof != nil {
-			err = r.aof.Run(wait.Context())
+			r.aof.Start()
+			err = r.aof.Wait(wait.Context())
+			r.aof.Close()
 		} else if r.rdb != nil {
-			err = r.rdb.Run(wait.Context())
+			r.rdb.Start()
+			err = r.rdb.Wait(wait.Context())
+			r.rdb.Close()
 		}
-		if err != nil && !errors.Is(err, io.EOF) {
-			if !errors.Is(err, context.Canceled) {
-				r.logger.Errorf("Run error : %v", err)
-			}
+		if err != nil {
+			r.logger.Errorf("Run error : %v", err)
 			wait.Close(err)
 		}
 	}, func(i interface{}) {

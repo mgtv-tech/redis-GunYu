@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,17 +16,18 @@ import (
 )
 
 type RdbReader struct {
-	storer   *Storer
+	mux      sync.RWMutex
 	dir      string
 	filePath string
 	reader   *os.File
 	writer   io.WriteCloser
 	offset   int64
 	size     int64
-	closed   atomic.Bool
+	wait     usync.WaitCloser
+	observer atomic.Pointer[Observer]
 }
 
-func NewRdbReader(storer *Storer, w io.WriteCloser, rdbDir string, offset int64, rdbSize int64, verifyCrc bool) (*RdbReader, error) {
+func NewRdbReader(w io.WriteCloser, rdbDir string, offset int64, rdbSize int64, verifyCrc bool) (*RdbReader, error) {
 	rdbFn := fmt.Sprintf("%s%c%v_%v.rdb", rdbDir, os.PathSeparator, offset, rdbSize)
 
 	writting := false
@@ -38,23 +40,28 @@ func NewRdbReader(storer *Storer, w io.WriteCloser, rdbDir string, offset int64,
 	}
 
 	r := &RdbReader{
-		storer:   storer,
 		dir:      rdbDir,
 		filePath: rdbFn,
 		writer:   w,
 		size:     rdbSize,
 		offset:   offset,
 	}
+	r.wait = usync.NewWaitCloser(func(err error) {
+		r.close()
+	})
 
 	file, err := os.OpenFile(r.filePath, os.O_RDONLY, 0777)
 	if err != nil {
 		return nil, err
 	}
 	r.reader = file
+	var obr Observer = &observerProxy{}
+	r.observer.Store(&obr)
 
 	if !writting && verifyCrc {
 		err = r.checkHeader()
 		if err != nil {
+			file.Close()
 			return nil, err
 		}
 	}
@@ -115,65 +122,75 @@ func (r *RdbReader) checkHeader() error {
 	return nil
 }
 
-func (r *RdbReader) Run(ctx context.Context) (err error) {
-	errCh := make(chan error)
-	usync.SafeGo(func() {
-		errCh <- r.pump()
-	}, func(i interface{}) {
-		errCh <- fmt.Errorf("panic : %v", i)
-	})
-
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case err = <-errCh:
-		// EOF or others
-	}
-	r.Close()
-
-	r.storer.releaseRdbAof(r.dir, r.offset, r.size, true)
-	return err
+func (r *RdbReader) SetObserver(o Observer) {
+	r.observer.Store(&o)
 }
 
-func (r *RdbReader) pump() error {
+func (r *RdbReader) Start() {
+	usync.SafeGo(func() {
+		err := r.pump()
+		r.wait.Close(err)
+	}, func(i interface{}) {
+		r.wait.Close(fmt.Errorf("panic : %v", i))
+	})
+}
+
+func (r *RdbReader) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-r.wait.Context().Done():
+		return r.wait.Error()
+	}
+}
+
+func (r *RdbReader) Close() error {
+	r.wait.Close(nil)
+	return nil
+}
+
+func (r *RdbReader) pump() (err error) {
 	p := make([]byte, 8192)
+	var n int
 	rdbSize := r.size
-	for rdbSize != 0 && !r.closed.Load() {
+	for rdbSize != 0 && !r.wait.IsClosed() {
 		if int64(len(p)) > rdbSize {
 			p = p[:rdbSize]
 		}
-		n, err := r.reader.Read(p)
-		for err == io.EOF { // EOF means n is zero
-			if r.closed.Load() {
-				return context.Canceled
-			}
+		n, err = r.read(p)
+		for err == io.EOF && !r.wait.IsClosed() { // EOF means n is zero
 			time.Sleep(time.Millisecond * 10)
-			_, err = r.reader.Seek(0, 1) // @TODO
-			if err != nil {
-				return err
-			}
-			n, err = r.reader.Read(p)
+			n, err = r.read(p)
 		}
 		if n > 0 {
 			if _, err = r.writer.Write(p[:n]); err != nil {
-				return err
+				break
 			}
 			rdbSize -= int64(n)
 		}
 		if err != nil {
-			return err
+			break
 		}
 	}
-	if rdbSize == 0 {
-		return io.EOF
-	}
-	return nil
+	return err
 }
 
-func (r *RdbReader) Close() error {
-	if r.closed.CompareAndSwap(false, true) {
-		err := r.writer.Close()
-		return errors.Join(err, r.reader.Close())
-	}
-	return nil
+func (r *RdbReader) read(buf []byte) (n int, err error) {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+	n, err = r.reader.Read(buf)
+	return
+}
+
+func (r *RdbReader) close() error {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+	err := r.writer.Close()
+	return errors.Join(err, r.closeRdb())
+}
+
+func (r *RdbReader) closeRdb() error {
+	err := r.reader.Close()
+	(*r.observer.Load()).Close(r.offset, r.size)
+	return err
 }

@@ -8,12 +8,48 @@ import (
 	"hash"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
+
+type Observer interface {
+	Open(args ...interface{})
+	Close(args ...interface{})
+	Write(args ...interface{})
+	Read(args ...interface{})
+}
+
+type observerProxy struct {
+	open  func(args ...interface{})
+	close func(args ...interface{})
+	write func(args ...interface{})
+	read  func(args ...interface{})
+}
+
+func (no *observerProxy) Open(args ...interface{}) {
+	if no.open != nil {
+		no.open(args...)
+	}
+}
+func (no *observerProxy) Close(args ...interface{}) {
+	if no.close != nil {
+		no.close(args...)
+	}
+}
+func (no *observerProxy) Write(args ...interface{}) {
+	if no.write != nil {
+		no.write(args...)
+	}
+}
+func (no *observerProxy) Read(args ...interface{}) {
+	if no.read != nil {
+		no.read(args...)
+	}
+}
 
 // file format :
 // *  | header | aof records |
@@ -28,45 +64,60 @@ const headerSize = 16
 var fixHeader = [headerSize]byte{1} // version is 1
 
 type AofWriter struct {
-	aof    *AofRotater
+	*AofRotater
 	reader io.Reader
-	closed atomic.Bool
 }
 
-func NewAofWriter(dir string, offset int64, reader io.Reader, storer *Storer, maxLogSize int64) (*AofWriter, error) {
-	a, e := NewAofRotater(dir, offset, storer, maxLogSize)
+func NewAofWriter(dir string, offset int64, reader io.Reader, maxLogSize int64) (*AofWriter, error) {
+	a, e := NewAofRotater(dir, offset, maxLogSize)
 	if e != nil {
 		return nil, e
 	}
 	w := &AofWriter{
-		aof:    a,
-		reader: reader,
+		AofRotater: a,
+		reader:     reader,
 	}
 
 	return w, nil
 }
 
-func (w *AofWriter) Run(ctx context.Context) error {
-	errCh := make(chan error)
-	usync.SafeGo(func() {
-		errCh <- w.ingest()
-	}, func(i interface{}) { errCh <- fmt.Errorf("panic : %v", i) })
-
+func (w *AofWriter) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-	case err := <-errCh:
-		return err
+		return nil
+	case <-w.wait.Context().Done():
+		return w.wait.Error()
 	}
+}
+
+func (w *AofWriter) Close() error {
+	w.wait.Close(nil)
 	return nil
+}
+
+func (w *AofWriter) Start() {
+	usync.SafeGo(func() {
+		err := w.ingest()
+		w.wait.Close(err)
+	}, func(i interface{}) {
+		w.wait.Close(fmt.Errorf("panic : %v", i))
+	})
+}
+
+func (w *AofWriter) SetObserver(obsr Observer) {
+	w.observer.Store(&obsr)
 }
 
 func (w *AofWriter) ingest() (err error) {
 	p := make([]byte, 8192)
 	n := 0
-	for !w.closed.Load() {
+	for {
+		if w.wait.IsClosed() {
+			break
+		}
 		n, err = w.reader.Read(p)
 		if n > 0 {
-			if err = w.aof.Write(p[:n]); err != nil {
+			if err = w.write(p[:n]); err != nil {
 				err = fmt.Errorf("aof writer error : %w", err)
 				break
 			}
@@ -76,46 +127,43 @@ func (w *AofWriter) ingest() (err error) {
 			break
 		}
 	}
-	return errors.Join(err, w.aof.Close())
+
+	return err
 }
 
 func (w *AofWriter) Right() int64 {
-	return w.aof.Right()
-}
-
-func (w *AofWriter) Close() error {
-	if w.closed.CompareAndSwap(false, true) {
-		return w.aof.Close()
-	}
-	return nil
+	return w.right.Load()
 }
 
 // AofRotater
 // it is not thread safe,
 type AofRotater struct {
-	dir string
-
-	file     *os.File
-	left     int64
-	right    atomic.Int64
-	filepath string
-	filesize int64
-	header   [headerSize]byte
-	crc      hash.Hash64
-
-	updateAofSize updateAofSizeFunc
-
-	storer     *Storer
+	mux        sync.RWMutex
+	dir        string
+	file       *os.File
+	left       int64
+	right      atomic.Int64
+	filepath   string
+	filesize   int64
+	header     [headerSize]byte
+	crc        hash.Hash64
 	logger     log.Logger
 	maxLogSize int64
+	observer   atomic.Pointer[Observer]
+	aofClosed  atomic.Bool
+	wait       usync.WaitCloser
 }
 
-func NewAofRotater(dir string, offset int64, storer *Storer, maxLogSize int64) (*AofRotater, error) {
+func NewAofRotater(dir string, offset int64, maxLogSize int64) (*AofRotater, error) {
 	w := new(AofRotater)
 	w.dir = dir
-	w.storer = storer
 	w.maxLogSize = maxLogSize
 	w.logger = log.WithLogger("[AofRotater] ")
+	w.wait = usync.NewWaitCloser(func(error) {
+		w.close()
+	})
+	var obr Observer = &observerProxy{}
+	w.observer.Store(&obr)
 	err := w.openFile(offset)
 	if err != nil {
 		return nil, err
@@ -124,16 +172,19 @@ func NewAofRotater(dir string, offset int64, storer *Storer, maxLogSize int64) (
 	return w, nil
 }
 
-type updateAofSizeFunc func(delta int64)
-
 func aofFilePath(dir string, offset int64) string {
 	return fmt.Sprintf("%s%c%d.aof", dir, os.PathSeparator, offset)
 }
 
+func (w *AofRotater) getObserver() Observer {
+	return *(w.observer.Load())
+}
+
 func (w *AofRotater) openFile(offset int64) error {
+
 	filepath := aofFilePath(w.dir, offset)
 	file, err := os.OpenFile(filepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
-	w.logger.Log(err, "openFile : %s, %v", filepath, err)
+	w.logger.Log(err, "new aof file : %s, %v", filepath, err)
 	if err != nil {
 		return err
 	}
@@ -154,7 +205,6 @@ func (w *AofRotater) openFile(offset int64) error {
 		return err
 	}
 
-	w.updateAofSize = w.storer.newAofCallBack(w.dir, offset)
 	w.file = file
 	w.filepath = filepath
 	w.left = offset
@@ -162,22 +212,31 @@ func (w *AofRotater) openFile(offset int64) error {
 	w.filesize = headerSize
 	w.header = fixHeader
 	w.crc = digest.New()
+	w.aofClosed.Store(false)
+
+	w.getObserver().Open(offset)
 
 	return nil
 }
 
-func (w *AofRotater) Write(buf []byte) error {
+func (w *AofRotater) write(buf []byte) error {
+	w.mux.Lock()
+	defer w.mux.Unlock()
+	if w.wait.IsClosed() { //fast path
+		return io.EOF
+	}
+
 	_, err := w.file.Write(buf)
 	if err != nil {
 		return err
 	}
 	w.crc.Write(buf) // error is always nil
-
-	w.updateAofSize(int64(len(buf)))
-	w.right.Add(int64(len(buf)))
 	w.filesize += int64(len(buf))
+	w.right.Add(int64(len(buf)))
+	w.getObserver().Write(int64(len(buf)))
+
 	if w.filesize > w.maxLogSize {
-		err = w.Close()
+		err = w.closeAof()
 		if err != nil {
 			return err
 		}
@@ -189,37 +248,52 @@ func (w *AofRotater) Write(buf []byte) error {
 	return w.file.Sync()
 }
 
-func (w *AofRotater) Right() int64 {
-	return w.right.Load()
+func (w *AofRotater) close() error {
+	w.mux.Lock()
+	defer w.mux.Unlock()
+	return w.closeAof()
 }
 
-func (w *AofRotater) Close() (err error) {
-	if w.file == nil {
-		return nil
-	}
+func (w *AofRotater) closeAof() error { // ensure close() and write() are in same thread
+	if w.aofClosed.CompareAndSwap(false, true) {
+		w.logger.Debugf("AofRotater.close : %d, %d", w.left, w.right.Load())
+		if w.file == nil {
+			return nil
+		}
 
-	if w.filesize == headerSize {
-		w.storer.delAof(w.dir, w.left, headerSize)
-		return nil
-	}
+		ret := func(err error) error {
+			err = errors.Join(err, w.file.Sync(), w.file.Close())
+			w.file = nil
+			return err
+		}
 
-	ret := func(err error) error {
-		return errors.Join(err, w.file.Sync(), w.file.Close())
-	}
+		if w.filesize == headerSize {
+			err := ret(nil)
+			w.getObserver().Close(w.left, int64(headerSize))
+			err = errors.Join(err, os.Remove(w.filepath))
+			if err != nil {
+				w.logger.Errorf("remove empty file : file(%s), error(%v)", w.filepath, err)
+			} else {
+				w.logger.Infof("remove empty file : file(%s)", w.filepath)
+			}
+			return nil
+		}
 
-	crc := w.crc.Sum64()
-	binary.LittleEndian.PutUint64(w.header[1:], crc)
-	binary.LittleEndian.PutUint32(w.header[1+8:], uint32(w.filesize-headerSize))
+		crc := w.crc.Sum64()
+		binary.LittleEndian.PutUint64(w.header[1:], crc)
+		binary.LittleEndian.PutUint32(w.header[1+8:], uint32(w.filesize-headerSize))
 
-	_, err = w.file.Seek(0, 0)
-	if err != nil {
-		return ret(err)
-	}
+		_, err := w.file.Seek(0, 0)
+		if err != nil {
+			return ret(err)
+		}
 
-	_, err = w.file.Write(w.header[:])
-	err = ret(err)
-	if err == nil {
-		w.storer.endAof(w.dir, w.left, w.filesize-headerSize)
+		_, err = w.file.Write(w.header[:])
+		err = ret(err)
+		if err == nil {
+			w.getObserver().Close(w.left, w.filesize-headerSize)
+		}
+		return err
 	}
-	return err
+	return nil
 }

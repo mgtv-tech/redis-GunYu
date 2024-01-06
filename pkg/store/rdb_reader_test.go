@@ -40,7 +40,7 @@ func (ts *rdbReaderTestSuite) TearDownSuite() {
 func (ts *rdbReaderTestSuite) isCorrupted(offset int64) error {
 	buf := make([]byte, len(ts.data))
 	writer := newNopWriteCloser(bytes.NewBuffer(buf))
-	reader, err := NewRdbReader(ts.storer, writer, ts.tempDir, offset, int64(len(ts.data)), true)
+	reader, err := NewRdbReader(writer, ts.tempDir, offset, int64(len(ts.data)), true)
 	if err == nil {
 		reader.Close()
 	}

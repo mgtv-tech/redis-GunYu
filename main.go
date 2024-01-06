@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 func main() {
@@ -32,6 +34,8 @@ func runCmd() error {
 		cmder = cmd.NewSyncerCmd()
 	case "rdb":
 		cmder = cmd.NewRdbCmd()
+	case "aof":
+		cmder = cmd.NewAofCmd()
 	default:
 		panicIfError(fmt.Errorf("does not support command(%s)", config.GetFlag().Cmd))
 	}
@@ -52,12 +56,17 @@ func handleSignal(c cmd.Cmd) {
 		switch sig {
 		case syscall.SIGPIPE:
 		default:
-			err := c.Stop()
-			if err != nil {
-				log.Errorf("cmd(%s) stopped with error : %v", c.Name(), err)
-			} else {
-				log.Infof("cmd(%s) is stopped", c.Name())
-			}
+			ctx, cancel := context.WithTimeout(context.Background(), config.Get().Server.GracefullStopTimeout)
+			defer cancel()
+
+			util.StopWithCtx(ctx, func() {
+				log.Infof("stop cmd(%s)", c.Name())
+				err := c.Stop()
+				if err != nil {
+					log.Errorf("cmd(%s) stopped with error : %v", c.Name(), err)
+				}
+			})
+
 			log.Sync()
 			os.Exit(0)
 			return

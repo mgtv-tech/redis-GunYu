@@ -8,22 +8,24 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
 
 type RdbWriter struct {
-	reader  io.Reader
-	writer  io.WriteCloser
-	rdbSize int64
-	offset  int64
-	left    int64
-	closed  atomic.Bool
-	fn      string
-	pumped  atomic.Int64
-	storer  *Storer
-	dir     string
+	mux      sync.RWMutex
+	reader   io.Reader
+	writer   *os.File
+	rdbSize  int64
+	offset   int64
+	left     int64
+	fn       string
+	pumped   atomic.Int64
+	observer atomic.Pointer[Observer]
+	dir      string
+	wait     usync.WaitCloser
 }
 
 type RdbFile struct {
@@ -69,14 +71,18 @@ func ParseRdbFile(name string, includeTmpRdb bool) *RdbFile {
 }
 
 // rdb name : sourceDir/$runId/$rdbDir/$offset_size.rdb
-func NewRdbWriter(storer *Storer, r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
+func NewRdbWriter(r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
 	s := &RdbWriter{
 		rdbSize: rdbSize,
 		reader:  r,
-		storer:  storer,
 		dir:     rdbDir,
 		left:    offset,
 	}
+	var obr Observer = &observerProxy{}
+	s.observer.Store(&obr)
+	s.wait = usync.NewWaitCloser(func(err error) {
+		s.close()
+	})
 
 	fn := fmt.Sprintf("%s%c%d_%d.rdb.tmp", rdbDir, os.PathSeparator, offset, rdbSize)
 	fd, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
@@ -89,59 +95,92 @@ func NewRdbWriter(storer *Storer, r io.Reader, rdbDir string, offset int64, rdbS
 	return s, nil
 }
 
-func (s *RdbWriter) Run(ctx context.Context) (err error) {
-	errCh := make(chan error)
+func (r *RdbWriter) SetObserver(obr Observer) {
+	r.observer.Store(&obr)
+}
 
-	usync.SafeGo(func() {
-		errCh <- s.ingest()
-	}, func(i interface{}) { errCh <- fmt.Errorf("panic : %v", i) })
-
+func (r *RdbWriter) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-	case err = <-errCh:
+		return nil
+	case <-r.wait.Context().Done():
+		return r.wait.Error()
 	}
+}
 
-	return errors.Join(err, s.close())
+func (rw *RdbWriter) Start() {
+	usync.SafeGo(func() {
+		err := rw.ingest()
+		rw.wait.Close(err)
+	}, func(i interface{}) {
+		rw.wait.Close(fmt.Errorf("panic : %v", i))
+	})
+}
+
+func (r *RdbWriter) Close() error {
+	r.wait.Close(nil)
+	return nil
 }
 
 func (s *RdbWriter) ingest() (err error) {
 	p := make([]byte, 8192)
 	var n int
 	rdbSize := s.rdbSize
-	for rdbSize != 0 && !s.closed.Load() {
+	for rdbSize != 0 && !s.wait.IsClosed() {
 		if int64(len(p)) > rdbSize {
 			p = p[:rdbSize]
 		}
 		n, err = s.reader.Read(p)
 		if n > 0 {
-			if _, err := s.writer.Write(p[:n]); err != nil {
+			if err = s.write(p[:n]); err != nil {
+				err = fmt.Errorf("rdb writer : file(%s), error(%w)", s.fn, err)
 				break
 			}
 			rdbSize -= int64(n)
-			s.offset += int64(n)
 		}
 		if err != nil {
+			err = fmt.Errorf("reader error : %w", err)
 			break
 		}
 		s.pumped.Store(s.rdbSize - rdbSize)
 	}
-	return
+	return err
 }
 
 func (s *RdbWriter) Offset() int64 {
 	return s.offset
 }
 
-func (s *RdbWriter) close() (err error) {
-	if s.closed.CompareAndSwap(false, true) {
-		s.storer.releaseRdbAof(s.dir, s.left, s.rdbSize, true)
-		err = s.writer.Close()
-		if s.pumped.Load() != s.rdbSize {
-			return errors.Join(err, os.Remove(s.fn)) // remove *.rdb.tmp file
-		} else {
-			dfn := strings.TrimSuffix(s.fn, ".tmp")
-			return errors.Join(err, os.Rename(s.fn, dfn)) // *.rdb.tmp -> *.rdb
-		}
+func (s *RdbWriter) write(buf []byte) error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	if s.wait.IsClosed() { //fast path
+		return io.EOF
 	}
-	return
+
+	if _, err := s.writer.Write(buf); err != nil {
+		return err
+	}
+	s.offset += int64(len(buf))
+	return nil
+}
+
+func (s *RdbWriter) close() error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	return s.closeRdb()
+}
+
+func (s *RdbWriter) closeRdb() (err error) {
+	err = s.writer.Close()
+	obr := s.observer.Load()
+	if s.pumped.Load() != s.rdbSize {
+		(*obr).Close(s.left, s.rdbSize, true)
+		return errors.Join(err, os.Remove(s.fn)) // remove *.rdb.tmp file
+	} else {
+		(*obr).Close(s.left, s.rdbSize, false)
+		dfn := strings.TrimSuffix(s.fn, ".tmp")
+		return errors.Join(err, os.Rename(s.fn, dfn)) // *.rdb.tmp -> *.rdb
+	}
 }

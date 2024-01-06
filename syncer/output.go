@@ -35,84 +35,74 @@ type Output interface {
 }
 
 type RedisOutput struct {
-	cfg       RedisOutputConfig
-	startDbId int
-	logger    log.Logger
-
-	sendCounter      metric.Counter
-	filterCounter    metric.Counter
-	sendSizeCounter  metric.Counter
-	failCounter      metric.Counter
-	succCounter      metric.Counter
-	fullSyncProgress metric.Gauge
-	sendOffsetGauge  metric.Gauge
-	ackOffsetGauge   metric.Gauge
+	Id              string
+	cfg             RedisOutputConfig
+	startDbId       int
+	logger          log.Logger
+	filterCounterRt atomic.Int64
+	sendCounterRt   atomic.Int64
 }
 
+var (
+	sendCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "send_cmd",
+		Labels:    []string{"id", "input"},
+	})
+	filterCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "filter_cmd",
+		Labels:    []string{"id", "input"},
+	})
+	sendSizeCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "send_size",
+		Labels:    []string{"id", "input"},
+	})
+	failCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "fail_cmd",
+		Labels:    []string{"id", "input"},
+	})
+	succCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "success_cmd",
+		Labels:    []string{"id", "input"},
+	})
+	fullSyncProgress = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "full_sync",
+		Labels:    []string{"id", "input"},
+	})
+	sendOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "send_offset",
+		Labels:    []string{"id", "input"},
+	})
+	ackOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "ack_offset",
+		Labels:    []string{"id", "input"},
+	})
+)
+
 func (ro *RedisOutput) Close() {
-	ro.sendCounter.Close()
-	ro.filterCounter.Close()
-	ro.sendSizeCounter.Close()
-	ro.failCounter.Close()
-	ro.succCounter.Close()
-	ro.fullSyncProgress.Close()
-	ro.sendOffsetGauge.Close()
-	ro.ackOffsetGauge.Close()
 }
 
 func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
-	labels := map[string]string{"id": strconv.Itoa(cfg.Id), "input": cfg.InputName}
+	//labels := map[string]string{"id": strconv.Itoa(cfg.Id), "input": cfg.InputName}
 	ro := &RedisOutput{
+		Id:     strconv.Itoa(cfg.Id),
 		cfg:    cfg,
 		logger: log.WithLogger(fmt.Sprintf("[RedisOutput(%d)] ", cfg.Id)),
-		sendCounter: metric.NewCounter(metric.CounterOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "send_cmd",
-			ConstLabels: labels,
-		}),
-		filterCounter: metric.NewCounter(metric.CounterOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "filter_cmd",
-			ConstLabels: labels,
-		}),
-		sendSizeCounter: metric.NewCounter(metric.CounterOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "send_size",
-			ConstLabels: labels,
-		}),
-		failCounter: metric.NewCounter(metric.CounterOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "fail_cmd",
-			ConstLabels: labels,
-		}),
-		succCounter: metric.NewCounter(metric.CounterOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "success_cmd",
-			ConstLabels: labels,
-		}),
-		fullSyncProgress: metric.NewGauge(metric.GaugeOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "full_sync",
-			ConstLabels: labels,
-		}),
-		sendOffsetGauge: metric.NewGauge(metric.GaugeOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "send_offset",
-			ConstLabels: labels,
-		}),
-		ackOffsetGauge: metric.NewGauge(metric.GaugeOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "output",
-			Name:        "ack_offset",
-			ConstLabels: labels,
-		}),
 	}
 	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
@@ -196,6 +186,16 @@ func (ro *RedisOutput) SendAof(ctx context.Context, reader *store.Reader) error 
 	return err
 }
 
+func (ro *RedisOutput) sendCounterAdd(v uint) {
+	sendCounter.Add(float64(v), ro.Id, ro.cfg.InputName)
+	ro.sendCounterRt.Add(int64(v))
+}
+
+func (ro *RedisOutput) filterCounterAdd(v uint) {
+	filterCounter.Add(float64(v), ro.Id, ro.cfg.InputName)
+	ro.filterCounterRt.Add(int64(v))
+}
+
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
 	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 
@@ -215,9 +215,9 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 			}
 
 			rByte := readBytes.Load()
-			ro.logger.Infof("sync rdb process : total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
-				nsize, rByte, 100*rByte/nsize, ro.sendCounter.Value(), ro.filterCounter.Value())
-			ro.fullSyncProgress.Set(100 * float64(rByte) / float64(nsize))
+			ro.logger.Infof("sync rdb process : total(%d), read(%d), progress(%3d%%), keys(%f), filtered(%f)",
+				nsize, rByte, 100*rByte/nsize, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
+			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.Id, ro.cfg.InputName)
 		}
 		//ro.logger.Infof("sync rdb done")
 	}
@@ -293,9 +293,9 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 			}
 
 			if filterOut {
-				ro.filterCounter.Add(1)
+				ro.filterCounterAdd(1)
 			} else {
-				ro.sendCounter.Add(1)
+				ro.sendCounterAdd(1)
 				err := rdbrestore.RestoreRdbEntry(cli, e) // @TODO retry
 				if err != nil {
 					ro.logger.Errorf("restore rdb error : entry(%v), err(%v)", e, err)
@@ -395,13 +395,13 @@ func (ro *RedisOutput) receiveReply(cli client.Redis) error {
 	_, err := cli.Receive()
 	if err != nil {
 		ro.logger.Errorf("output reply error : redis(%v), err(%v)", cli.Addresses(), err)
-		ro.failCounter.Inc()
+		failCounter.Inc(ro.Id, ro.cfg.InputName)
 		if net.CheckHandleNetError(err) {
 			return fmt.Errorf("network error : %w", err)
 		}
 		return fmt.Errorf("reply error : %w", err)
 	}
-	ro.succCounter.Inc()
+	succCounter.Inc(ro.Id, ro.cfg.InputName)
 	return nil
 }
 
@@ -424,10 +424,6 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 	}
 
 	decoder := client.NewDecoder(reader)
-
-	filterStatIncr := func() {
-		ro.filterCounter.Add(1)
-	}
 
 	for !replayQuit.IsClosed() {
 		ignoresentinel := false
@@ -470,14 +466,14 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 			}
 
 			if bypass || ignoreCmd || ignoresentinel {
-				filterStatIncr()
+				ro.filterCounterAdd(1)
 				continue
 			}
 		}
 
 		newArgv, reject = filter.HandleFilterKeyWithCommand(sCmd, argv)
 		if bypass || reject {
-			filterStatIncr()
+			ro.filterCounterAdd(1)
 			continue
 		}
 
@@ -491,7 +487,7 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 					Db:     currentDB,
 				}
 			} else {
-				filterStatIncr()
+				ro.filterCounterAdd(1)
 			}
 			continue
 		}
@@ -589,7 +585,7 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, runId string, sendB
 					replayWait.Close(err)
 					return
 				}
-				ro.ackOffsetGauge.Set(float64(offset))
+				ackOffsetGauge.Set(float64(offset), ro.Id, ro.cfg.InputName)
 				repliedOffset.Store(offset)
 			case <-updateCpTicker.C:
 				err = updateCp()
@@ -615,14 +611,14 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, runId string, sendB
 				return err
 			}
 
-			ro.sendOffsetGauge.Set(float64(item.Offset))
+			sendOffsetGauge.Set(float64(item.Offset), ro.Id, ro.cfg.InputName)
 			sendOffsetChan <- item.Offset
 			length := len(item.Cmd)
 			for i := range item.Args {
 				length += len(item.Args[i].([]byte))
 			}
-			ro.sendCounter.Add(1)
-			ro.sendSizeCounter.Add(float64(length))
+			ro.sendCounterAdd(1)
+			sendSizeCounter.Add(float64(length), ro.Id, ro.cfg.InputName)
 		case <-replayWait.Done():
 			return nil
 		}
@@ -685,10 +681,10 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, runId 
 			if err := conn.Send(ce.Cmd, ce.Args...); err != nil {
 				return handleDirectError(fmt.Errorf("send cmd error : cmd(%s), args(%v), error(%v)", ce.Cmd, ce.Args, err))
 			}
-			ro.sendOffsetGauge.Set(float64(ce.Offset))
+			sendOffsetGauge.Set(float64(ce.Offset), ro.Id, ro.cfg.InputName)
 		}
-		ro.sendCounter.Add(float64(queuedCmdCount))
-		ro.sendSizeCounter.Add(float64(queuedByteSize))
+		ro.sendCounterAdd(queuedCmdCount)
+		sendSizeCounter.Add(float64(queuedByteSize), ro.Id, ro.cfg.InputName)
 
 		if needBatch {
 			if shouldUpdateCP {
@@ -716,7 +712,7 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, runId 
 		if err := conn.Flush(); err != nil {
 			return handleDirectError(fmt.Errorf("flush error : %w", err))
 		}
-		ro.ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset))
+		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.Id, ro.cfg.InputName)
 
 		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid to occupy huge memory
 			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
