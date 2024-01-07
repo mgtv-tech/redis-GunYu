@@ -26,7 +26,7 @@ func (ts *rdbReaderTestSuite) SetupSuite() {
 	dir, err := os.MkdirTemp("", "test_aof_reader")
 	ts.Nil(err)
 	ts.tempDir = dir
-	ts.storer = NewStorer(ts.tempDir, 100*1024, 100000000)
+	ts.storer = NewStorer(1, ts.tempDir, 100*1024, 100000000)
 	data, err := hex.DecodeString(`524544495330303130fa0972656469732d76657205372e302e31fa0a72656469732d62697473c040fa056374696d65c233068065fa08757365642d6d656dc2e0241400fa08616f662d62617365c000fe00fb0101fcd8bd197c8c010000000a737472696e745f74746c0a737472696e745f74746cff71376f88c87a56e1`)
 	ts.Nil(err)
 	ts.data = []byte(data)

@@ -21,6 +21,10 @@ import (
 )
 
 var (
+	// @TODO
+	// only syncer errors
+	//
+	//
 	// first level
 	// break loop
 	ErrBreak = errors.New("break")
@@ -32,10 +36,12 @@ var (
 	// quit process
 	ErrQuit = fmt.Errorf("%w %s", ErrBreak, "quit")
 	// restart command
-	ErrRestart              = fmt.Errorf("%w %s", ErrBreak, "restart")
+	ErrRestart = fmt.Errorf("%w %s", ErrBreak, "restart")
+	// restart all syncers
 	ErrRedisTypologyChanged = fmt.Errorf("%w %s", ErrBreak, "redis typology is changed")
-	ErrLeaderHandover       = fmt.Errorf("%w %s", ErrRole, "hand over leadership")
-	ErrLeaderTakeover       = fmt.Errorf("%w %s", ErrRole, "take over leadership")
+	// leadership
+	ErrLeaderHandover = fmt.Errorf("%w %s", ErrRole, "hand over leadership")
+	ErrLeaderTakeover = fmt.Errorf("%w %s", ErrRole, "take over leadership")
 )
 
 type SyncerConfig struct {
@@ -60,9 +66,10 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 		logger: log.WithLogger(fmt.Sprintf("[syncer(%d)] ", cfg.Id)),
 	}
 	sy.channel = NewStoreChannel(StorerConf{
-		Dir:     config.Get().Channel.Storer.DirPath,
-		MaxSize: config.Get().Channel.Storer.MaxSize,
-		LogSize: config.Get().Channel.Storer.LogSize,
+		Id:      cfg.Id,
+		Dir:     cfg.Channel.Storer.DirPath,
+		MaxSize: cfg.Channel.Storer.MaxSize,
+		LogSize: cfg.Channel.Storer.LogSize,
 	})
 	sy.wait = usync.NewWaitCloser(nil)
 	return sy
@@ -152,7 +159,6 @@ func (s *syncer) RunLeader() error {
 	leader := NewReplicaLeader(input, s.channel)
 	s.input = input
 	s.leader = leader
-	s.logger.Infof("set leader : %p", leader)
 	channel := s.channel
 	s.mux.Unlock()
 

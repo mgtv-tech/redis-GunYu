@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/ikenchina/redis-GunYu/config"
@@ -31,10 +32,10 @@ type StoreChannel struct {
 }
 
 func NewStoreChannel(cfg StorerConf) *StoreChannel {
-	storer := store.NewStorer(cfg.Dir, cfg.MaxSize, cfg.LogSize)
+	storer := store.NewStorer(cfg.Id, cfg.Dir, cfg.MaxSize, cfg.LogSize)
 	return &StoreChannel{
 		storer: storer,
-		logger: log.WithLogger("[StoreChannel] "),
+		logger: log.WithLogger(fmt.Sprintf("[StoreChannel(%d)] ", cfg.Id)),
 	}
 }
 

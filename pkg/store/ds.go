@@ -342,9 +342,8 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 	size := int64(0)
 
 	rdb := ra.rdb
-	if rdb != nil {
-		size += rdb.rdbSize
-	}
+
+	// from newest to oldest
 
 	// iterate AOF files first
 	aofLast := len(ra.aofSegs) - 1
@@ -358,6 +357,7 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 	ref0 := true
 
 	if rdb != nil {
+		size += rdb.rdbSize
 		rdb.mux.Lock()
 		if size > maxSize {
 			if rdb.rwRef.Load() == 0 {
@@ -371,6 +371,8 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 				ra.rdb = nil
 			} else {
 				ref0 = false
+				log.Warnf("storage size exceeds limitation, but rdb reference is not zero : size(%d), maxSize(%d), rdb(%d)",
+					size, maxSize, rdb.left)
 			}
 		}
 		rdb.mux.Unlock()

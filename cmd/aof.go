@@ -69,7 +69,7 @@ func (rc *AofCmd) Parse() {
 		size = fi.Size() - headerSize
 	}
 	if start < left {
-		return
+		start = left
 	}
 
 	file, err := os.OpenFile(aofPath, os.O_RDONLY, 0777)
@@ -80,7 +80,7 @@ func (rc *AofCmd) Parse() {
 		util.PanicIfErr(err)
 	}
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, 1024*4)
 	for size > 0 {
 		n, err := file.Read(buf)
 		if err != nil {
@@ -89,10 +89,10 @@ func (rc *AofCmd) Parse() {
 			}
 			util.PanicIfErr(err)
 		}
-		if size < 2048 {
-			fmt.Print(string(buf[:n]))
+		if n > int(size) {
+			n = int(size)
 		}
-
+		fmt.Print(string(buf[:n]))
 		size -= int64(n)
 	}
 }
@@ -109,5 +109,4 @@ func (rc *AofCmd) Verify() {
 	} else {
 		fmt.Printf("aof verify success")
 	}
-
 }

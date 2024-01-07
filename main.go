@@ -8,18 +8,19 @@ import (
 	"os/signal"
 	"syscall"
 
-	_ "go.uber.org/automaxprocs"
+	"go.uber.org/automaxprocs/maxprocs"
 
 	"github.com/ikenchina/redis-GunYu/cmd"
 	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/ikenchina/redis-GunYu/pkg/sync"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 func main() {
+	maxprocs.Set()
 	panicIfError(config.LoadFlags())
 	panicIfError(runCmd())
 }
@@ -40,7 +41,7 @@ func runCmd() error {
 		panicIfError(fmt.Errorf("does not support command(%s)", config.GetFlag().Cmd))
 	}
 
-	usync.SafeGo(func() {
+	sync.SafeGo(func() {
 		handleSignal(cmder)
 	}, nil)
 

@@ -60,7 +60,6 @@ func (sc *SyncerCmd) Name() string {
 	return "redis.syncer"
 }
 
-// Stop only notify stop Run function
 func (sc *SyncerCmd) Stop() error {
 	sc.logger.Infof("stopped")
 	sc.waitCloser.Close(nil)
@@ -84,7 +83,7 @@ func (sc *SyncerCmd) Run() error {
 	for {
 		err = sc.run()
 		if sc.waitCloser.IsClosed() {
-			return sc.waitCloser.Error()
+			break
 		}
 		if errors.Is(err, syncer.ErrQuit) {
 			break
@@ -121,10 +120,10 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 
 	// 1. standalone <-> standalone  ==> multi/exec
 	// 2. cluster    <-> standalone  ==> multi/exec, monitor typology
-	// 3. standalone <-> cluster     ==> set checkpoint periodically
+	// 3. standalone <-> cluster     ==> update checkpoint periodically
 	// 4. cluster    <-> cluster     ==> monitor typology
-	//		4.1 slots are match, multi/exec
-	//		4.2 slots arenot match, set checkpoint periodically
+	//		4.1 slots are matched, multi/exec
+	//		4.2 slots arenot matched, update checkpoint periodically
 	// 5. cluster : if cluster
 
 	syncFrom := config.Get().Input.SyncFrom
@@ -135,7 +134,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 		if inputRedis.IsStanalone() {
 			// @TODO auto sharding
 			if len(inputRedis.Addresses) != len(outputRedis.Addresses) {
-				err = errors.Join(syncer.ErrQuit, fmt.Errorf("amount of input redis does not equal output redis : %d != %d",
+				err = errors.Join(syncer.ErrQuit, fmt.Errorf("the amount of input redis does not equal output redis : %d != %d",
 					len(inputRedis.Addresses), len(outputRedis.Addresses)))
 				sc.logger.Errorf("%v", err)
 				return
@@ -147,7 +146,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 					CanTransaction: true,
 					Output:         outputRedis.Index(i),
 					Input:          source,
-					Channel:        *config.Get().Channel,
+					Channel:        *config.Get().Channel.Clone(),
 				})
 			}
 		} else if inputRedis.IsCluster() {
@@ -169,7 +168,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 					CanTransaction: true,
 					Output:         *outputRedis,
 					Input:          source,
-					Channel:        *config.Get().Channel,
+					Channel:        *config.Get().Channel.Clone(),
 				})
 			}
 			// monitor typology, if changed, restart syncer
@@ -180,7 +179,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			return
 		}
 	} else if outputRedis.IsCluster() {
-		if inputRedis.IsStanalone() { // standalone <-> cluster     ==> multi/exec or set periodically
+		if inputRedis.IsStanalone() { // standalone <-> cluster     ==> multi/exec or update periodically
 			inputs := inputRedis.SelNodes(false, syncFrom)
 			for i, source := range inputs {
 				cfgs = append(cfgs, syncer.SyncerConfig{
@@ -188,10 +187,10 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 					CanTransaction: false,
 					Output:         *outputRedis,
 					Input:          source,
-					Channel:        *config.Get().Channel,
+					Channel:        *config.Get().Channel.Clone(),
 				})
 			}
-		} else if inputRedis.IsCluster() { // cluster    <-> cluster     ==> dynamical : multi/exec or set periodically
+		} else if inputRedis.IsCluster() { // cluster    <-> cluster     ==> dynamical : multi/exec or update periodically
 			watchInput = true
 			// @TODO for static mode(InputMode), just need to check slots
 			if len(inputRedis.GetClusterShards()) == len(outputRedis.GetClusterShards()) &&
@@ -199,15 +198,12 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 				inputRedis.GetAllSlots().Equal(outputRedis.GetAllSlots()) {
 
 				var inputs, outputs []config.RedisConfig
-				if inputMode == config.InputModeStatic {
-					inputs = inputRedis.SelNodes(false, syncFrom)
-					outputs = outputRedis.SelNodes(false, config.SelNodeStrategyMaster)
-				} else {
-					inputs = inputRedis.SelNodes(true, syncFrom)
-					outputs = outputRedis.SelNodes(true, config.SelNodeStrategyMaster)
-				}
+				staticMode := inputMode == config.InputModeStatic
+				inputs = inputRedis.SelNodes(!staticMode, syncFrom)
+				outputs = outputRedis.SelNodes(!staticMode, config.SelNodeStrategyMaster)
 
 				sortedOut := []config.RedisConfig{}
+				// sort slots
 				for i, in := range inputs {
 					inSlots := in.GetAllSlots()
 					for _, out := range outputs {
@@ -226,9 +222,9 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 						cfgs = append(cfgs, syncer.SyncerConfig{
 							Id:             i,
 							CanTransaction: true,
-							Output:         sortedOut[i], // @TODO output是用cluster客户端还是standalone客户端？
+							Output:         sortedOut[i], // @TODO cluster mode or stadalone mode?
 							Input:          source,
-							Channel:        *config.Get().Channel,
+							Channel:        *config.Get().Channel.Clone(),
 						})
 					}
 				} else {
@@ -239,7 +235,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 							CanTransaction: false,
 							Output:         *outputRedis,
 							Input:          source,
-							Channel:        *config.Get().Channel,
+							Channel:        *config.Get().Channel.Clone(),
 						})
 					}
 				}
@@ -259,7 +255,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 						CanTransaction: false,
 						Output:         *outputRedis,
 						Input:          source,
-						Channel:        *config.Get().Channel,
+						Channel:        *config.Get().Channel.Clone(),
 					})
 				}
 			}
@@ -270,6 +266,14 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 		}
 		watchOutput = true
 	}
+
+	if len(cfgs) > 0 {
+		maxSize := config.Get().Channel.Storer.MaxSize / int64(len(cfgs))
+		for i := 0; i < len(cfgs); i++ {
+			cfgs[i].Channel.Storer.MaxSize = maxSize
+		}
+	}
+
 	return
 }
 
@@ -309,7 +313,7 @@ func (sc *SyncerCmd) run() error {
 		return err
 	}
 
-	// monitor the typologies of redis
+	// monitor the typology of redis
 	if watchIn {
 		sc.checkTypology(sc.runWait, *config.Get().Input.Redis)
 	}
@@ -321,6 +325,7 @@ func (sc *SyncerCmd) run() error {
 	if config.Get().Cluster == nil {
 		sc.runSingle(sc.runWait, cfgs)
 	} else {
+		// all syncers share one lease
 		cli, err := cluster.NewCluster(sc.runWait.Context(), *config.Get().Cluster.MetaEtcd)
 		if err != nil {
 			sc.runWait.Close(err)
@@ -416,9 +421,9 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 					terr := elect.Resign(ctx)
 					if terr != nil {
 						err = errors.Join(err, terr, syncer.ErrBreak)
-						sc.logger.Errorf("resign leadership error : %v", terr)
+						sc.logger.Errorf("resign leadership : input(%s), error(%v)", cfg.Input.Address(), terr)
 					} else {
-						sc.logger.Infof("resign leadership")
+						sc.logger.Infof("resign leadership : input(%s)", cfg.Input.Address())
 					}
 					cancel()
 				}
@@ -508,9 +513,15 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 }
 
 func (sc *SyncerCmd) cron() {
+	stale := config.Get().Channel.StaleCheckpointDuration
+	stale = stale / 2
+	if stale < time.Minute*5 {
+		stale = time.Minute * 5
+	}
 
-	util.CronWithCtx(sc.waitCloser.Context(), time.Hour*5, sc.legacyCheckpoint)
+	util.CronWithCtx(sc.waitCloser.Context(), stale, sc.gcStaleCheckpoint)
 
+	usync.SafeGo(func() { sc.storageSize() }, nil)
 	util.CronWithCtx(sc.waitCloser.Context(), time.Minute, sc.storageSize)
 }
 
@@ -519,6 +530,11 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "storage",
 		Name:      "size",
+	})
+	storerRatioGauge = metric.NewGauge(metric.GaugeOpts{
+		Namespace: config.AppName,
+		Subsystem: "storage",
+		Name:      "ratio",
 	})
 )
 
@@ -532,11 +548,12 @@ func (sc *SyncerCmd) storageSize() {
 		sc.logger.Errorf("%v", err)
 	} else {
 		storerSizeGauge.Set(float64(size))
+		storerRatioGauge.Set(float64(size) / float64(config.Get().Channel.Storer.MaxSize))
 	}
 }
 
-func (sc *SyncerCmd) legacyCheckpoint() {
-	sc.logger.Infof("gc legacy checkpoints...")
+func (sc *SyncerCmd) gcStaleCheckpoint() {
+	sc.logger.Debugf("gc stale checkpoints...")
 
 	// masters and slaves
 	inputs := config.Get().Input.Redis.SelNodes(true, config.SelNodeStrategyMaster)
@@ -562,7 +579,7 @@ func (sc *SyncerCmd) legacyCheckpoint() {
 		cli.Close()
 	}
 
-	gc := func(cli client.Redis) {
+	gcStaleCp := func(cli client.Redis) {
 		data, err := checkpoint.GetAllCheckpointHash(cli)
 		if err != nil {
 			sc.logger.Errorf("get checkpoint from hash error : redis(%v), err(%v)", cli.Addresses(), err)
@@ -572,16 +589,17 @@ func (sc *SyncerCmd) legacyCheckpoint() {
 			sc.logger.Errorf("the number of values of checkpoint hash is not even : addr(%v)", data)
 			return
 		}
-		for i := 0; i < len(data)-1; i++ {
+		for i := 0; i < len(data)-1; i += 2 {
 			runId := data[i]
 			cpn := data[i+1]
 			_, exist := runIdMap[runId]
 
 			// run id maybe obsolete or a new run id
-			// delete stale checkpoints that have not been updated in the last 24 hours
-			total, deleted, err := checkpoint.DelStaleCheckpoint(cli, cpn, runId, time.Hour*24*10, exist)
-			sc.logger.Log(err, "delete stale checkpoint : cpName(%s), runId(%s), total(%d), deleted(%d), err(%v)", cpn, runId, total, deleted, err)
-
+			// delete stale checkpoints that have not been updated in the last 12 hours
+			total, deleted, err := checkpoint.DelStaleCheckpoint(cli, cpn, runId, config.Get().Channel.StaleCheckpointDuration, exist)
+			if err != nil {
+				sc.logger.Errorf("DelStaleCheckpoint : cp(%s), runId(%s), error(%v)", cpn, runId, err)
+			}
 			if !exist && total == deleted {
 				err = checkpoint.DelCheckpointHash(cli, runId)
 				sc.logger.Log(err, "delete runId from checkpoint hash error : runId(%s), err(%v)", runId, err)
@@ -595,7 +613,7 @@ func (sc *SyncerCmd) legacyCheckpoint() {
 			sc.logger.Errorf("new redis error : addr(%s), err(%v)", config.Get().Output.Redis.Address(), err)
 			return
 		}
-		gc(cli)
+		gcStaleCp(cli)
 		cli.Close()
 	} else if config.Get().Output.Redis.Type == config.RedisTypeStandalone {
 		outputs := config.Get().Output.Redis.SelNodes(true, config.SelNodeStrategyMaster)
@@ -604,11 +622,12 @@ func (sc *SyncerCmd) legacyCheckpoint() {
 			if err != nil {
 				return
 			}
-			gc(cli)
+			gcStaleCp(cli)
 			cli.Close()
 		}
 	}
 
+	// @TODO maxSize
 	gcStaleStorer := func() {
 		dirPath := config.Get().Channel.Storer.DirPath
 		entries, err := os.ReadDir(dirPath)
@@ -629,9 +648,13 @@ func (sc *SyncerCmd) legacyCheckpoint() {
 				sc.logger.Errorf("GetDirectorySize : path(%s), error(%v)", path, err)
 				continue
 			}
-			if time.Since(modTime) > 5*time.Hour {
-				sc.logger.Infof("remove the directory of run id : path(%s), modTime(%s), size(%d)", path, modTime, size)
-				os.RemoveAll(path)
+			if time.Since(modTime) > config.Get().Channel.StaleCheckpointDuration {
+				err := os.RemoveAll(path)
+				if err != nil {
+					sc.logger.Errorf("remove the directory of run id : path(%s), modTime(%s), size(%d), error(%v)", path, modTime, size, err)
+				} else {
+					sc.logger.Infof("remove the directory of run id : path(%s), modTime(%s), size(%d)", path, modTime, size)
+				}
 			}
 		}
 	}
@@ -700,13 +723,11 @@ func (sc *SyncerCmd) diffTypology(preShards []*config.RedisClusterShard, redisCf
 //     @TODO if slots are changed, then checkpoint is changed
 //  4. slots distribution : restart syncers
 func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser, redisCfg config.RedisConfig) {
-
 	preShards := redisCfg.GetClusterShards()
 
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
-
 		interval := time.Duration(config.Get().Server.CheckRedisTypologyTicker) * time.Second
 		ticker := time.NewTicker(interval)
 		sc.logger.Infof("cronjob, check typology of redis cluster : redis(%s), ticker(%s)", redisCfg.Address(), interval.String())
@@ -741,6 +762,9 @@ func (sc *SyncerCmd) startHttpServer() {
 	router.Handler(http.MethodGet, "/prometheus", promhttp.Handler())
 	router.HandlerFunc(http.MethodDelete, "/", func(w http.ResponseWriter, r *http.Request) {
 		sc.Stop()
+	})
+	router.HandlerFunc(http.MethodGet, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
+		sc.gcStaleCheckpoint()
 	})
 
 	sc.httpSvr = &http.Server{

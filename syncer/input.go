@@ -78,6 +78,7 @@ type RedisInput struct {
 }
 
 type StorerConf struct {
+	Id      int
 	Dir     string
 	MaxSize int64
 	LogSize int64

@@ -10,7 +10,8 @@ input:
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster2
-    maxSize: 6291456000
+    maxSize: 1073741824
+  staleCheckpointDuration: 10m
 output:
   redis:
     addresses: [127.0.0.1:6310]

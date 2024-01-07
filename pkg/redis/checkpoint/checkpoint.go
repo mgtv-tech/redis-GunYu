@@ -331,6 +331,7 @@ func DelStaleCheckpoint(cli client.Redis, checkpointName string, runId string, b
 		if _, err := cli.Do("hdel", checkpointName, cpi.RunIdKey(), cpi.OffsetKey(), cpi.VersionKey(), cpi.MTimeKey()); err != nil {
 			return len(dbs), deleted, err
 		} else {
+			deleted++
 			log.Infof("del lagacy checkpoint : db(%d), checkpoint(%+v)", db, cpi)
 		}
 	}

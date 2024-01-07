@@ -130,7 +130,7 @@ func (ic *InputConfig) fix() error {
 	}
 	ic.rdbParallelLimiter = make(chan struct{}, ic.RdbParallel)
 	if ic.SyncFrom == 0 {
-		ic.SyncFrom = SelNodeStrategyMaster
+		ic.SyncFrom = SelNodeStrategyPreferSlave
 	}
 	return nil
 }
@@ -140,13 +140,29 @@ func (ic *InputConfig) RdbLimiter() chan struct{} {
 }
 
 type ChannelConfig struct {
-	Storer    *StorerConfig
-	VerifyCrc bool
+	Storer                  *StorerConfig
+	VerifyCrc               bool
+	StaleCheckpointDuration time.Duration `yaml:"staleCheckpointDuration"`
+}
+
+func (cc *ChannelConfig) Clone() *ChannelConfig {
+	storer := *cc.Storer
+	return &ChannelConfig{
+		VerifyCrc:               cc.VerifyCrc,
+		StaleCheckpointDuration: staleCheckpointDuration,
+		Storer:                  &storer,
+	}
 }
 
 func (cc *ChannelConfig) fix() error {
 	if cc.Storer == nil {
 		return newConfigError("channel.storer is nil")
+	}
+	if cc.StaleCheckpointDuration == 0 {
+		cc.StaleCheckpointDuration = staleCheckpointDuration
+	}
+	if cc.StaleCheckpointDuration < time.Minute*5 {
+		cc.StaleCheckpointDuration = time.Minute * 5
 	}
 	return cc.Storer.fix()
 }
@@ -557,6 +573,7 @@ func (rc *RedisConfig) SelNodes(allShards bool, sel SelNodeStrategy) []RedisConf
 			}
 		} else {
 			selectedShards := make(map[int]struct{})
+			// select proper node by configured addresses
 			for _, addr := range rc.Addresses {
 				var mshard *RedisClusterShard
 				for _, shard := range rc.shards {

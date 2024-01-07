@@ -35,6 +35,9 @@ const (
 
 	CheckpointKey        = "redis-gunyu-checkpoint"
 	CheckpointKeyHashKey = "redis-gunyu-checkpoint-hash"
+
+	// stale checkpoints that have not been updated in the last 12 hours
+	staleCheckpointDuration = time.Hour * 12
 )
 
 type RedisRole int

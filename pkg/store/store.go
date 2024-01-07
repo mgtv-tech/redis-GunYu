@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 )
 
 type Storer struct {
+	Id          int
 	mux         sync.RWMutex // private functions aren't thread safe
 	baseDir     string       // storage directory
 	dir         string       // baseDir + runId
@@ -30,14 +32,15 @@ type Storer struct {
 	logger      log.Logger
 }
 
-func NewStorer(baseDir string, maxSize, logSize int64) *Storer {
+func NewStorer(id int, baseDir string, maxSize, logSize int64) *Storer {
 	ss := &Storer{
+		Id:          id,
 		baseDir:     baseDir,
 		maxSize:     maxSize,
 		logSize:     logSize,
 		readBufSize: 10 * 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
-		logger:      log.WithLogger("[Storer] "),
+		logger:      log.WithLogger(fmt.Sprintf("[Storer(%d)] ", id)),
 		dataSet:     &dataSet{},
 	}
 
@@ -162,7 +165,7 @@ func (s *Storer) DelRunId(id string) error {
 }
 
 func (s *Storer) resetDataSet() {
-	s.logger.Infof("Storer reset dataset : %s", s.dir)
+	s.logger.Debugf("Storer reset dataset : %s", s.dir)
 
 	s.dataSetMux.Lock()
 	defer s.dataSetMux.Unlock()
