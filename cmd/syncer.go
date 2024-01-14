@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	"sync"
@@ -75,7 +75,7 @@ func (sc *SyncerCmd) stop() {
 func (sc *SyncerCmd) Run() error {
 	defer sc.stop()
 
-	sc.cron()
+	sc.startCron()
 	sc.startGrpcServer()
 	sc.startHttpServer()
 	var err error
@@ -512,7 +512,7 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 	}
 }
 
-func (sc *SyncerCmd) cron() {
+func (sc *SyncerCmd) startCron() {
 	stale := config.Get().Channel.StaleCheckpointDuration
 	stale = stale / 2
 	if stale < time.Minute*5 {
@@ -766,6 +766,17 @@ func (sc *SyncerCmd) startHttpServer() {
 	router.HandlerFunc(http.MethodGet, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
 		sc.gcStaleCheckpoint()
 	})
+
+	router.HandlerFunc(http.MethodGet, "/debug/pprof/", pprof.Index)
+	router.HandlerFunc(http.MethodGet, "/debug/pprof/cmdline", pprof.Cmdline)
+	router.HandlerFunc(http.MethodGet, "/debug/pprof/profile", pprof.Profile)
+	router.HandlerFunc(http.MethodGet, "/debug/pprof/symbol", pprof.Symbol)
+	router.HandlerFunc(http.MethodGet, "/debug/pprof/trace", pprof.Trace)
+	router.Handler(http.MethodGet, "/debug/pprof/allocs", pprof.Handler("allocs"))
+	router.Handler(http.MethodGet, "/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	router.Handler(http.MethodGet, "/debug/pprof/heap", pprof.Handler("heap"))
+	router.Handler(http.MethodGet, "/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
+	router.Handler(http.MethodGet, "/debug/pprof/block", pprof.Handler("block"))
 
 	sc.httpSvr = &http.Server{
 		Addr:    listen,

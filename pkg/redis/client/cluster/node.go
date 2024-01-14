@@ -16,12 +16,12 @@
 package redis
 
 import (
+	"bufio"
+	"container/list"
 	"fmt"
 	"net"
 	"sync"
 	"time"
-	"bufio"
-	"container/list"
 )
 
 type redisNode struct {
@@ -110,7 +110,7 @@ func (node *redisNode) releaseConn(conn *redisConn) {
 	defer node.mutex.Unlock()
 
 	// Connection still has pending replies, just close it.
-	if conn.pending > 0 || node.closed {
+	if conn.pending.Load() > 0 || node.closed {
 		conn.shutdown()
 		return
 	}

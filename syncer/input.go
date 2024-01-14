@@ -82,6 +82,7 @@ type StorerConf struct {
 	Dir     string
 	MaxSize int64
 	LogSize int64
+	flush   config.FlushPolicy
 }
 
 func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {

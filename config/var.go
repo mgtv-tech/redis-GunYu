@@ -303,3 +303,10 @@ func (rc *ReplicaConfig) fix() error {
 func newConfigError(format string, args ...interface{}) error {
 	return errors.Join(ErrInvalidConfig, fmt.Errorf(format, args...))
 }
+
+type FlushPolicy struct {
+	Duration   time.Duration
+	EveryWrite bool
+	DirtySize  int64
+	Auto       bool
+}

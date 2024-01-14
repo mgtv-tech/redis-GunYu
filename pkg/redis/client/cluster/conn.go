@@ -35,7 +35,7 @@ type redisConn struct {
 
 	// Pending replies to be read in redis pipeling.
 	// pending int
-	pending int32
+	pending atomic.Int32
 
 	// Scratch space for formatting argument length.
 	lenScratch [32]byte
@@ -73,10 +73,7 @@ func (conn *redisConn) shutdown() {
 }
 
 func (conn *redisConn) send(cmd string, args ...interface{}) error {
-	// this is a bug because send() and receive() maybe run in two different threads.
-	// so this must be the atomic.
-	// conn.pending += 1
-	atomic.AddInt32(&conn.pending, 1)
+	conn.pending.Add(1)
 
 	if conn.writeTimeout > 0 {
 		conn.c.SetWriteDeadline(time.Now().Add(conn.writeTimeout))
@@ -106,12 +103,11 @@ func (conn *redisConn) receive() (interface{}, error) {
 		conn.c.SetWriteDeadline(time.Now().Add(conn.readTimeout))
 	}
 
-	if atomic.LoadInt32(&conn.pending) <= 0 {
+	if conn.pending.Load() <= 0 {
 		return nil, errors.New("no more pending reply")
 	}
 
-	// conn.pending -= 1
-	atomic.AddInt32(&conn.pending, -1)
+	conn.pending.Add(-1)
 
 	return conn.readReply()
 }

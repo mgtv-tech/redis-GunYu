@@ -70,6 +70,7 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 		Dir:     cfg.Channel.Storer.DirPath,
 		MaxSize: cfg.Channel.Storer.MaxSize,
 		LogSize: cfg.Channel.Storer.LogSize,
+		flush:   cfg.Channel.Storer.Flush,
 	})
 	sy.wait = usync.NewWaitCloser(nil)
 	return sy

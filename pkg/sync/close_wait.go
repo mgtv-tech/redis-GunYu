@@ -63,13 +63,12 @@ func NewWaitCloserFromParent(p WaitCloser, stopFun func(error)) WaitCloser {
 	}
 
 	SafeGo(func() {
-		for {
-			select {
-			case <-p.Done():
-				wc.Close(p.Error())
-			case <-wc.Done():
-			}
+		select {
+		case <-p.Done():
+			wc.Close(p.Error())
+		case <-wc.Done():
 		}
+		return
 	}, nil)
 
 	return wc

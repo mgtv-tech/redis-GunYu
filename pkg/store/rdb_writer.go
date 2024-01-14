@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/metric"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
 
@@ -151,6 +153,14 @@ func (s *RdbWriter) Offset() int64 {
 	return s.offset
 }
 
+var (
+	rdbWriteDataCounter = metric.NewCounter(metric.CounterOpts{
+		Namespace: config.AppName,
+		Subsystem: "rdb",
+		Name:      "write",
+	})
+)
+
 func (s *RdbWriter) write(buf []byte) error {
 	s.mux.Lock()
 	defer s.mux.Unlock()
@@ -159,10 +169,16 @@ func (s *RdbWriter) write(buf []byte) error {
 		return io.EOF
 	}
 
-	if _, err := s.writer.Write(buf); err != nil {
+	n, err := s.writer.Write(buf)
+	if n > 0 {
+		s.offset += int64(n)
+		rdbWriteDataCounter.Add(float64(n))
+	}
+
+	if err != nil {
 		return err
 	}
-	s.offset += int64(len(buf))
+
 	return nil
 }
 
@@ -173,7 +189,9 @@ func (s *RdbWriter) close() error {
 }
 
 func (s *RdbWriter) closeRdb() (err error) {
-	err = s.writer.Close()
+	err = s.writer.Sync()
+	err = errors.Join(err, s.writer.Close())
+
 	obr := s.observer.Load()
 	if s.pumped.Load() != s.rdbSize {
 		(*obr).Close(s.left, s.rdbSize, true)

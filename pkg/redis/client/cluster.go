@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"time"
 
 	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
@@ -32,6 +33,12 @@ func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 		Password:        cfg.Password,
 		HandleMoveError: cfg.GetClusterOptions().HandleMoveErr,
 		HandleAskError:  cfg.GetClusterOptions().HandleAskErr,
+
+		KeepAlive: 4,
+		AliveTime: time.Minute,
+		//ConnTimeout: ,
+		//ReadTimeout: ,
+		//WriteTimeout: ,
 	})
 	if err != nil {
 		return nil, err

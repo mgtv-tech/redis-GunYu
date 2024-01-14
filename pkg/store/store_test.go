@@ -60,10 +60,7 @@ func (ts *rdbAofTestSuite) TestTruncateGap() {
 
 	for _, ca := range cases {
 		rdb := ts.createdGap(ca.gaps)
-		st := &Storer{
-			logger: log.WithLogger("test"),
-		}
-		st.truncateGap(rdb)
+		rdb.TruncateGap()
 		ts.Equal(ca.exp[0], rdb.aofSegs[0].left)
 		ts.Equal(ca.exp[1], rdb.Right())
 	}

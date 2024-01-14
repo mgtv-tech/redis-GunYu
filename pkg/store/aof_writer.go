@@ -10,9 +10,12 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/ikenchina/redis-GunYu/pkg/metric"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
 
@@ -68,8 +71,8 @@ type AofWriter struct {
 	reader io.Reader
 }
 
-func NewAofWriter(dir string, offset int64, reader io.Reader, maxLogSize int64) (*AofWriter, error) {
-	a, e := NewAofRotater(dir, offset, maxLogSize)
+func NewAofWriter(dir string, offset int64, reader io.Reader, maxLogSize int64, flushPolicy config.FlushPolicy) (*AofWriter, error) {
+	a, e := NewAofRotater(dir, offset, maxLogSize, flushPolicy)
 	if e != nil {
 		return nil, e
 	}
@@ -109,7 +112,7 @@ func (w *AofWriter) SetObserver(obsr Observer) {
 }
 
 func (w *AofWriter) ingest() (err error) {
-	p := make([]byte, 8192)
+	p := make([]byte, 1024*4)
 	n := 0
 	for {
 		if w.wait.IsClosed() {
@@ -138,27 +141,33 @@ func (w *AofWriter) Right() int64 {
 // AofRotater
 // it is not thread safe,
 type AofRotater struct {
-	mux        sync.RWMutex
-	dir        string
-	file       *os.File
-	left       int64
-	right      atomic.Int64
-	filepath   string
-	filesize   int64
-	header     [headerSize]byte
-	crc        hash.Hash64
-	logger     log.Logger
-	maxLogSize int64
-	observer   atomic.Pointer[Observer]
-	aofClosed  atomic.Bool
-	wait       usync.WaitCloser
+	mux           sync.RWMutex
+	dir           string
+	file          *os.File
+	left          int64
+	right         atomic.Int64
+	filepath      string
+	filesize      int64
+	header        [headerSize]byte
+	crc           hash.Hash64
+	logger        log.Logger
+	maxLogSize    int64
+	observer      atomic.Pointer[Observer]
+	aofClosed     atomic.Bool
+	wait          usync.WaitCloser
+	dirtyDataSize atomic.Int64
+	lastFlushTime time.Time
+	flushPolicy   config.FlushPolicy
 }
 
-func NewAofRotater(dir string, offset int64, maxLogSize int64) (*AofRotater, error) {
-	w := new(AofRotater)
-	w.dir = dir
-	w.maxLogSize = maxLogSize
-	w.logger = log.WithLogger("[AofRotater] ")
+func NewAofRotater(dir string, offset int64, maxLogSize int64, flush config.FlushPolicy) (*AofRotater, error) {
+	w := &AofRotater{
+		dir:         dir,
+		maxLogSize:  maxLogSize,
+		logger:      log.WithLogger("[AofRotater] "),
+		flushPolicy: flush,
+	}
+
 	w.wait = usync.NewWaitCloser(func(error) {
 		w.close()
 	})
@@ -219,6 +228,14 @@ func (w *AofRotater) openFile(offset int64) error {
 	return nil
 }
 
+var (
+	writeDataCounter = metric.NewCounter(metric.CounterOpts{
+		Namespace: config.AppName,
+		Subsystem: "aof",
+		Name:      "write",
+	})
+)
+
 func (w *AofRotater) write(buf []byte) error {
 	w.mux.Lock()
 	defer w.mux.Unlock()
@@ -226,14 +243,19 @@ func (w *AofRotater) write(buf []byte) error {
 		return io.EOF
 	}
 
-	_, err := w.file.Write(buf)
+	n, err := w.file.Write(buf)
+	if n > 0 {
+		w.dirtyDataSize.Add(int64(n))
+		w.crc.Write(buf[:n]) // error is always nil
+		w.filesize += int64(n)
+		w.right.Add(int64(n))
+		writeDataCounter.Add(float64(n))
+		w.getObserver().Write(w.left, int64(n))
+	}
 	if err != nil {
+		w.file.Sync()
 		return err
 	}
-	w.crc.Write(buf) // error is always nil
-	w.filesize += int64(len(buf))
-	w.right.Add(int64(len(buf)))
-	w.getObserver().Write(int64(len(buf)))
 
 	if w.filesize > w.maxLogSize {
 		err = w.closeAof()
@@ -245,7 +267,29 @@ func (w *AofRotater) write(buf []byte) error {
 			return err
 		}
 	}
-	return w.file.Sync()
+
+	return w.flush()
+}
+
+func (w *AofRotater) flush() error {
+	if w.flushPolicy.EveryWrite {
+		return w.file.Sync()
+	}
+	if w.flushPolicy.Duration > 0 {
+		if time.Since(w.lastFlushTime) > w.flushPolicy.Duration {
+			err := w.file.Sync()
+			w.lastFlushTime = time.Now()
+			return err
+		}
+	}
+	if w.flushPolicy.DirtySize > 0 {
+		if w.dirtyDataSize.Load() > w.flushPolicy.DirtySize {
+			err := w.file.Sync()
+			w.dirtyDataSize.Store(0)
+			return err
+		}
+	}
+	return nil // flush dirty page by kernel
 }
 
 func (w *AofRotater) close() error {

@@ -6,12 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/io/pipe"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
@@ -30,9 +30,10 @@ type Storer struct {
 	readBufSize int
 	closer      usync.WaitCloser
 	logger      log.Logger
+	flush       config.FlushPolicy
 }
 
-func NewStorer(id int, baseDir string, maxSize, logSize int64) *Storer {
+func NewStorer(id int, baseDir string, maxSize, logSize int64, flush config.FlushPolicy) *Storer {
 	ss := &Storer{
 		Id:          id,
 		baseDir:     baseDir,
@@ -42,6 +43,7 @@ func NewStorer(id int, baseDir string, maxSize, logSize int64) *Storer {
 		closer:      usync.NewWaitCloser(nil),
 		logger:      log.WithLogger(fmt.Sprintf("[Storer(%d)] ", id)),
 		dataSet:     &dataSet{},
+		flush:       flush,
 	}
 
 	usync.SafeGo(func() {
@@ -197,13 +199,13 @@ func (s *Storer) Close() error {
 	return s.closer.Error()
 }
 
-func (s *Storer) findAof(offset int64) *dataSetAof {
+func (s *Storer) findAof(left int64) *dataSetAof {
 	ra := s.getDataSet()
-	return ra.IndexAof(offset)
+	return ra.FindAof(left)
 }
 
-func (s *Storer) hasWriter(offset int64) bool {
-	aof := s.findAof(offset)
+func (s *Storer) hasWriter(left int64) bool {
+	aof := s.findAof(left)
 	if aof != nil {
 		return aof.Size() == -1
 	}
@@ -309,7 +311,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 func (s *Storer) newAofROpenObserver(reader *AofRotateReader, ra *dataSet) func(args ...interface{}) {
 	return func(args ...interface{}) {
 		offset := args[0].(int64)
-		aof := ra.IndexAof(offset)
+		aof := ra.FindAof(offset)
 		if aof != nil {
 			aof.AddReader(reader)
 		}
@@ -319,7 +321,7 @@ func (s *Storer) newAofROpenObserver(reader *AofRotateReader, ra *dataSet) func(
 func (s *Storer) newAofRCloseObserver(reader *AofRotateReader, ra *dataSet) func(args ...interface{}) {
 	return func(args ...interface{}) {
 		offset := args[0].(int64)
-		aof := ra.IndexAof(offset)
+		aof := ra.FindAof(offset)
 		if aof != nil {
 			aof.DelReader(reader)
 		}
@@ -376,7 +378,7 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 	ds := s.getDataSet()
 	ds.CloseAofWriter()
 
-	w, err := NewAofWriter(s.dir, offset, r, s.logSize)
+	w, err := NewAofWriter(s.dir, offset, r, s.logSize, s.flush)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +395,7 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 	proxy := &observerProxy{
 		open:  s.newAofWOpenObserver(w, ds),
 		close: s.newAofWCloseObserver(w, ds),
-		write: s.newAofWriteObserver(aofSeg),
+		write: s.newAofWriteObserver(),
 	}
 	w.SetObserver(proxy)
 
@@ -406,15 +408,23 @@ func (s *Storer) lastSeg() int64 {
 	return s.getDataSet().LastAofSeg()
 }
 
-func (s *Storer) newAofWriteObserver(aof *dataSetAof) func(args ...interface{}) {
+func (s *Storer) newAofWriteObserver() func(args ...interface{}) {
 	return func(args ...interface{}) {
-		aof.incrSize(args[0].(int64))
+		left := args[0].(int64)
+		size := args[1].(int64)
+		ds := s.getDataSet()
+		aof := ds.FindAof(left)
+		if aof != nil {
+			aof.incrSize(size)
+		} else {
+			s.logger.Warnf("aof doesnot exist : aof(%d)", left)
+		}
 	}
 }
 
 func (s *Storer) newAofWOpenObserver(w *AofWriter, ds *dataSet) func(args ...interface{}) {
 	return func(args ...interface{}) {
-		left := args[1].(int64)
+		left := args[0].(int64)
 
 		// always create new aof, avoid calculating CRC
 		aof := &dataSetAof{
@@ -431,7 +441,7 @@ func (s *Storer) newAofWCloseObserver(w *AofWriter, ds *dataSet) func(args ...in
 		offset := args[0].(int64)
 		size := args[1].(int64)
 
-		aof := ds.IndexAof(offset)
+		aof := ds.FindAof(offset)
 		if aof == nil {
 			s.logger.Errorf("aofClose file does not exist : %d", offset)
 			return
@@ -483,53 +493,28 @@ func (s *Storer) initDataSet() *dataSet {
 		return nil
 	}
 
-	ra := &dataSet{
-		rdb:     rdb,
-		aofSegs: aofSegs,
-	}
-	if len(aofSegs) > 0 {
-		ra.lastAofSeg.Store(aofSegs[len(aofSegs)-1].Left())
-	}
-
-	if len(ra.aofSegs) > 0 {
-		sort.Slice(ra.aofSegs, func(i, j int) bool {
-			return ra.aofSegs[i].left < ra.aofSegs[j].left
-		})
-
-		// remove gap
-		s.truncateGap(ra)
-	}
-	return ra
-}
-
-func (s *Storer) truncateGap(rdbAof *dataSet) {
-	for i := len(rdbAof.aofSegs) - 1; i > 0; i-- {
-		if rdbAof.aofSegs[i].Left() != rdbAof.aofSegs[i-1].Right() {
-			// rename
-			uaofs := rdbAof.aofSegs[:i]
-			for _, a := range uaofs {
-				opath := aofFilePath(s.dir, a.Left())
-				err := os.Remove(opath)
-				if err != nil {
-					s.logger.Errorf("remove aof file : aof(%s), error(%v)", opath, err)
-				} else {
-					s.logger.Infof("remove aof file : aof(%s)", opath)
-				}
-			}
-			if rdbAof.rdb != nil {
-				opath := rdbFilePath(s.dir, rdbAof.rdb.Left(), rdbAof.rdb.Size())
-				err := os.Remove(opath)
-				if err != nil {
-					s.logger.Errorf("remove rdb file : rdb(%s), error(%v)", opath, err)
-				} else {
-					s.logger.Infof("remove rdb file : rdb(%s)", opath)
-				}
-			}
-			rdbAof.aofSegs = rdbAof.aofSegs[i:]
-			rdbAof.rdb = nil
-			return
+	ds := newDataSet(rdb, aofSegs)
+	dRdb, dAofs := ds.TruncateGap()
+	if dRdb != nil {
+		opath := rdbFilePath(s.dir, dRdb.Left(), dRdb.Size())
+		err := os.Remove(opath)
+		if err != nil {
+			s.logger.Errorf("remove rdb file : rdb(%s), error(%v)", opath, err)
+		} else {
+			s.logger.Infof("remove rdb file : rdb(%s)", opath)
 		}
 	}
+	for _, a := range dAofs {
+		opath := aofFilePath(s.dir, a.Left())
+		err := os.Remove(opath)
+		if err != nil {
+			s.logger.Errorf("remove aof file : aof(%s), error(%v)", opath, err)
+		} else {
+			s.logger.Infof("remove aof file : aof(%s)", opath)
+		}
+	}
+
+	return ds
 }
 
 func (s *Storer) gcLogJob() {

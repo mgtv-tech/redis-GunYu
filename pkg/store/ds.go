@@ -3,6 +3,7 @@ package store
 import (
 	"math"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -199,83 +200,137 @@ func (a *dataSetAof) incrSize(delta int64) {
 	a.rtSize.Add(delta)
 }
 
+func newDataSet(rdb *dataSetRdb, aofs []*dataSetAof) *dataSet {
+	ds := &dataSet{
+		rdb:     rdb,
+		aofSegs: aofs,
+		aofMap:  make(map[int64]*dataSetAof),
+	}
+	for _, a := range aofs {
+		ds.aofMap[a.left] = a
+	}
+
+	sort.Slice(ds.aofSegs, func(i, j int) bool {
+		return ds.aofSegs[i].left < ds.aofSegs[j].left
+	})
+
+	ds.lastAofSeg.Store(ds.aofSegs[len(ds.aofSegs)-1].Left())
+	return ds
+}
+
 type dataSet struct {
 	mux        sync.RWMutex
 	rdb        *dataSetRdb
 	aofSegs    []*dataSetAof // aof segments
+	aofMap     map[int64]*dataSetAof
 	lastAofSeg atomic.Int64
 }
 
-func (r *dataSet) LastAofSeg() int64 {
-	return r.lastAofSeg.Load()
+func (ds *dataSet) TruncateGap() (*dataSetRdb, []*dataSetAof) {
+	ds.mux.RLock()
+	defer ds.mux.RUnlock()
+
+	var rdb *dataSetRdb
+	var aofs []*dataSetAof
+
+	for i := len(ds.aofSegs) - 1; i > 0; i-- {
+		if ds.aofSegs[i].Left() != ds.aofSegs[i-1].Right() {
+			uaofs := ds.aofSegs[:i]
+			aofs = append(aofs, uaofs...)
+			if ds.rdb != nil {
+				rdb = ds.rdb
+			}
+			ds.aofSegs = ds.aofSegs[i:]
+			ds.rdb = nil
+			break
+		}
+	}
+
+	ds.aofMap = make(map[int64]*dataSetAof)
+	for _, a := range ds.aofSegs {
+		ds.aofMap[a.left] = a
+	}
+
+	return rdb, aofs
 }
 
-func (r *dataSet) RdbSize() int64 {
-	r.mux.RLock()
-	defer r.mux.RUnlock()
-	if r.rdb == nil {
+func (ds *dataSet) LastAofSeg() int64 {
+	return ds.lastAofSeg.Load()
+}
+
+func (ds *dataSet) RdbSize() int64 {
+	ds.mux.RLock()
+	defer ds.mux.RUnlock()
+	if ds.rdb == nil {
 		return -1
 	}
-	return r.rdb.Size()
+	return ds.rdb.Size()
 }
 
-func (r *dataSet) SetRdb(rdb *dataSetRdb) {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	r.rdb = rdb
+func (ds *dataSet) SetRdb(rdb *dataSetRdb) {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	ds.rdb = rdb
 }
 
-func (r *dataSet) GetRdb() *dataSetRdb {
-	r.mux.RLock()
-	defer r.mux.RUnlock()
-	return r.rdb
+func (ds *dataSet) GetRdb() *dataSetRdb {
+	ds.mux.RLock()
+	defer ds.mux.RUnlock()
+	return ds.rdb
 }
 
-func (r *dataSet) AppendAof(a *dataSetAof) {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	r.aofSegs = append(r.aofSegs, a)
-	r.lastAofSeg.Store(a.left)
+func (ds *dataSet) AppendAof(a *dataSetAof) {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	ds.aofSegs = append(ds.aofSegs, a)
+	ds.aofMap[a.Left()] = a
+	ds.lastAofSeg.Store(a.left)
 }
 
-func (r *dataSet) InRange(offset int64) bool {
-	r.mux.RLock()
-	defer r.mux.RUnlock()
+func (ds *dataSet) InRange(offset int64) bool {
+	ds.mux.RLock()
+	defer ds.mux.RUnlock()
 
-	ll, rr := r.getRange()
+	ll, rr := ds.getRange()
 	// left <= offset <= right
 	if offset != -1 && ll <= offset && rr >= offset {
 		return true
-	} else if ll >= offset && r.rdb != nil { // offset <= rdb.left
+	} else if ll >= offset && ds.rdb != nil { // offset <= rdb.left
 		return true
 	}
 	return false
 }
 
-func (r *dataSet) Close() {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	if r.rdb != nil {
-		r.rdb.Close()
+func (ds *dataSet) Close() {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	if ds.rdb != nil {
+		ds.rdb.Close()
 	}
-	for _, a := range r.aofSegs {
+	for _, a := range ds.aofSegs {
 		a.Close()
 	}
 }
 
-func (r *dataSet) CloseAofWriter() {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	for _, a := range r.aofSegs {
+func (ds *dataSet) CloseAofWriter() {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	for _, a := range ds.aofSegs {
 		a.Close()
 	}
 }
 
-func (r *dataSet) IndexAof(offset int64) *dataSetAof {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	for i := len(r.aofSegs) - 1; i >= 0; i-- {
-		aof := r.aofSegs[i]
+func (ds *dataSet) FindAof(left int64) *dataSetAof {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	return ds.aofMap[left]
+}
+
+func (ds *dataSet) IndexAof(offset int64) *dataSetAof {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	for i := len(ds.aofSegs) - 1; i >= 0; i-- {
+		aof := ds.aofSegs[i]
 		if aof.Left() <= offset && aof.Right() >= offset {
 			return aof
 		}
@@ -283,72 +338,76 @@ func (r *dataSet) IndexAof(offset int64) *dataSetAof {
 	return nil
 }
 
-func (r *dataSet) Range() (ll int64, rr int64) {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	return r.getRange()
+func (ds *dataSet) Range() (ll int64, rr int64) {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	return ds.getRange()
 }
 
-func (r *dataSet) getRange() (ll int64, rr int64) {
-	if r.rdb == nil && len(r.aofSegs) == 0 {
+func (ds *dataSet) getRange() (ll int64, rr int64) {
+	if ds.rdb == nil && len(ds.aofSegs) == 0 {
 		return -1, -1
 	}
 
 	ll = math.MaxInt64
 	rr = 0
-	if r.rdb != nil {
-		ll = r.rdb.left
-		rr = r.rdb.left
+	if ds.rdb != nil {
+		ll = ds.rdb.left
+		rr = ds.rdb.left
 	}
-	if len(r.aofSegs) != 0 && ll > r.aofSegs[0].left {
-		ll = r.aofSegs[0].left
+	if len(ds.aofSegs) != 0 && ll > ds.aofSegs[0].left {
+		ll = ds.aofSegs[0].left
 	}
 
-	if len(r.aofSegs) != 0 && rr < r.aofSegs[len(r.aofSegs)-1].Right() {
-		rr = r.aofSegs[len(r.aofSegs)-1].Right()
+	if len(ds.aofSegs) != 0 && rr < ds.aofSegs[len(ds.aofSegs)-1].Right() {
+		rr = ds.aofSegs[len(ds.aofSegs)-1].Right()
 	}
 	return
 }
 
-func (r *dataSet) Left() int64 {
-	r.mux.Lock()
-	defer r.mux.Unlock()
+func (ds *dataSet) Left() int64 {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
 	l := int64(-1)
-	if r.rdb != nil {
-		l = r.rdb.Left()
+	if ds.rdb != nil {
+		l = ds.rdb.Left()
 	}
-	if len(r.aofSegs) != 0 && l > r.aofSegs[0].Left() {
-		l = r.aofSegs[0].Left()
+	if len(ds.aofSegs) != 0 && l > ds.aofSegs[0].Left() {
+		l = ds.aofSegs[0].Left()
 	}
 	return l
 }
 
-func (r *dataSet) Right() int64 {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-	if len(r.aofSegs) != 0 {
-		return r.aofSegs[len(r.aofSegs)-1].Right()
+func (ds *dataSet) Right() int64 {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+	if len(ds.aofSegs) != 0 {
+		return ds.aofSegs[len(ds.aofSegs)-1].Right()
 	}
-	if r.rdb != nil {
-		return r.rdb.Left()
+	if ds.rdb != nil {
+		return ds.rdb.Left()
 	}
 	return int64(-1)
 }
 
-func (ra *dataSet) gcLogs(dir string, maxSize int64) {
-	ra.mux.Lock()
-	defer ra.mux.Unlock()
+func (ds *dataSet) gcLogs(dir string, maxSize int64) {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
 
 	size := int64(0)
 
-	rdb := ra.rdb
+	rdb := ds.rdb
 
 	// from newest to oldest
 
 	// iterate AOF files first
-	aofLast := len(ra.aofSegs) - 1
+	aofLast := len(ds.aofSegs) - 1
 	for ; aofLast >= 0; aofLast-- {
-		size += ra.aofSegs[aofLast].rtSize.Load()
+		aofSize := ds.aofSegs[aofLast].rtSize.Load()
+		if aofSize == 0 {
+			log.Warnf("aof rtsize is 0 : aof(%d), size(%d)", ds.aofSegs[aofLast].Left(), ds.aofSegs[aofLast].Size())
+		}
+		size += aofSize
 		if size > maxSize {
 			break
 		}
@@ -368,7 +427,7 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 					log.Infof("GC Logs, remove rdb file : file(%s)", rdbfn)
 					size -= rdb.rdbSize
 				}
-				ra.rdb = nil
+				ds.rdb = nil
 			} else {
 				ref0 = false
 				log.Warnf("storage size exceeds limitation, but rdb reference is not zero : size(%d), maxSize(%d), rdb(%d)",
@@ -381,11 +440,15 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 	if ref0 {
 		// oldest to newest
 		for z := 0; z <= aofLast; z++ {
-			aof := ra.aofSegs[z]
+			aof := ds.aofSegs[z]
 			aof.mux.Lock()
 			if aof.Ref() > 0 {
 				ref0 = false
 				aof.mux.Unlock()
+				if size > maxSize {
+					log.Warnf("GC Logs, size exceeded limitation, but reference is not zero : size(%d), maxSize(%d), left(%d)",
+						size, maxSize, aof.Left())
+				}
 				break
 			} else {
 				aoffn := aofFilePath(dir, aof.left)
@@ -394,8 +457,8 @@ func (ra *dataSet) gcLogs(dir string, maxSize int64) {
 				} else {
 					log.Infof("GC Logs, remove aof file : file(%s)", aoffn)
 				}
-
-				ra.aofSegs = ra.aofSegs[z+1:]
+				size -= aof.rtSize.Load()
+				ds.aofSegs = ds.aofSegs[z+1:]
 				aofLast--
 				z--
 				aof.mux.Unlock()

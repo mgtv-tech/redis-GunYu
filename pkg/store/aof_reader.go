@@ -21,7 +21,7 @@ var (
 )
 
 type aofStorer interface {
-	hasWriter(offset int64) bool
+	hasWriter(left int64) bool
 	lastSeg() int64
 }
 

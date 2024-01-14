@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -24,7 +25,7 @@ func (ts *aofReaderTestSuite) SetupSuite() {
 	dir, err := os.MkdirTemp("", "test_aof_reader")
 	ts.Nil(err)
 	ts.tempDir = dir
-	ts.storer = NewStorer(1, ts.tempDir, 100*1024, 100000000)
+	ts.storer = NewStorer(1, ts.tempDir, 100*1024, 100000000, config.FlushPolicy{})
 }
 
 func (ts *aofReaderTestSuite) TearDownSuite() {
@@ -46,7 +47,7 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 
 	newAof := func() {
 		ts.storer.dataSet = &dataSet{}
-		writer, err := NewAofRotater(ts.tempDir, 0, 100000000)
+		writer, err := NewAofRotater(ts.tempDir, 0, 100000000, config.FlushPolicy{})
 		ts.Nil(err)
 		ts.Nil(writer.write(data))
 		writer.close()

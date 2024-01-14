@@ -168,9 +168,10 @@ func (cc *ChannelConfig) fix() error {
 }
 
 type StorerConfig struct {
-	DirPath string `yaml:"dirPath"`
-	MaxSize int64  `yaml:"maxSize"` // -1 is unlimited, default is 50GiB
-	LogSize int64  `yaml:"logSize"` // default is 100MiB
+	DirPath string      `yaml:"dirPath"`
+	MaxSize int64       `yaml:"maxSize"` // -1 is unlimited, default is 50GiB
+	LogSize int64       `yaml:"logSize"` // default is 100MiB
+	Flush   FlushPolicy `yaml:"flushPolicy"`
 }
 
 func (sc *StorerConfig) fix() error {
@@ -183,6 +184,13 @@ func (sc *StorerConfig) fix() error {
 	}
 	if sc.LogSize <= 0 {
 		sc.LogSize = 100 * (1024 * 1024)
+	}
+	if sc.Flush.Duration == 0 && !sc.Flush.EveryWrite && sc.Flush.DirtySize == 0 {
+		sc.Flush.Auto = true
+	}
+	if sc.Flush.Duration < time.Millisecond*100 {
+		// write amplification [page_size * 10, ]
+		sc.Flush.Duration = time.Millisecond * 100
 	}
 
 	_, err := os.Stat(sc.DirPath)
