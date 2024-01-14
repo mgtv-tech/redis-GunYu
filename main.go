@@ -89,35 +89,29 @@ func fixConfig() (err error) {
 		if redisCfg.Version != "" {
 			return nil
 		}
-		rr := redisCfg.SelNodes(true, config.SelNodeStrategyMaster)
-		for _, svr := range rr {
-			cli, err := client.NewRedis(svr)
-			if err != nil {
-				log.Errorf("new redis error : addr(%s), error(%v)", svr.Address(), err)
-				continue
-			}
 
-			ver, err := redis.GetRedisVersion(cli)
-			cli.Close()
-
-			if err != nil {
-				log.Errorf("redis get version error : addr(%s), error(%v)", svr.Address(), err)
-				continue
-			}
-			redisCfg.Version = ver
-			break
+		cli, err := client.NewRedis(*redisCfg)
+		if err != nil {
+			log.Errorf("new redis error : addr(%s), error(%v)", redisCfg.Address(), err)
+			return err
 		}
-		if redisCfg.Version == "" {
+
+		ver, err := redis.GetRedisVersion(cli)
+		cli.Close()
+
+		if err != nil {
+			log.Errorf("redis get version error : addr(%s), error(%v)", redisCfg.Address(), err)
+			return err
+		}
+		if ver == "" {
 			return errors.New("cannot get redis version")
 		}
+
+		redisCfg.Version = ver
 		return nil
 	}
-
-	// addresses
-	if err = redis.FixTopology(config.Get().Input.Redis); err != nil {
-		return
-	}
-	if err = redis.FixTopology(config.Get().Output.Redis); err != nil {
+	err = fixVersion(config.Get().Input.Redis)
+	if err != nil {
 		return
 	}
 
@@ -125,8 +119,12 @@ func fixConfig() (err error) {
 	if err != nil {
 		return
 	}
-	err = fixVersion(config.Get().Input.Redis)
-	if err != nil {
+
+	// addresses
+	if err = redis.FixTopology(config.Get().Input.Redis); err != nil {
+		return
+	}
+	if err = redis.FixTopology(config.Get().Output.Redis); err != nil {
 		return
 	}
 

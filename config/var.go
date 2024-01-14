@@ -24,7 +24,7 @@ const (
 	AppName = "redisGunYu"
 
 	RedisRoleMasterStr = "master"
-	RedisRoleSlaveStr  = "replica"
+	RedisRoleSlaveStr  = "slave"
 	RedisRoleAllStr    = "all"
 
 	TypeDecode  = "decode"

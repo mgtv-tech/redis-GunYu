@@ -42,7 +42,7 @@ func NewStorer(id int, baseDir string, maxSize, logSize int64, flush config.Flus
 		readBufSize: 10 * 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
 		logger:      log.WithLogger(fmt.Sprintf("[Storer(%d)] ", id)),
-		dataSet:     &dataSet{},
+		dataSet:     newDataSet(nil, nil),
 		flush:       flush,
 	}
 
@@ -191,7 +191,7 @@ func (s *Storer) resetDataSet() {
 		return nil
 	})
 
-	s.dataSet = &dataSet{}
+	s.dataSet = newDataSet(nil, nil)
 }
 
 func (s *Storer) Close() error {
@@ -346,13 +346,11 @@ func (s *Storer) GetRdbWriter(r io.Reader, offset int64, rdbSize int64) (*RdbWri
 	}
 
 	s.dataSetMux.Lock()
-	s.dataSet = &dataSet{}
 	rdb := &dataSetRdb{
 		left:    offset,
 		rdbSize: rdbSize,
 	}
-
-	s.dataSet.SetRdb(rdb)
+	s.dataSet = newDataSet(rdb, nil)
 	rdb.AddWriter(w)
 	s.dataSetMux.Unlock()
 

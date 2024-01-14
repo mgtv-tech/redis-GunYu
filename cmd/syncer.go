@@ -668,7 +668,7 @@ func (sc *SyncerCmd) diffTypology(preShards []*config.RedisClusterShard, redisCf
 		return false, nil, err
 	}
 	defer cli.Close()
-	shards, err := redis.GetAllClusterShard(cli)
+	shards, err := redis.GetAllClusterShard(cli, redisCfg.Version)
 	if err != nil {
 		return false, nil, err
 	}
@@ -677,37 +677,18 @@ func (sc *SyncerCmd) diffTypology(preShards []*config.RedisClusterShard, redisCf
 		return true, shards, nil
 	}
 
-	for i, preShard := range preShards {
-		shard := shards[i]
-		// compare nodes
-		if !shard.Master.AddressEqual(&preShard.Master) {
-			return true, shards, nil
-		}
-		preSlaves := preShard.Slaves
-		slaves := shard.Slaves
-		if len(preSlaves) > len(slaves) { // one or more slaves were removed
-			return true, shards, nil
-		}
-		for _, preSlave := range preSlaves { // slave was changed
-			if preSlave.Health != "online" { // @TODO enumerate all values
-				continue
-			}
-			contains := false
-			for _, slave := range slaves {
-				if slave.Health != "online" {
-					continue
-				}
-				if !preSlave.AddressEqual(&slave) {
-					contains = true
-				}
-			}
-			if !contains {
-				return true, shards, nil
+	for _, preShard := range preShards {
+		equal := false
+		for _, shard := range shards {
+			// @TODO
+			// CompareTypology does not compare slaves,
+			// but when syncFrom is preferSlave and preShards has not slaves,
+			// should check slaves,
+			if preShard.CompareTypology(shard) {
+				equal = true
 			}
 		}
-
-		// compare slots
-		if !preShard.Slots.Equal(&shard.Slots) {
+		if !equal {
 			return true, shards, nil
 		}
 	}
@@ -742,9 +723,9 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser, redisCfg config.RedisC
 			if err != nil {
 				sc.logger.Errorf("check redis typology : changed(%v), err(%v), redis(%v)", changed, err, redisCfg.Addresses)
 			}
-			sc.logger.Debugf("check redis typology : changed(%v), err(%v), redis(%v)", changed, err, redisCfg.Addresses)
 
 			if changed {
+				sc.logger.Infof("check redis typology : changed(%v), err(%v), redis(%v)", changed, err, redisCfg.Addresses)
 				wait.Close(syncer.ErrRestart)
 				return
 			}

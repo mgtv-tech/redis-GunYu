@@ -170,7 +170,7 @@ func GetAllClusterNode(cli client.Redis) ([]*ClusterNodeInfo, []*ClusterNodeInfo
 		return nil, nil, err
 	}
 
-	nodeList := ParseClusterNode(util.StringToBytes(ret))
+	nodeList := ParseClusterNode(ret)
 	masters := ClusterNodeChoose(nodeList, config.RedisRoleMaster)
 	slaves := ClusterNodeChoose(nodeList, config.RedisRoleSlave)
 	return masters, slaves, nil
@@ -179,8 +179,8 @@ func GetAllClusterNode(cli client.Redis) ([]*ClusterNodeInfo, []*ClusterNodeInfo
 func ClusterNodeChoose(input []*ClusterNodeInfo, role config.RedisRole) []*ClusterNodeInfo {
 	ret := make([]*ClusterNodeInfo, 0, len(input))
 	for _, ele := range input {
-		if ele.Flags == config.RedisRoleMaster.String() && role == config.RedisRoleMaster ||
-			ele.Flags == config.RedisRoleSlave.String() && role == config.RedisRoleSlave ||
+		if ele.Role == config.RedisRoleMaster.String() && role == config.RedisRoleMaster ||
+			ele.Role == config.RedisRoleSlave.String() && role == config.RedisRoleSlave ||
 			role == config.RedisRoleAll {
 			ret = append(ret, ele)
 		}
@@ -203,37 +203,47 @@ func ClusterNodeChoose(input []*ClusterNodeInfo, role config.RedisRole) []*Clust
 // 3de1044bfe52eab099e956f146bde4a1278b185e 127.0.0.1:6303@16303 myself,slave 166585d6a8976b203f80897d6deec69607457eb3 0 1699408793000 16 connected
 // 166585d6a8976b203f80897d6deec69607457eb3 127.0.0.1:6310@16310 master - 0 1699408792000 16 connected 1253-5462 10923
 // cc6572e1b59efeec31d79fe532acd144947c99ce 127.0.0.1:6314@16314 slave 30150e71a32620bb2716de769a25537b97774bb0 0 1699408792755 15 connected
-func ParseClusterNode(content []byte) []*ClusterNodeInfo {
-	lines := bytes.Split(content, []byte("\n"))
-	ret := make([]*ClusterNodeInfo, 0, len(lines))
+func ParseClusterNode(content string) []*ClusterNodeInfo {
+	lines := strings.Split(content, "\n")
+
+	nodes := make([]*ClusterNodeInfo, 0, len(lines))
 	for _, line := range lines {
-		if bytes.Equal(line, []byte{}) {
+		if line == "" {
 			continue
 		}
 
-		items := bytes.Split(line, []byte(" "))
+		items := strings.Split(line, " ")
+		address := strings.Split(items[1], "@")
+		flags := strings.Split(string(items[2]), ",")
 
-		address := bytes.Split(items[1], []byte{'@'})
-		flag := bytes.Split(items[2], []byte{','})
-		var role string
-		if len(flag) > 1 {
-			role = string(flag[1])
-		} else {
-			role = string(flag[0])
+		cni := &ClusterNodeInfo{
+			Id:              (items[0]),
+			Address:         (address[0]),
+			NodeCoordinates: items[1],
+			SlaveOf:         (items[3]),
+			PingSent:        (items[4]),
+			PongRecv:        (items[5]),
+			ConfigEpoch:     (items[6]),
+			LinkStat:        (items[7]),
 		}
-
-		ret = append(ret, &ClusterNodeInfo{
-			Id:          string(items[0]),
-			Address:     string(address[0]),
-			Flags:       role,
-			Master:      string(items[3]),
-			PingSent:    string(items[4]),
-			PongRecv:    string(items[5]),
-			ConfigEpoch: string(items[6]),
-			LinkStat:    string(items[7]),
-		})
+		for _, flag := range flags {
+			cni.Flags = append(cni.Flags, flag)
+			if flag == "master" || flag == "slave" {
+				cni.Role = flag
+			}
+		}
+		for z := 8; z < len(items); z++ {
+			if strings.HasPrefix(items[z], "[") {
+				// migrating on myself node
+			} else {
+				cni.Slots = append(cni.Slots, items[z])
+			}
+		}
+		if (cni.Role == "master" && len(cni.Slots) > 0) || cni.Role == "slave" {
+			nodes = append(nodes, cni)
+		}
 	}
-	return ret
+	return nodes
 }
 
 var (
@@ -252,6 +262,8 @@ func splitLineToArgs(line []byte) [][]byte {
 	return ret
 }
 
+// @TODO iterate all nodes?
+// the reply message of 'cluster nodes' only contains migrating slots of current node
 func GetClusterIsMigrating(cli client.Redis) (bool, error) {
 	ret, err := common.String(cli.Do("cluster", "nodes"))
 	if err != nil {
@@ -282,23 +294,173 @@ func GetClusterIsMigrating(cli client.Redis) (bool, error) {
 }
 
 type ClusterNodeInfo struct {
-	Id          string
-	Address     string
-	Flags       string
-	Master      string
-	PingSent    string
-	PongRecv    string
-	ConfigEpoch string
-	LinkStat    string
-	Slot        string
+	Id              string
+	Address         string
+	NodeCoordinates string
+	Role            string
+	Flags           []string
+	SlaveOf         string
+	PingSent        string
+	PongRecv        string
+	ConfigEpoch     string
+	LinkStat        string
+	Slots           []string
 }
 
-func GetAllClusterShard(cli client.Redis) ([]*config.RedisClusterShard, error) {
+func GetAllClusterShard4(cli client.Redis) ([]*config.RedisClusterShard, error) {
+	content, err := common.String(cli.Do("cluster", "nodes"))
+	if err != nil {
+		return nil, err
+	}
+	return clusterNodesToShards(content)
+}
+
+func clusterNodesToShards(content string) ([]*config.RedisClusterShard, error) {
+
+	nodes := ParseClusterNode(content)
+
+	// transfer to shards
+	shards := []*config.RedisClusterShard{}
+	for _, node := range nodes {
+		shard := &config.RedisClusterShard{}
+		if node.Role == "master" {
+			if len(node.Slots) == 0 {
+				continue // pending master
+			}
+			master, err := clusterNodeInfoToNode(node)
+			if err != nil {
+				return nil, err
+			}
+
+			shard.Master = master
+
+			// slots
+			slots, err := parseSlots(node.Slots)
+			if err != nil {
+				return nil, err
+			}
+			shard.Slots = slots
+
+			// slaves
+			for z := 0; z < len(nodes); z++ {
+				if nodes[z].SlaveOf == node.Id {
+					slave, err := clusterNodeInfoToNode(nodes[z])
+					if err != nil {
+						log.Errorf("cluster node : node(%v), error(%v)", *nodes[z], err)
+						continue
+					}
+					shard.Slaves = append(shard.Slaves, slave)
+				}
+			}
+			shards = append(shards, shard)
+		}
+	}
+
+	return shards, nil
+}
+
+func parseSlots(slotStrs []string) (slots config.RedisSlots, err error) {
+	var left, right int
+	for _, str := range slotStrs {
+		ss := strings.Split(str, "-")
+		if len(ss) == 1 {
+			left, err = strconv.Atoi(ss[0])
+			if err != nil {
+				return
+			}
+			slots.Ranges = append(slots.Ranges, config.RedisSlotRange{
+				Left:  left,
+				Right: left,
+			})
+		} else if len(ss) == 2 {
+			left, err = strconv.Atoi(ss[0])
+			if err != nil {
+				return
+			}
+			right, err = strconv.Atoi(ss[1])
+			if err != nil {
+				return
+			}
+			slots.Ranges = append(slots.Ranges, config.RedisSlotRange{
+				Left:  left,
+				Right: right,
+			})
+		}
+	}
+	return
+}
+
+func clusterNodeInfoToNode(cni *ClusterNodeInfo) (config.RedisNode, error) {
+
+	node := config.RedisNode{
+		Id: cni.Id,
+	}
+	nodeCoord := cni.NodeCoordinates
+	// 4.0 "%.40s %s:%d@%d " : ip:port@cport
+	// 7.0 " %s:%i@%i,%s "   : ip:port@cport,hostname
+	idx := strings.Index(nodeCoord, ":")
+	node.Ip = nodeCoord[:idx]
+	nodeCoord = nodeCoord[idx+1:]
+	idx = strings.Index(nodeCoord, "@")
+	port, err := strconv.Atoi(nodeCoord[:idx])
+	if err != nil {
+		return config.RedisNode{}, err
+	}
+	node.Port = port
+	node.Address = cni.Address
+
+	// role
+	if cni.Role == config.RedisRoleMasterStr {
+		node.Role = config.RedisRoleMaster
+	} else if cni.Role == config.RedisRoleSlaveStr {
+		node.Role = config.RedisRoleSlave
+	}
+
+	// health
+	// flags :
+	// redis 4.0
+	// 	static struct redisNodeFlags redisNodeFlagsTable[] = {
+	// 		{CLUSTER_NODE_MYSELF,       "myself,"},
+	// 		{CLUSTER_NODE_MASTER,       "master,"},
+	// 		{CLUSTER_NODE_SLAVE,        "slave,"},
+	// 		{CLUSTER_NODE_PFAIL,        "fail?,"},
+	// 		{CLUSTER_NODE_FAIL,         "fail,"},
+	// 		{CLUSTER_NODE_HANDSHAKE,    "handshake,"},
+	// 		{CLUSTER_NODE_NOADDR,       "noaddr,"}
+	// 	};
+	// redis 5.0
+	// {CLUSTER_NODE_NOFAILOVER,   "nofailover,"}
+	node.Health = "online" // reference redis7.0 addNodeDetailsToShardReply
+	for _, f := range cni.Flags {
+		if f == "fail" {
+			node.Health = "fail"
+		}
+		// @TODO loading : else if (nodeIsSlave(node) && node_offset == 0) {
+	}
+
+	return node, nil
+
+}
+
+func GetAllClusterShard(cli client.Redis, version string) ([]*config.RedisClusterShard, error) {
+	// >= 7.0
+	if util.VersionGE(version, "7", util.VersionMajor) {
+		return GetAllClusterShard7(cli)
+	} else {
+		return GetAllClusterShard4(cli)
+	}
+}
+
+func GetAllClusterShard7(cli client.Redis) ([]*config.RedisClusterShard, error) {
 	ret, err := cli.Do("cluster", "shards")
 	if err != nil {
 		return nil, err
 	}
 
+	return parseClusterShards(ret)
+}
+
+func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 	cShards := []*config.RedisClusterShard{}
 
 	shards := ret.([]interface{})
@@ -382,7 +544,9 @@ func GetAllClusterShard(cli client.Redis) ([]*config.RedisClusterShard, error) {
 			}
 		}
 
-		cShards = append(cShards, cShard)
+		if cShard.Slots.Len() > 0 {
+			cShards = append(cShards, cShard)
+		}
 	}
 
 	return cShards, nil
@@ -414,14 +578,14 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		// }
 
 		// fix slots
-		slots, err := GetClusterSlotDistribution(cli)
+		slotsMap, slotRanges, err := GetClusterSlotDistribution(cli)
 		if err != nil {
 			return err
 		}
-		redisCfg.SetSlots(slots)
+		redisCfg.SetSlots(slotsMap, slotRanges)
 
 		// fix shards
-		shards, err := GetAllClusterShard(cli)
+		shards, err := GetAllClusterShard(cli, redisCfg.Version)
 		if err != nil {
 			return err
 		}
@@ -442,13 +606,16 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 			slots[addr] = &config.RedisSlots{
 				Ranges: []config.RedisSlotRange{
 					{
-						Left:  0,
-						Right: 16383,
+						Left: 0, Right: 16383,
 					},
 				},
 			}
 		}
-		redisCfg.SetSlots(slots)
+		redisCfg.SetSlots(slots, &config.RedisSlots{
+			Ranges: []config.RedisSlotRange{
+				{Left: 0, Right: 16383},
+			},
+		})
 		return nil
 	} else {
 		return fmt.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())

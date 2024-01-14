@@ -52,23 +52,29 @@ func GetSlotDistribution(cli client.Redis) ([]SlotOwner, error) {
 	return ret, nil
 }
 
-func GetClusterSlotDistribution(cli client.Redis) (map[string]*config.RedisSlots, error) {
+func GetClusterSlotDistribution(cli client.Redis) (map[string]*config.RedisSlots, *config.RedisSlots, error) {
 	content, err := cli.Do("cluster", "slots")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	dis := make(map[string]*config.RedisSlots)
+
+	redisSlots := &config.RedisSlots{}
+	slotMap := make(map[string]*config.RedisSlots)
 	for _, shard := range content.([]interface{}) {
 		shardVar := shard.([]interface{})
 		left := int(shardVar[0].(int64))
 		right := int(shardVar[1].(int64))
+		redisSlots.Ranges = append(redisSlots.Ranges, config.RedisSlotRange{
+			Left:  left,
+			Right: right,
+		})
 
 		for i := 2; i < len(shardVar); i++ {
 			roleVar := shardVar[i].([]interface{})
 			ipPort := fmt.Sprintf("%s:%d", roleVar[0], roleVar[1])
-			slots, ok := dis[ipPort]
+			slots, ok := slotMap[ipPort]
 			if !ok {
-				dis[ipPort] = &config.RedisSlots{
+				slotMap[ipPort] = &config.RedisSlots{
 					Ranges: []config.RedisSlotRange{
 						{
 							Left: left, Right: right,
@@ -83,11 +89,11 @@ func GetClusterSlotDistribution(cli client.Redis) (map[string]*config.RedisSlots
 		}
 	}
 
-	for _, slot := range dis {
+	for _, slot := range slotMap {
 		sort.Sort(slot)
 	}
 
-	return dis, nil
+	return slotMap, redisSlots, nil
 }
 
 func CheckSlotDistributionEqual(src, dst []SlotOwner) bool {

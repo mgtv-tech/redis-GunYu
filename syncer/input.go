@@ -296,8 +296,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	}
 
 	if outSp.Offset <= 0 {
-		err = fmt.Errorf("read offset is zero : locSp(%v), outSp(%v), full(%v), rdb(%d)", locSp, outSp, isFullSync, rdbSize)
-		ri.logger.Errorf("%v", err)
+		ri.logger.Warnf("read offset is zero : locSp(%v), outSp(%v), full(%v), rdb(%d)", locSp, outSp, isFullSync, rdbSize)
 	} else {
 		ri.logger.Infof("meta sync : locSp(%v), outSp(%v), full(%v), rdb(%d)", locSp, outSp, isFullSync, rdbSize)
 	}

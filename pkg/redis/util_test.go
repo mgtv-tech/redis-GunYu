@@ -77,8 +77,14 @@ func (uts *utilTestSuite) TestGetAllClusterNode() {
 	log.Printf("%v\n", s)
 }
 
+func (uts *utilTestSuite) TestGetAllClusterShard4() {
+	s, err := GetAllClusterShard4(uts.cluster)
+	uts.Nil(err)
+	log.Printf("%v\n", s)
+}
+
 func (uts *utilTestSuite) TestGetAllClusterShard() {
-	s, err := GetAllClusterShard(uts.cli)
+	s, err := GetAllClusterShard(uts.cluster, "7.0")
 	uts.Nil(err)
 	log.Printf("%v\n", s)
 }

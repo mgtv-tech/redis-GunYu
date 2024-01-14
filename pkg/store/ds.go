@@ -206,6 +206,9 @@ func newDataSet(rdb *dataSetRdb, aofs []*dataSetAof) *dataSet {
 		aofSegs: aofs,
 		aofMap:  make(map[int64]*dataSetAof),
 	}
+	if len(aofs) == 0 {
+		return ds
+	}
 	for _, a := range aofs {
 		ds.aofMap[a.left] = a
 	}

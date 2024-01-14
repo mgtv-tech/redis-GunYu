@@ -373,15 +373,13 @@ func (rc *RedisConfig) GetClusterOptions() *RedisClusterOptions {
 	return rc.ClusterOptions
 }
 
-func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots) {
+func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots, slotRanges *RedisSlots) {
 	rc.slotsMap = slots
 	left := 16384
 	right := -1
 
-	unsorted := &RedisSlots{}
 	for _, r := range slots {
 		if len(r.Ranges) > 0 {
-			unsorted.Ranges = append(unsorted.Ranges, r.Ranges...)
 			if r.Ranges[0].Left < left {
 				left = r.Ranges[0].Left
 			}
@@ -392,8 +390,8 @@ func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots) {
 	}
 	rc.slotLeft = left
 	rc.slotRight = right
-	sort.Sort(unsorted)
-	rc.slots = *unsorted
+	sort.Sort(slotRanges)
+	rc.slots = *slotRanges
 }
 
 func (rc *RedisConfig) GetSlots(address string) *RedisSlots {
@@ -425,15 +423,29 @@ type RedisClusterShard struct {
 	Slaves []RedisNode
 }
 
+func (rcs *RedisClusterShard) CompareTypology(shard *RedisClusterShard) bool {
+	if !rcs.Master.AddressEqual(&shard.Master) {
+		return false
+	}
+
+	// compare slots
+	if !rcs.Slots.Equal(&shard.Slots) {
+		return false
+	}
+
+	return true
+}
+
 func (rcs *RedisClusterShard) Get(sel SelNodeStrategy) *RedisNode {
 	if sel == SelNodeStrategyMaster {
 		return &rcs.Master
 	} else if sel == SelNodeStrategyPreferSlave {
-		if len(rcs.Slaves) > 0 {
-			return &rcs.Slaves[0]
-		} else {
-			return &rcs.Master
+		for i := 0; i < len(rcs.Slaves); i++ {
+			if rcs.Slaves[i].Health == "online" {
+				return &rcs.Slaves[i]
+			}
 		}
+		return &rcs.Master
 	} else {
 		if len(rcs.Slaves) > 0 {
 			return &rcs.Slaves[0]
