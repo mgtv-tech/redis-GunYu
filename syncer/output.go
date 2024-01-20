@@ -359,7 +359,7 @@ func (ro *RedisOutput) NewRedisConn() (client.Redis, error) {
 func (ro *RedisOutput) sendAof(ctx context.Context, runId string, reader *bufio.Reader, offset int64, nsize int64) (err error) {
 	ro.logger.Infof("send aof : runId(%s), offset(%d), size(%d)", runId, offset, nsize)
 
-	sendBuf := make(chan cmdExecution, config.Get().Output.BatchCmdCount)
+	sendBuf := make(chan cmdExecution, config.Get().Output.BatchCmdCount*10)
 	replayQuit := usync.NewWaitCloserFromContext(ctx, nil)
 	// @TODO fetch source offset, calculate gap between source and output
 	//go ro.fetchOffset()
@@ -714,7 +714,7 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, runId 
 		}
 		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.Id, ro.cfg.InputName)
 
-		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid to occupy huge memory
+		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
 			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
 		} else {
 			cmdQueue = cmdQueue[:0]

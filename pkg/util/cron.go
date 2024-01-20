@@ -7,7 +7,7 @@ import (
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
 
-func CronWithCtx(ctx context.Context, duration time.Duration, fn func()) {
+func CronWithCtx(ctx context.Context, duration time.Duration, fn func(context.Context)) {
 	usync.SafeGo(func() {
 		ticker := time.NewTicker(duration)
 		defer ticker.Stop()
@@ -16,7 +16,7 @@ func CronWithCtx(ctx context.Context, duration time.Duration, fn func()) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				fn()
+				fn(ctx)
 			}
 		}
 	}, nil)

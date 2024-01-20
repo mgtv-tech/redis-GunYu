@@ -10,7 +10,8 @@ input:
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster2
-    maxSize: 1073741824
+    maxSize: 209715200
+    logSize: 20971520
   staleCheckpointDuration: 10m
 output:
   redis:

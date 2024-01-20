@@ -28,18 +28,20 @@ type reply struct {
 }
 
 func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
-	cc, err := cluster.NewCluster(&cluster.Options{
-		StartNodes:      cfg.Addresses,
-		Password:        cfg.Password,
-		HandleMoveError: cfg.GetClusterOptions().HandleMoveErr,
-		HandleAskError:  cfg.GetClusterOptions().HandleAskErr,
-
-		KeepAlive: 4,
-		AliveTime: time.Minute,
+	options := &cluster.Options{
+		StartNodes: cfg.Addresses,
+		Password:   cfg.Password,
+		KeepAlive:  4,
+		AliveTime:  time.Minute,
 		//ConnTimeout: ,
 		//ReadTimeout: ,
 		//WriteTimeout: ,
-	})
+	}
+	if cfg.GetClusterOptions() != nil {
+		options.HandleAskError = cfg.GetClusterOptions().HandleAskErr
+		options.HandleMoveError = cfg.GetClusterOptions().HandleMoveErr
+	}
+	cc, err := cluster.NewCluster(options)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +87,8 @@ func (cc *ClusterRedis) Do(cmd string, args ...interface{}) (interface{}, error)
 	return cc.client.Do(cmd, args...)
 }
 
+// @TODO
+// multi/exec : if slots are crossing, doesn't return error
 func (cc *ClusterRedis) Send(cmd string, args ...interface{}) error {
 	return cc.getBatcher().Put(cmd, args...)
 }

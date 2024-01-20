@@ -3,18 +3,20 @@ server:
   httpPort: 8801
 input:
   redis:
-    addresses: [127.0.0.1:6300]
+    addresses: [127.0.0.1:16300]
     type: cluster
   rdbParallel: 4
   mode: dynamic
+  syncFrom: prefer_slave
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster
-    maxSize: 1073741824
+    maxSize: 209715200
+    logSize: 20971520
   staleCheckpointDuration: 10m
 output:
   redis:
-    addresses: [127.0.0.1:6310]
+    addresses: [127.0.0.1:16310]
     type: cluster
   resumeFromBreakPoint: true
   keyExists: replace
@@ -26,7 +28,7 @@ log:
     stdout: true
 cluster:
   groupName: redis1
-  leaseTimeout: 3s
+  leaseTimeout: 30s
   metaEtcd: 
     endpoints:
       - 127.0.0.1:2379

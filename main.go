@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,8 +12,6 @@ import (
 	"github.com/ikenchina/redis-GunYu/cmd"
 	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/redis"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	"github.com/ikenchina/redis-GunYu/pkg/sync"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
@@ -31,7 +28,6 @@ func runCmd() error {
 	case "sync":
 		panicIfError(config.InitConfig(config.GetFlag().ConfigPath))
 		panicIfError(log.InitLog(*config.Get().Log))
-		panicIfError(fixConfig())
 		cmder = cmd.NewSyncerCmd()
 	case "rdb":
 		cmder = cmd.NewRdbCmd()
@@ -80,55 +76,4 @@ func panicIfError(err error) {
 		return
 	}
 	log.Panic(err)
-}
-
-func fixConfig() (err error) {
-
-	// redis version
-	fixVersion := func(redisCfg *config.RedisConfig) error {
-		if redisCfg.Version != "" {
-			return nil
-		}
-
-		cli, err := client.NewRedis(*redisCfg)
-		if err != nil {
-			log.Errorf("new redis error : addr(%s), error(%v)", redisCfg.Address(), err)
-			return err
-		}
-
-		ver, err := redis.GetRedisVersion(cli)
-		cli.Close()
-
-		if err != nil {
-			log.Errorf("redis get version error : addr(%s), error(%v)", redisCfg.Address(), err)
-			return err
-		}
-		if ver == "" {
-			return errors.New("cannot get redis version")
-		}
-
-		redisCfg.Version = ver
-		return nil
-	}
-	err = fixVersion(config.Get().Input.Redis)
-	if err != nil {
-		return
-	}
-
-	err = fixVersion(config.Get().Output.Redis)
-	if err != nil {
-		return
-	}
-
-	// addresses
-	if err = redis.FixTopology(config.Get().Input.Redis); err != nil {
-		return
-	}
-	if err = redis.FixTopology(config.Get().Output.Redis); err != nil {
-		return
-	}
-
-	// fix concurrency
-
-	return nil
 }

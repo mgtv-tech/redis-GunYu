@@ -29,3 +29,9 @@ func Xrecover(err *error, appendErrs ...error) {
 		}
 	}
 }
+
+func RecoverCallback(f func(e interface{})) {
+	if x := recover(); x != nil {
+		f(x)
+	}
+}

@@ -176,7 +176,7 @@ func (cluster *Cluster) Do(cmd string, args ...interface{}) (interface{}, error)
 			return nil, common.ErrAsk
 		}
 		if ret, err := cluster.handleAsk(node, reply.(redisError).Error(), cmd, args); err != nil {
-			return ret, fmt.Errorf("handle ask failed[%w]", err)
+			return ret, errors.Join(common.ErrAsk, fmt.Errorf("handle ask failed[%w]", err))
 		} else {
 			return ret, nil
 		}
@@ -398,6 +398,7 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 		return nil, errors.New(errMsg)
 	}
 
+	// @TODO handleMove
 	// When MOVED received, we check whether move address equal to
 	// previous one. If equal, then it's just an connection timeout
 	// error, return error and carry on. If not, then the master may

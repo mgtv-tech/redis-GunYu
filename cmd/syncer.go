@@ -27,6 +27,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
 	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
@@ -73,12 +74,16 @@ func (sc *SyncerCmd) stop() {
 }
 
 func (sc *SyncerCmd) Run() error {
+	err := sc.fixConfig()
+	if err != nil {
+		return err
+	}
+
 	defer sc.stop()
 
 	sc.startCron()
 	sc.startGrpcServer()
 	sc.startHttpServer()
-	var err error
 
 	for {
 		err = sc.run()
@@ -90,20 +95,20 @@ func (sc *SyncerCmd) Run() error {
 		} else if errors.Is(err, syncer.ErrRestart) {
 			sc.logger.Infof("syncer restart : err(%v)", err)
 			fixErr := util.RetryLinearJitter(sc.waitCloser.Context(), func() error {
-				if err := redis.FixTopology(config.Get().Input.Redis); err != nil {
-					return err
-				}
-				if err := redis.FixTopology(config.Get().Output.Redis); err != nil {
-					return err
-				}
-				return nil
+				return sc.fixConfig()
 			}, 3, time.Second*3, 0.3)
 			if fixErr != nil {
 				err = errors.Join(fixErr, err)
 				break
 			}
 			if errors.Is(err, syncer.ErrRedisTypologyChanged) {
-				config.Get().Output.Redis.SetMigrating(true)
+				// move :
+				//  transaction mode :
+				//  non-transaction mode :
+				// ask :
+				if errors.Is(err, common.ErrAsk) {
+					config.Get().Output.Redis.SetMigrating(true)
+				}
 			}
 			continue
 		}
@@ -114,7 +119,7 @@ func (sc *SyncerCmd) Run() error {
 	return sc.waitCloser.Error()
 }
 
-func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput bool, watchOutput bool, err error) {
+func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput bool, watchOutput bool, txnMode bool, err error) {
 	inputRedis := config.Get().Input.Redis
 	outputRedis := config.Get().Output.Redis
 
@@ -128,6 +133,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 
 	syncFrom := config.Get().Input.SyncFrom
 	inputMode := config.Get().Input.Mode
+	enableTransaction := *outputRedis.ClusterOptions.ReplayTransaction
 
 	if outputRedis.IsStanalone() {
 		// standalone <-> standalone  ==> multi/exec
@@ -141,13 +147,17 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			}
 			inputs := inputRedis.SelNodes(false, syncFrom)
 			for i, source := range inputs {
-				cfgs = append(cfgs, syncer.SyncerConfig{
+				scg := syncer.SyncerConfig{
 					Id:             i,
 					CanTransaction: true,
 					Output:         outputRedis.Index(i),
 					Input:          source,
 					Channel:        *config.Get().Channel.Clone(),
-				})
+				}
+				if !enableTransaction {
+					scg.CanTransaction = false
+				}
+				cfgs = append(cfgs, scg)
 			}
 		} else if inputRedis.IsCluster() {
 			if len(outputRedis.Addresses) != 1 { // @TODO
@@ -163,13 +173,17 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			}
 			for i, source := range inputs {
 				source.Type = config.RedisTypeStandalone
-				cfgs = append(cfgs, syncer.SyncerConfig{
+				scg := syncer.SyncerConfig{
 					Id:             i,
 					CanTransaction: true,
 					Output:         *outputRedis,
 					Input:          source,
 					Channel:        *config.Get().Channel.Clone(),
-				})
+				}
+				if !enableTransaction {
+					scg.CanTransaction = false
+				}
+				cfgs = append(cfgs, scg)
 			}
 			// monitor typology, if changed, restart syncer
 			watchInput = true
@@ -219,13 +233,17 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 				if len(inputs) == len(sortedOut) {
 					for i, source := range inputs {
 						source.Type = config.RedisTypeStandalone
-						cfgs = append(cfgs, syncer.SyncerConfig{
+						scg := syncer.SyncerConfig{
 							Id:             i,
 							CanTransaction: true,
 							Output:         sortedOut[i], // @TODO cluster mode or stadalone mode?
 							Input:          source,
 							Channel:        *config.Get().Channel.Clone(),
-						})
+						}
+						if !enableTransaction {
+							scg.CanTransaction = false
+						}
+						cfgs = append(cfgs, scg)
 					}
 				} else {
 					for i, source := range inputs {
@@ -274,7 +292,104 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 		}
 	}
 
+	for _, cc := range cfgs {
+		if cc.CanTransaction {
+			txnMode = true
+			break
+		}
+	}
+
+	// check all shards
+	if inputRedis.IsCluster() && txnMode { // check it every time,
+		migrating, err := checkMigrating(sc.waitCloser.Context(), *inputRedis)
+		if err != nil {
+			sc.logger.Errorf("check migrating : %v", err)
+			migrating = true
+		}
+		if migrating {
+			for i := 0; i < len(cfgs); i++ {
+				cfgs[i].CanTransaction = false
+			}
+			if err == nil {
+				inputRedis.SetMigrating(true)
+			}
+		}
+	}
+	if outputRedis.IsCluster() && txnMode {
+		migrating, err := checkMigrating(sc.waitCloser.Context(), *outputRedis)
+		if err != nil {
+			sc.logger.Errorf("check migrating : %v", err)
+			migrating = true
+		}
+		if migrating {
+			for i := 0; i < len(cfgs); i++ {
+				cfgs[i].CanTransaction = false
+			}
+			if err == nil {
+				outputRedis.SetMigrating(true)
+			}
+		}
+	}
+
 	return
+}
+
+func checkMigrating(ctx context.Context, redisCfg config.RedisConfig) (bool, error) {
+	shards := redisCfg.GetClusterShards()
+
+	conGroup := usync.NewGroup(ctx, usync.WithCancelIfError(true))
+	defer conGroup.Cancel()
+
+	retCh := make(chan bool, 1)
+	for _, shard := range shards {
+		node := shard.Get(config.SelNodeStrategyMaster)
+		if node == nil {
+			return false, errors.New("no master")
+		}
+		conGroup.Go(func(ctx context.Context) error {
+			cli, err := client.NewRedis(config.RedisConfig{
+				Addresses: []string{node.Address},
+				UserName:  redisCfg.UserName,
+				Password:  redisCfg.Password,
+				TlsEnable: redisCfg.TlsEnable,
+				Type:      config.RedisTypeStandalone,
+				Version:   redisCfg.Version,
+			})
+			if err != nil {
+				return err
+			}
+			defer cli.Close()
+
+			mm, _, err := redis.GetAllClusterNode(cli)
+			if err != nil {
+				return err
+			}
+			for _, m := range mm {
+				if len(m.MigratingSlots) > 0 {
+					select {
+					case retCh <- true:
+					default:
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	usync.SafeGo(func() {
+		conGroup.Wait()
+		select {
+		case retCh <- false:
+		default:
+		}
+	}, nil)
+
+	migrating := <-retCh
+	err := conGroup.WrapError()
+	if migrating {
+		err = nil
+	}
+	return migrating, err
 }
 
 func (sc *SyncerCmd) setSyncer(key string, sy syncer.Syncer, wait usync.WaitCloser) {
@@ -308,17 +423,13 @@ func (sc *SyncerCmd) run() error {
 	sc.runWait = usync.NewWaitCloserFromParent(sc.waitCloser, nil) // run scope
 
 	// syncer configurations
-	cfgs, watchIn, watchOut, err := sc.syncerConfigs()
+	cfgs, watchIn, watchOut, txnMode, err := sc.syncerConfigs()
 	if err != nil {
 		return err
 	}
 
-	// monitor the typology of redis
-	if watchIn {
-		sc.checkTypology(sc.runWait, *config.Get().Input.Redis)
-	}
-	if watchOut {
-		sc.checkTypology(sc.runWait, *config.Get().Output.Redis)
+	if watchIn || watchOut {
+		sc.checkTypology(sc.runWait, watchIn, watchOut, txnMode)
 	}
 
 	// single or cluster mode
@@ -521,7 +632,7 @@ func (sc *SyncerCmd) startCron() {
 
 	util.CronWithCtx(sc.waitCloser.Context(), stale, sc.gcStaleCheckpoint)
 
-	usync.SafeGo(func() { sc.storageSize() }, nil)
+	usync.SafeGo(func() { sc.storageSize(context.Background()) }, nil)
 	util.CronWithCtx(sc.waitCloser.Context(), time.Minute, sc.storageSize)
 }
 
@@ -538,7 +649,7 @@ var (
 	})
 )
 
-func (sc *SyncerCmd) storageSize() {
+func (sc *SyncerCmd) storageSize(ctx context.Context) {
 	if config.Get().Channel == nil || config.Get().Channel.Storer == nil {
 		return
 	}
@@ -552,7 +663,7 @@ func (sc *SyncerCmd) storageSize() {
 	}
 }
 
-func (sc *SyncerCmd) gcStaleCheckpoint() {
+func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 	sc.logger.Debugf("gc stale checkpoints...")
 
 	// masters and slaves
@@ -662,81 +773,156 @@ func (sc *SyncerCmd) gcStaleCheckpoint() {
 	gcStaleStorer()
 }
 
-func (sc *SyncerCmd) diffTypology(preShards []*config.RedisClusterShard, redisCfg config.RedisConfig) (bool, []*config.RedisClusterShard, error) {
-	cli, err := client.NewRedis(redisCfg)
-	if err != nil {
-		return false, nil, err
-	}
-	defer cli.Close()
-	shards, err := redis.GetAllClusterShard(cli, redisCfg.Version)
-	if err != nil {
-		return false, nil, err
-	}
-
-	if len(preShards) != len(shards) {
-		return true, shards, nil
-	}
-
-	for _, preShard := range preShards {
-		equal := false
-		for _, shard := range shards {
-			// @TODO
-			// CompareTypology does not compare slaves,
-			// but when syncFrom is preferSlave and preShards has not slaves,
-			// should check slaves,
-			if preShard.CompareTypology(shard) {
-				equal = true
-			}
-		}
-		if !equal {
-			return true, shards, nil
-		}
-	}
-	return false, shards, nil
-}
-
-// check :
-//  1. failover : restart syncers
-//  2. add shards : restart syncers
+// monitor the typology of redis
+// should restart if fix one of case below
+//  1. the amount of input shards is changed
+//  2. transaction mode is changed
+//  3. input role :
+//     3.1 master is changed
+//     3.2 slave's status is changed and configuration is prefer_slave ?
+//
+// what to do
+// 1. check migration status and update configuration
+// 2.
+// @TODO
 //  3. remove shards :
 //     @TODO ensure all data is synced from the removed shard to the output
 //     @TODO corner case : syncer may crash or restart
-//     @TODO if slots are changed, then checkpoint is changed
-//  4. slots distribution : restart syncers
-func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser, redisCfg config.RedisConfig) {
-	preShards := redisCfg.GetClusterShards()
+func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
+	watchIn, watchOut, txnMode bool) {
 
-	wait.WgAdd(1)
-	usync.SafeGo(func() {
-		defer wait.WgDone()
-		interval := time.Duration(config.Get().Server.CheckRedisTypologyTicker) * time.Second
-		ticker := time.NewTicker(interval)
-		sc.logger.Infof("cronjob, check typology of redis cluster : redis(%s), ticker(%s)", redisCfg.Address(), interval.String())
-		defer func() { ticker.Stop() }()
-		for {
-			select {
-			case <-wait.Context().Done():
-				return
-			case <-ticker.C:
-			}
-			changed, _, err := sc.diffTypology(preShards, redisCfg)
-			if err != nil {
-				sc.logger.Errorf("check redis typology : changed(%v), err(%v), redis(%v)", changed, err, redisCfg.Addresses)
-			}
+	prevInRedisCfg := config.Get().Input.Redis
+	prevOutRedisCfg := config.Get().Output.Redis
+	allShards := config.Get().Input.Mode != config.InputModeStatic
+	syncFrom := config.Get().Input.SyncFrom
+	interval := time.Duration(config.Get().Server.CheckRedisTypologyTicker) * time.Second
 
-			if changed {
-				sc.logger.Infof("check redis typology : changed(%v), err(%v), redis(%v)", changed, err, redisCfg.Addresses)
-				wait.Close(syncer.ErrRestart)
-				return
-			}
+	sc.logger.Infof("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut)
+
+	util.CronWithCtx(wait.Context(), interval, func(ctx context.Context) {
+		defer util.RecoverCallback(func(e interface{}) { wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("panic : %v", e))) })
+
+		sc.logger.Debugf("diff typology")
+
+		restart := sc.diffTypology(ctx, watchIn, watchOut,
+			prevInRedisCfg, prevOutRedisCfg,
+			txnMode, allShards,
+			syncFrom, *config.Get().Output.Redis.ClusterOptions.ReplayTransaction)
+
+		if restart {
+			sc.logger.Infof("checkTypology : restart")
+			wait.Close(syncer.ErrRestart)
+			return
 		}
-	}, func(i interface{}) {
-		wait.Close(syncer.ErrRestart)
 	})
 }
 
+func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bool,
+	prevInRedisCfg *config.RedisConfig, prevOutRedisCfg *config.RedisConfig,
+	txnMode bool,
+	allShards bool,
+	syncFrom config.SelNodeStrategy, replayTransaction bool) bool {
+
+	prevInSelNodes := prevInRedisCfg.SelNodes(allShards, syncFrom)
+	var inRedisCfg, outRedisCfg *config.RedisConfig
+	restart := false
+
+	util.AndCondition(func() bool {
+		if watchIn {
+			inRedisCfg = prevInRedisCfg.Clone()
+			err := redis.FixTopology(inRedisCfg)
+			if err != nil {
+				sc.logger.Errorf("FixTypology : redis(%s), error(%v)", inRedisCfg.Address(), err)
+				return false
+			}
+
+			inSelNodes := inRedisCfg.SelNodes(allShards, syncFrom)
+			if len(inSelNodes) != len(prevInSelNodes) {
+				// @TODO only start affected syncer
+				restart = true
+				return false
+			}
+			// the addresses of selected nodes are different, e.g. prefer_slave
+			// up to configration @TODO
+		}
+		return true
+	}, func() bool {
+		if watchOut {
+			outRedisCfg = prevOutRedisCfg.Clone()
+			err := redis.FixTopology(outRedisCfg)
+			if err != nil {
+				sc.logger.Errorf("FixTypology : redis(%s), error(%v)", outRedisCfg.Address(), err)
+				return false
+			}
+			// if master is changed, restart ? redis client will handle it
+		}
+		return true
+	}, func() bool {
+		// transaction
+		if replayTransaction &&
+			watchIn && watchOut && (prevInRedisCfg.IsCluster() && prevOutRedisCfg.IsCluster()) {
+			inNodes := inRedisCfg.SelNodes(allShards, syncFrom)
+			outNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
+			for _, in := range inNodes {
+				inSlots := in.GetAllSlots()
+				equal := false
+				for _, out := range outNodes {
+					if inSlots.Equal(out.GetAllSlots()) {
+						equal = true
+						break
+					}
+				}
+				if !equal {
+					restart = txnMode
+					return !restart
+				}
+			}
+			return true
+		}
+		return false
+	}, func() bool {
+		// check migration status
+		migrating, err := checkMigrating(ctx, *inRedisCfg)
+		if err != nil {
+			sc.logger.Errorf("check migrating : %v", err)
+			return false
+		} else {
+			if txnMode && migrating {
+				restart = true
+			} else if txnMode && !migrating {
+				//go ahead
+			} else if !txnMode && migrating {
+				return false
+			} else if !txnMode && !migrating {
+				// go ahead
+			}
+		}
+		return !restart
+	}, func() bool {
+		migrating, err := checkMigrating(ctx, *outRedisCfg)
+		if err != nil {
+			sc.logger.Errorf("check migrating : %v", err)
+			return false
+		} else {
+			// @TODO only restart affected nodes
+			if txnMode == migrating { // to non-txn state
+				restart = true
+			} else if txnMode && !migrating {
+				// do nothing
+			} else if !txnMode && migrating {
+				return false
+			} else if !txnMode && !migrating {
+				restart = true
+			}
+		}
+		return !restart
+	})
+
+	return restart
+}
+
 func (sc *SyncerCmd) startHttpServer() {
-	listen := fmt.Sprintf("%s:%d", config.Get().Server.HttpListen, config.Get().Server.HttpPort)
+	listen := fmt.Sprintf("%s:%d", config.Get().Server.HttpBind, config.Get().Server.HttpPort)
 	router := httprouter.New()
 
 	// prometheus
@@ -745,7 +931,7 @@ func (sc *SyncerCmd) startHttpServer() {
 		sc.Stop()
 	})
 	router.HandlerFunc(http.MethodGet, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
-		sc.gcStaleCheckpoint()
+		sc.gcStaleCheckpoint(sc.runWait.Context())
 	})
 
 	router.HandlerFunc(http.MethodGet, "/debug/pprof/", pprof.Index)
@@ -846,4 +1032,76 @@ func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ReplService_SyncServer)
 		}
 	}
 	return err
+}
+
+func (sc *SyncerCmd) fixConfig() (err error) {
+
+	// redis version
+	fixVersion := func(redisCfg *config.RedisConfig) error {
+		if redisCfg.Version != "" {
+			return nil
+		}
+
+		cli, err := client.NewRedis(*redisCfg)
+		if err != nil {
+			log.Errorf("new redis error : addr(%s), error(%v)", redisCfg.Address(), err)
+			return err
+		}
+
+		ver, err := redis.GetRedisVersion(cli)
+		cli.Close()
+
+		if err != nil {
+			log.Errorf("redis get version error : addr(%s), error(%v)", redisCfg.Address(), err)
+			return err
+		}
+		if ver == "" {
+			return errors.New("cannot get redis version")
+		}
+
+		redisCfg.Version = ver
+		return nil
+	}
+	err = fixVersion(config.Get().Input.Redis)
+	if err != nil {
+		return
+	}
+
+	err = fixVersion(config.Get().Output.Redis)
+	if err != nil {
+		return
+	}
+
+	// addresses
+	if err = redis.FixTopology(config.Get().Input.Redis); err != nil {
+		return
+	}
+	if err = redis.FixTopology(config.Get().Output.Redis); err != nil {
+		return
+	}
+
+	// fix concurrency
+
+	return nil
+}
+
+func shardsEqual(shardA []*config.RedisClusterShard, shardB []*config.RedisClusterShard) bool {
+	if len(shardA) != len(shardB) {
+		return false
+	}
+
+	for _, a := range shardA {
+		equal := false
+		for _, b := range shardB {
+			if a.Slots.Equal(&b.Slots) {
+				equal = true
+				break
+			}
+		}
+		if !equal {
+			return false
+		}
+	}
+
+	return true
 }

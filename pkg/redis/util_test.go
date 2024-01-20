@@ -49,7 +49,7 @@ type utilTestSuite struct {
 
 func (uts *utilTestSuite) SetupTest() {
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{"127.0.0.1:6707"},
+		Addresses: []string{"127.0.0.1:6300"},
 		Type:      config.RedisTypeStandalone,
 	})
 	uts.Nil(err)

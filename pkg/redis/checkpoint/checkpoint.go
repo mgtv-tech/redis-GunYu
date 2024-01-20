@@ -149,13 +149,16 @@ func fetchCheckpoint(runIds []string, cli client.Redis, db int, checkpointName s
 		// read line by line and parse the offset
 		for i := 0; i < len(replyList); i += 2 {
 			lineS, _ := common.String(replyList[i], nil)
+
 			matchId := strings.HasPrefix(lineS, runIds[0])
 			if !matchId && len(runIds) > 1 {
 				matchId = strings.HasPrefix(lineS, runIds[1])
 			}
 			if matchId {
 				if strings.Contains(lineS, CheckpointOffsetSuffix) {
+
 					cpi.Offset, err = common.Int64(replyList[i+1], nil)
+					log.Infof("---> %s  : %d", lineS, cpi.Offset)
 					if err != nil {
 						return nil, fmt.Errorf("parse offset(%v) of checkpoint(%s) error : error(%w), runid(%v)",
 							replyList[i+1], checkpointName, err, runIds)
@@ -218,9 +221,8 @@ func SetCheckpoint(cli client.Redis, cp *CheckpointInfo) error {
 	if cp.Version != "" {
 		kvs = append(kvs, cp.VersionKey(), cp.Version)
 	}
-	if cp.Offset != 0 {
-		kvs = append(kvs, cp.OffsetKey(), strconv.FormatInt(cp.Offset, 10))
-	}
+
+	kvs = append(kvs, cp.OffsetKey(), strconv.FormatInt(cp.Offset, 10))
 
 	if len(kvs) > 0 {
 		_, err := cli.Do("hset", kvs...)

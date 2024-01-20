@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -235,6 +236,7 @@ func ParseClusterNode(content string) []*ClusterNodeInfo {
 		for z := 8; z < len(items); z++ {
 			if strings.HasPrefix(items[z], "[") {
 				// migrating on myself node
+				cni.MigratingSlots = append(cni.MigratingSlots, items[z])
 			} else {
 				cni.Slots = append(cni.Slots, items[z])
 			}
@@ -279,7 +281,6 @@ func GetClusterIsMigrating(cli client.Redis) (bool, error) {
 		}
 		items := splitLineToArgs(line)
 		if len(items) <= 8 {
-			log.Errorf("the number of args is less than 9 : line(%s)", line)
 			continue
 		}
 
@@ -305,6 +306,7 @@ type ClusterNodeInfo struct {
 	ConfigEpoch     string
 	LinkStat        string
 	Slots           []string
+	MigratingSlots  []string
 }
 
 func GetAllClusterShard4(cli client.Redis) ([]*config.RedisClusterShard, error) {
@@ -340,6 +342,7 @@ func clusterNodesToShards(content string) ([]*config.RedisClusterShard, error) {
 				return nil, err
 			}
 			shard.Slots = slots
+			sort.Sort(&shard.Slots)
 
 			// slaves
 			for z := 0; z < len(nodes); z++ {
@@ -549,6 +552,10 @@ func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 		}
 	}
 
+	for _, shard := range cShards {
+		sort.Sort(&shard.Slots)
+	}
+
 	return cShards, nil
 }
 
@@ -567,24 +574,7 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		}
 		defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
 
-		masters, slaves, err := GetAllClusterAddress(cli)
-		if err != nil {
-			return err
-		}
-		redisCfg.SetMasterSlaves(masters, slaves)
-		// if inputMode != config.InputModeStatic {
-		// 	redisCfg.Addresses = masters
-		// 	redisCfg.Addresses = append(redisCfg.Addresses, slaves...)
-		// }
-
-		// fix slots
-		slotsMap, slotRanges, err := GetClusterSlotDistribution(cli)
-		if err != nil {
-			return err
-		}
-		redisCfg.SetSlots(slotsMap, slotRanges)
-
-		// fix shards
+		// fix shards and slots
 		shards, err := GetAllClusterShard(cli, redisCfg.Version)
 		if err != nil {
 			return err

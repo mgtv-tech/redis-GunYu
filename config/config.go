@@ -91,9 +91,9 @@ func (c *Config) fix() error {
 }
 
 type ServerConfig struct {
-	HttpListen               string
-	HttpPort                 int  `yaml:"httpPort"`
-	CheckRedisTypologyTicker uint `yaml:"checkRedisTypologyTicker"` // seconds
+	HttpBind                 string `yaml:"httpBind"`
+	HttpPort                 int    `yaml:"httpPort"`
+	CheckRedisTypologyTicker uint   `yaml:"checkRedisTypologyTicker"` // seconds
 	GracefullStopTimeout     time.Duration
 }
 
@@ -101,12 +101,15 @@ func (sc *ServerConfig) fix() error {
 	if sc.CheckRedisTypologyTicker == 0 {
 		sc.CheckRedisTypologyTicker = 30 // 30 seconds
 	}
-	// if len(sc.HttpListen) == 0 {
-	// 	sc.HttpListen = ""
-	// }
+
 	if sc.GracefullStopTimeout < time.Second {
 		sc.GracefullStopTimeout = 5 * time.Second
 	}
+
+	if sc.HttpPort == 0 {
+		sc.HttpPort = 18000
+	}
+
 	return nil
 }
 
@@ -217,7 +220,6 @@ type OutputConfig struct {
 	BatchBufferSize          uint64      `yaml:"batchBufferSize"`
 	ReplayRdbParallel        int         `yaml:"replayRdbParallel"`
 	UpdateCheckpointTickerMs int         `yaml:"updateCheckpointTickerMs"`
-	RedisProtoMaxBulkLen     uint64
 }
 
 func (of *OutputConfig) fix() error {
@@ -229,6 +231,7 @@ func (of *OutputConfig) fix() error {
 	}
 	if of.ResumeFromBreakPoint == nil {
 		*of.ResumeFromBreakPoint = true
+		of.TargetDb = -1
 	}
 	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
 		return newConfigError("resume from breakpoint, but targetdb is not -1 : db(%d)", of.TargetDb)
@@ -239,7 +242,7 @@ func (of *OutputConfig) fix() error {
 		of.KeyExists = "replace"
 	}
 	if of.MaxProtoBulkLen <= 0 {
-		of.MaxProtoBulkLen = 500 * (1024 * 1024) // redis default value is 512MiB, [1MiB, max_int]
+		of.MaxProtoBulkLen = 512 * (1024 * 1024) // redis default value is 512MiB, [1MiB, max_int]
 	}
 
 	if of.BatchCmdCount <= 0 || of.BatchCmdCount > 200 {
@@ -328,8 +331,6 @@ func InitConfig(path string) error {
 
 type RedisConfig struct {
 	Addresses      []string
-	masters        []string
-	slaves         []string
 	shards         []*RedisClusterShard
 	UserName       string `yaml:"userName"`
 	Password       string `yaml:"password"`
@@ -344,6 +345,33 @@ type RedisConfig struct {
 	isMigrating    bool
 }
 
+func (rc *RedisConfig) Clone() *RedisConfig {
+	cloned := &RedisConfig{
+		Addresses:      make([]string, len(rc.Addresses)),
+		shards:         make([]*RedisClusterShard, 0, len(rc.shards)),
+		UserName:       rc.UserName,
+		Password:       rc.Password,
+		TlsEnable:      rc.TlsEnable,
+		Type:           rc.Type,
+		Version:        rc.Version,
+		slotLeft:       rc.slotLeft,
+		slotRight:      rc.slotRight,
+		slotsMap:       make(map[string]*RedisSlots),
+		slots:          *rc.slots.Clone(),
+		ClusterOptions: rc.ClusterOptions.Clone(),
+		isMigrating:    rc.isMigrating,
+	}
+
+	copy(cloned.Addresses, rc.Addresses)
+	for _, shard := range rc.shards {
+		cloned.shards = append(cloned.shards, shard.Clone())
+	}
+	for k, v := range rc.slotsMap {
+		cloned.slotsMap[k] = v.Clone()
+	}
+	return cloned
+}
+
 func (rc *RedisConfig) IsMigrating() bool {
 	return rc.isMigrating
 }
@@ -353,19 +381,31 @@ func (rc *RedisConfig) SetMigrating(m bool) {
 }
 
 type RedisClusterOptions struct {
-	HandleMoveErr bool
-	HandleAskErr  bool
+	HandleMoveErr     bool
+	HandleAskErr      bool
+	ReplayTransaction *bool
 }
 
-func (rco *RedisClusterOptions) clone() *RedisClusterOptions {
-	t := &RedisClusterOptions{}
-	*t = *rco
+func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
+	t := &RedisClusterOptions{
+		HandleMoveErr: rco.HandleMoveErr,
+		HandleAskErr:  rco.HandleAskErr,
+	}
+	if rco.ReplayTransaction != nil {
+		rt := *rco.ReplayTransaction
+		t.ReplayTransaction = &rt
+	}
+
 	return t
 }
 
 func (rco *RedisClusterOptions) fix() error {
 	rco.HandleAskErr = true
 	rco.HandleMoveErr = true
+	if rco.ReplayTransaction == nil {
+		txn := true
+		rco.ReplayTransaction = &txn
+	}
 	return nil
 }
 
@@ -373,7 +413,7 @@ func (rc *RedisConfig) GetClusterOptions() *RedisClusterOptions {
 	return rc.ClusterOptions
 }
 
-func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots, slotRanges *RedisSlots) {
+func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots, sortedSlots *RedisSlots) {
 	rc.slotsMap = slots
 	left := 16384
 	right := -1
@@ -390,8 +430,7 @@ func (rc *RedisConfig) SetSlots(slots map[string]*RedisSlots, slotRanges *RedisS
 	}
 	rc.slotLeft = left
 	rc.slotRight = right
-	sort.Sort(slotRanges)
-	rc.slots = *slotRanges
+	rc.slots = *sortedSlots
 }
 
 func (rc *RedisConfig) GetSlots(address string) *RedisSlots {
@@ -407,9 +446,19 @@ func (rc *RedisConfig) GetAllSlots() *RedisSlots {
 
 func (rc *RedisConfig) SetClusterShards(sds []*RedisClusterShard) {
 	rc.shards = sds
+	slotMap := make(map[string]*RedisSlots)
+	slotRange := &RedisSlots{}
 	for i, s := range rc.shards {
 		s.id = i
+		slotRange.Ranges = append(slotRange.Ranges, s.Slots.Ranges...)
+		sr := s.Slots
+		slotMap[s.Master.Address] = &sr
+		for _, slave := range s.Slaves {
+			slotMap[slave.Address] = &sr
+		}
 	}
+	sort.Sort(slotRange)
+	rc.SetSlots(slotMap, slotRange)
 }
 
 func (rc *RedisConfig) GetClusterShards() []*RedisClusterShard {
@@ -418,9 +467,20 @@ func (rc *RedisConfig) GetClusterShards() []*RedisClusterShard {
 
 type RedisClusterShard struct {
 	id     int
-	Slots  RedisSlots
+	Slots  RedisSlots // sorted
 	Master RedisNode
 	Slaves []RedisNode
+}
+
+func (rcs *RedisClusterShard) Clone() *RedisClusterShard {
+	cloned := &RedisClusterShard{
+		id:     rcs.id,
+		Slots:  *rcs.Slots.Clone(),
+		Master: rcs.Master,
+		Slaves: make([]RedisNode, len(rcs.Slaves)),
+	}
+	copy(cloned.Slaves, rcs.Slaves)
+	return cloned
 }
 
 func (rcs *RedisClusterShard) CompareTypology(shard *RedisClusterShard) bool {
@@ -480,6 +540,14 @@ type RedisSlots struct {
 	Ranges []RedisSlotRange
 }
 
+func (rs *RedisSlots) Clone() *RedisSlots {
+	cloned := &RedisSlots{
+		Ranges: make([]RedisSlotRange, len(rs.Ranges)),
+	}
+	copy(cloned.Ranges, rs.Ranges)
+	return cloned
+}
+
 func (rs *RedisSlots) Equal(b *RedisSlots) bool {
 	if len(rs.Ranges) != len(b.Ranges) {
 		return false
@@ -506,33 +574,6 @@ func (rs *RedisSlots) Swap(i, j int) {
 	t := rs.Ranges[i]
 	rs.Ranges[i] = rs.Ranges[j]
 	rs.Ranges[j] = t
-}
-
-func (rc *RedisConfig) SetMasterSlaves(masters []string, slaves []string) {
-	rc.masters = masters
-	rc.slaves = slaves
-}
-
-func (rc *RedisConfig) GetAllAddresses() (addrs []string) {
-	if rc.IsStanalone() {
-		return rc.Addresses
-	}
-	addrs = append(addrs, rc.masters...)
-	addrs = append(addrs, rc.slaves...)
-	return
-}
-
-func (rc *RedisConfig) GetAddress(role RedisRole) (addrs []string) {
-	switch role {
-	case RedisRoleAll:
-		addrs = append(addrs, rc.masters...)
-		addrs = append(addrs, rc.slaves...)
-	case RedisRoleMaster:
-		return rc.masters
-	case RedisRoleSlave:
-		return rc.slaves
-	}
-	return
 }
 
 func (rc *RedisConfig) fix() error {
@@ -634,7 +675,7 @@ func (rc *RedisConfig) SelNodes(allShards bool, sel SelNodeStrategy) []RedisConf
 			Password:       rc.Password,
 			TlsEnable:      rc.TlsEnable,
 			Type:           rc.Type,
-			ClusterOptions: rc.ClusterOptions.clone(),
+			ClusterOptions: rc.ClusterOptions.Clone(),
 			isMigrating:    rc.isMigrating,
 		}
 		slots := rc.GetSlots(r)

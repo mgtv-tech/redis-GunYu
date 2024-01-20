@@ -8,7 +8,7 @@ input:
 channel:
   storer:
     dirPath: /tmp/redisgunyu
-    maxSize: 10737418240
+    maxSize: 10737418240 
 output:
   redis:
     addresses: [127.0.0.1:6717]
