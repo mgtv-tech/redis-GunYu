@@ -42,6 +42,8 @@ var (
 	// leadership
 	ErrLeaderHandover = fmt.Errorf("%w %s", ErrRole, "hand over leadership")
 	ErrLeaderTakeover = fmt.Errorf("%w %s", ErrRole, "take over leadership")
+	// data
+	ErrCorrupted = fmt.Errorf("%w %s", ErrBreak, "corrupted")
 )
 
 type SyncerConfig struct {

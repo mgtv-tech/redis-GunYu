@@ -91,10 +91,10 @@ func (c *Config) fix() error {
 }
 
 type ServerConfig struct {
-	HttpBind                 string `yaml:"httpBind"`
-	HttpPort                 int    `yaml:"httpPort"`
-	CheckRedisTypologyTicker uint   `yaml:"checkRedisTypologyTicker"` // seconds
-	GracefullStopTimeout     time.Duration
+	HttpBind                 string        `yaml:"httpBind"`
+	HttpPort                 int           `yaml:"httpPort"`
+	CheckRedisTypologyTicker uint          `yaml:"checkRedisTypologyTicker"` // seconds
+	GracefullStopTimeout     time.Duration `yaml:"gracefullStopTimeout"`
 }
 
 func (sc *ServerConfig) fix() error {
@@ -119,6 +119,7 @@ type InputConfig struct {
 	rdbParallelLimiter chan struct{}
 	Mode               InputMode
 	SyncFrom           SelNodeStrategy `yaml:"syncFrom"`
+	SyncDelayTestKey   string          `yaml:"syncDelayTestKey"`
 }
 
 func (ic *InputConfig) fix() error {
@@ -213,7 +214,8 @@ type OutputConfig struct {
 	KeyExistsLog             bool        `yaml:"keyExistsLog"`
 	FunctionExists           string      `yaml:"functionExists"`
 	MaxProtoBulkLen          int         `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
-	TargetDb                 int         `yaml:"targetDb"`
+	TargetDbCfg              *int        `yaml:"targetDb"`
+	TargetDb                 int         `yaml:"-"`
 	TargetDbMap              map[int]int `yaml:"targetDbMap"`
 	BatchCmdCount            uint        `yaml:"batchCmdCount"`
 	BatchTickerMs            int         `yaml:"batchTickerMs"`
@@ -229,10 +231,16 @@ func (of *OutputConfig) fix() error {
 	if err := of.Redis.fix(); err != nil {
 		return err
 	}
+	if of.TargetDbCfg == nil {
+		of.TargetDb = -1
+	} else {
+		of.TargetDb = *of.TargetDbCfg
+	}
 	if of.ResumeFromBreakPoint == nil {
 		*of.ResumeFromBreakPoint = true
 		of.TargetDb = -1
 	}
+
 	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
 		return newConfigError("resume from breakpoint, but targetdb is not -1 : db(%d)", of.TargetDb)
 	}
@@ -341,7 +349,7 @@ type RedisConfig struct {
 	slotRight      int
 	slotsMap       map[string]*RedisSlots
 	slots          RedisSlots
-	ClusterOptions *RedisClusterOptions
+	ClusterOptions *RedisClusterOptions `yaml:"clusterOptions"`
 	isMigrating    bool
 }
 
@@ -381,9 +389,9 @@ func (rc *RedisConfig) SetMigrating(m bool) {
 }
 
 type RedisClusterOptions struct {
-	HandleMoveErr     bool
-	HandleAskErr      bool
-	ReplayTransaction *bool
+	HandleMoveErr     bool  `yaml:"handleMoveErr"`
+	HandleAskErr      bool  `yaml:"handleAskErr"`
+	ReplayTransaction *bool `yaml:"replayTransaction"`
 }
 
 func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
@@ -620,16 +628,19 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 	return sre
 }
 
-func (rc *RedisConfig) SelNodes(allShards bool, sel SelNodeStrategy) []RedisConfig {
+func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisConfig {
 	ret := []RedisConfig{}
 	var addrs []string
+	var allShards []*RedisClusterShard
 	if rc.IsStanalone() {
 		addrs = rc.Addresses
+		allShards = append(allShards, rc.shards...)
 	} else {
-		if allShards {
+		if selAllShards {
 			for _, shard := range rc.shards {
 				if node := shard.Get(sel); node != nil {
 					addrs = append(addrs, node.Address)
+					allShards = append(allShards, shard)
 				}
 			}
 		} else {
@@ -662,13 +673,14 @@ func (rc *RedisConfig) SelNodes(allShards bool, sel SelNodeStrategy) []RedisConf
 					node := mshard.Get(sel)
 					if node != nil {
 						addrs = append(addrs, node.Address)
+						allShards = append(allShards, mshard)
 					}
 				}
 			}
 		}
 	}
 
-	for _, r := range addrs { // @TODO sync from slaves
+	for i, r := range addrs { // @TODO sync from slaves
 		sre := RedisConfig{
 			Addresses:      []string{r},
 			UserName:       rc.UserName,
@@ -678,12 +690,7 @@ func (rc *RedisConfig) SelNodes(allShards bool, sel SelNodeStrategy) []RedisConf
 			ClusterOptions: rc.ClusterOptions.Clone(),
 			isMigrating:    rc.isMigrating,
 		}
-		slots := rc.GetSlots(r)
-		if slots != nil {
-			sre.slotLeft = slots.Ranges[0].Left
-			sre.slotRight = slots.Ranges[len(slots.Ranges)-1].Right
-			sre.slots = *slots
-		}
+		sre.SetClusterShards([]*RedisClusterShard{allShards[i]})
 		ret = append(ret, sre)
 	}
 	return ret
@@ -702,7 +709,7 @@ type ClusterConfig struct {
 	GroupName          string        `yaml:"groupName"`
 	MetaEtcd           *EtcdConfig   `yaml:"metaEtcd"`
 	LeaseTimeout       time.Duration `yaml:"leaseTimeout"`
-	LeaseRenewInterval time.Duration
+	LeaseRenewInterval time.Duration `yaml:"leaseRenewInterval"`
 	Replica            *ReplicaConfig
 }
 

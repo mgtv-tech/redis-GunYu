@@ -118,29 +118,28 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 			entry.Key = parser.Key()
 			entry.DB = int(l.db)
 			return entry, nil
-		case rdbFlagResizeDB:
+		case RdbFlagResizeDB:
 			db_size := l.ReadLengthP()
 			expire_size := l.ReadLengthP()
 			l.logger.Debugf("RdbFlagResizeDB : dbsize(%d), expiresize(%d)", db_size, expire_size)
-		case rdbFlagExpiryMS:
+		case RdbFlagExpiryMS:
 			ttlms := l.ReadUint64P()
 			entry.ExpireAt = ttlms
-		case rdbFlagExpiry:
+		case RdbFlagExpiry:
 			ttls := l.ReadUint32P()
 			entry.ExpireAt = uint64(ttls) * 1000
-		case rdbFlagSelectDB:
+		case RdbFlagSelectDB:
 			dbnum := l.ReadLengthP()
 			l.db = dbnum
-		case rdbFlagEOF:
+		case RdbFlagEOF:
 			return nil, nil
-		case rdbFlagModuleAux:
-			_ = l.ReadLengthP() // module-id
-			// skip module
+		case RdbFlagModuleAux:
+			_ = l.ReadLength64P() // uint64_t moduleid = rdbLoadLen(rdb,NULL);
 			rdbLoadCheckModuleValue(l)
-		case rdbFlagIdle:
+		case RdbFlagIdle:
 			idle := l.ReadLengthP()
 			entry.IdleTime = idle
-		case rdbFlagFreq:
+		case RdbFlagFreq:
 			freq := l.ReadUint8P()
 			entry.Freq = freq
 		case RdbTypeFunction2: //function
@@ -160,15 +159,15 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 }
 
 func rdbLoadCheckModuleValue(l *Loader) {
-	var opcode uint32
+	var whenOpCode uint32
 	for {
-		opcode = l.ReadLengthP()
-
-		if opcode == rdbModuleOpcodeEof {
+		whenOpCode = l.ReadLengthP() // int when_opcode = rdbLoadLen(rdb,NULL);
+		_ = l.ReadLengthP()          // when
+		if whenOpCode == rdbModuleOpcodeEof {
 			break
 		}
 
-		switch opcode {
+		switch whenOpCode {
 		case rdbModuleOpcodeSint:
 			fallthrough
 		case rdbModuleOpcodeUint:

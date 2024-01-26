@@ -366,6 +366,7 @@ func (rf *ReplicaFollower) preSync(leaderSp StartPoint) (sp StartPoint, err erro
 			return
 		}
 		sp.RunId = leaderSp.RunId
+		sp.Offset = leaderSp.Offset
 		return
 	}
 

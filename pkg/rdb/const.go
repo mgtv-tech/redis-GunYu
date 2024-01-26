@@ -43,23 +43,23 @@ const (
 
 	RdbTypeFunction2 = 0xf5
 	RdbTypeFunction  = 0xf6
-	rdbFlagModuleAux = 0xf7
-	rdbFlagIdle      = 0xf8
-	rdbFlagFreq      = 0xf9
+	RdbFlagModuleAux = 0xf7
+	RdbFlagIdle      = 0xf8
+	RdbFlagFreq      = 0xf9
 	RdbFlagAUX       = 0xfa
-	rdbFlagResizeDB  = 0xfb
-	rdbFlagExpiryMS  = 0xfc
-	rdbFlagExpiry    = 0xfd
-	rdbFlagSelectDB  = 0xfe
-	rdbFlagEOF       = 0xff
+	RdbFlagResizeDB  = 0xfb
+	RdbFlagExpiryMS  = 0xfc
+	RdbFlagExpiry    = 0xfd
+	RdbFlagSelectDB  = 0xfe
+	RdbFlagEOF       = 0xff
 
 	// Module serialized values sub opcodes
-	rdbModuleOpcodeEof    = 0
-	rdbModuleOpcodeSint   = 1
-	rdbModuleOpcodeUint   = 2
-	rdbModuleOpcodeFloat  = 3
-	rdbModuleOpcodeDouble = 4
-	rdbModuleOpcodeString = 5
+	rdbModuleOpcodeEof    = 0 // End of module value.
+	rdbModuleOpcodeSint   = 1 // Signed integer.
+	rdbModuleOpcodeUint   = 2 // Unsigned integer.
+	rdbModuleOpcodeFloat  = 3 // Float.
+	rdbModuleOpcodeDouble = 4 // Double.
+	rdbModuleOpcodeString = 5 // String.
 
 	moduleTypeNameCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )

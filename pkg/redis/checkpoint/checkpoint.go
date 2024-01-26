@@ -158,7 +158,6 @@ func fetchCheckpoint(runIds []string, cli client.Redis, db int, checkpointName s
 				if strings.Contains(lineS, CheckpointOffsetSuffix) {
 
 					cpi.Offset, err = common.Int64(replyList[i+1], nil)
-					log.Infof("---> %s  : %d", lineS, cpi.Offset)
 					if err != nil {
 						return nil, fmt.Errorf("parse offset(%v) of checkpoint(%s) error : error(%w), runid(%v)",
 							replyList[i+1], checkpointName, err, runIds)

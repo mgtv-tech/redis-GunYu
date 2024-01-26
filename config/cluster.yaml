@@ -8,6 +8,7 @@ input:
   rdbParallel: 4
   mode: dynamic
   syncFrom: prefer_slave
+  syncDelayTestKey: redis-GunYu-syncDelay-testKey
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster
@@ -28,7 +29,7 @@ log:
     stdout: true
 cluster:
   groupName: redis1
-  leaseTimeout: 30s
+  leaseTimeout: 3s
   metaEtcd: 
     endpoints:
       - 127.0.0.1:2379

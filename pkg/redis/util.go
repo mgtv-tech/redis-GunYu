@@ -591,21 +591,24 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		// @TODO
 		return fmt.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
 	} else if redisCfg.Type == config.RedisTypeStandalone {
-		slots := map[string]*config.RedisSlots{}
+		shards := []*config.RedisClusterShard{}
 		for _, addr := range redisCfg.Addresses {
-			slots[addr] = &config.RedisSlots{
-				Ranges: []config.RedisSlotRange{
-					{
-						Left: 0, Right: 16383,
+			node := config.RedisNode{
+				Address: addr,
+				Role:    config.RedisRoleMaster,
+				Health:  "online",
+			}
+			shards = append(shards, &config.RedisClusterShard{
+				Slots: config.RedisSlots{
+					Ranges: []config.RedisSlotRange{
+						{Left: 0, Right: 16383},
 					},
 				},
-			}
+				Master: node,
+			})
 		}
-		redisCfg.SetSlots(slots, &config.RedisSlots{
-			Ranges: []config.RedisSlotRange{
-				{Left: 0, Right: 16383},
-			},
-		})
+
+		redisCfg.SetClusterShards(shards)
 		return nil
 	} else {
 		return fmt.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())

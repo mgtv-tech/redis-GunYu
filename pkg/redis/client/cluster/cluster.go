@@ -212,13 +212,13 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 	switch strings.ToUpper(cmd) {
 	case "PING":
 		if node, err = cluster.getRandomNode(); err != nil {
-			return nil, fmt.Errorf("Put PING: %w", err)
+			return nil, fmt.Errorf("PING: %w", err)
 		}
 	case "SELECT":
 		// no need to put "select 0" in cluster
 		return nil, nil
 	case "MGET":
-		return nil, fmt.Errorf("Put: %s not supported", cmd)
+		return nil, fmt.Errorf("%s not supported", cmd)
 	case "MSET":
 		fallthrough
 	case "MSETNX":

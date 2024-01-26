@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,6 +75,12 @@ var (
 		Name:      "success_cmd",
 		Labels:    []string{"id", "input"},
 	})
+	batchSendCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "sender",
+		Labels:    []string{"id", "input", "transaction", "result"},
+	})
 	fullSyncProgress = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
@@ -90,6 +97,12 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "ack_offset",
+		Labels:    []string{"id", "input"},
+	})
+	syncDelayGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "sync_delay",
 		Labels:    []string{"id", "input"},
 	})
 )
@@ -123,10 +136,11 @@ type RedisOutputConfig struct {
 }
 
 type cmdExecution struct {
-	Cmd    string
-	Args   []interface{}
-	Offset int64
-	Db     int
+	Cmd         string
+	Args        []interface{}
+	Offset      int64
+	Db          int
+	syncDelayNs int64
 }
 
 func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
@@ -145,6 +159,7 @@ func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
 			ro.logger.Errorf("update checkpoint error : cp(%s), runId(%s,%s), err(%v)", ro.cfg.CheckpointName, id, ro.cfg.RunId, err)
 		}
 		ro.logger.Infof("UpdateCheckpoint : cp(%s), runId(%s,%s)", ro.cfg.CheckpointName, id, ro.cfg.RunId)
+		ro.cfg.RunId = id
 		return err
 	}, 3, time.Second*4, 0.3)
 }
@@ -262,7 +277,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 				if !ok {
 					return nil
 				}
-				if e.Err != nil {
+				if e.Err != nil { // @TODO corrupted data
 					if errors.Is(e.Err, io.EOF) {
 						return nil
 					}
@@ -423,6 +438,8 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 		}
 	}
 
+	syncDelayTestkey := []byte(config.Get().Input.SyncDelayTestKey)
+
 	decoder := client.NewDecoder(reader)
 
 	for !replayQuit.IsClosed() {
@@ -433,14 +450,14 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 		resp, incrOffset, err := client.MustDecodeOpt(decoder)
 		if err != nil {
 			ro.logger.Errorf("decode error : err(%v)", err)
-			return err
+			return errors.Join(ErrCorrupted, err)
 		}
 
 		sCmd, argv, err := client.ParseArgs(resp) // lower case
 		if err != nil {
 			err = fmt.Errorf("parse error : id(%d), err(%w)", ro.cfg.Id, err)
 			ro.logger.Errorf("%s", err.Error())
-			return err
+			return errors.Join(ErrCorrupted, err)
 		}
 
 		// filter db, filter command, filter key
@@ -496,12 +513,26 @@ func (ro *RedisOutput) parserAofCommand(replayQuit usync.WaitCloser, reader *buf
 		for _, item := range newArgv {
 			data = append(data, item)
 		}
-		sendBuf <- cmdExecution{
+		cmdExec := cmdExecution{
 			Cmd:    sCmd,
 			Args:   data,
 			Offset: startOffset + incrOffset,
 			Db:     currentDB,
 		}
+		if len(syncDelayTestkey) > 0 {
+			if sCmd == "set" && len(argv) > 0 {
+				if bytes.Equal(argv[0], syncDelayTestkey) {
+					ns, err := strconv.ParseInt(string(argv[1]), 10, 64)
+					if err != nil {
+						ro.logger.Errorf("parse int : string(%s), error(%v)", argv[1], err)
+					} else {
+						cmdExec.syncDelayNs = ns
+					}
+				}
+			}
+		}
+
+		sendBuf <- cmdExec
 	}
 
 	return nil
@@ -607,9 +638,11 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, runId string, sendB
 			}
 			err := conn.SendAndFlush(item.Cmd, item.Args...)
 			if err != nil {
+				batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "no", "error")
 				ro.logger.Errorf("send cmds error : cmd(%s), args(%v), offset(%d), err(%v)", item.Cmd, item.Args, item.Offset, err)
 				return err
 			}
+			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "no", "ok")
 
 			sendOffsetGauge.Set(float64(item.Offset), ro.Id, ro.cfg.InputName)
 			sendOffsetChan <- item.Offset
@@ -619,6 +652,10 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, runId string, sendB
 			}
 			ro.sendCounterAdd(1)
 			sendSizeCounter.Add(float64(length), ro.Id, ro.cfg.InputName)
+			if item.syncDelayNs > 0 {
+				delay := time.Now().UnixNano() - item.syncDelayNs
+				syncDelayGauge.Set(float64(delay), ro.Id, ro.cfg.InputName)
+			}
 		case <-replayWait.Done():
 			return nil
 		}
@@ -677,12 +714,18 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, runId 
 			}
 		}
 
+		lastOffset := int64(0)
 		for _, ce := range cmdQueue {
 			if err := conn.Send(ce.Cmd, ce.Args...); err != nil {
 				return handleDirectError(fmt.Errorf("send cmd error : cmd(%s), args(%v), error(%v)", ce.Cmd, ce.Args, err))
 			}
-			sendOffsetGauge.Set(float64(ce.Offset), ro.Id, ro.cfg.InputName)
+			lastOffset = ce.Offset
+			if ce.syncDelayNs > 0 {
+				delay := time.Now().UnixNano() - ce.syncDelayNs
+				syncDelayGauge.Set(float64(delay), ro.Id, ro.cfg.InputName)
+			}
 		}
+		sendOffsetGauge.Set(float64(lastOffset), ro.Id, ro.cfg.InputName)
 		ro.sendCounterAdd(queuedCmdCount)
 		sendSizeCounter.Add(float64(queuedByteSize), ro.Id, ro.cfg.InputName)
 
@@ -705,7 +748,10 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, runId 
 			}
 
 			if err := conn.Send("exec"); err != nil {
+				batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "error")
 				return handleDirectError(fmt.Errorf("send exec error : %w", err))
+			} else {
+				batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "ok")
 			}
 		}
 

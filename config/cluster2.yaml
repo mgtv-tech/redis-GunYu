@@ -1,12 +1,14 @@
 id: 2
 server:
   httpPort: 18801
+  gracefullStopTimeout: 1s
 input:
   redis:
-    addresses: [127.0.0.1:6300]
+    addresses: [127.0.0.1:16300]
     type: cluster
   rdbParallel: 4
   mode: dynamic
+  syncDelayTestKey: redis-GunYu-syncDelay-testKey
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster2
@@ -15,7 +17,7 @@ channel:
   staleCheckpointDuration: 10m
 output:
   redis:
-    addresses: [127.0.0.1:6310]
+    addresses: [127.0.0.1:16310]
     type: cluster
   resumeFromBreakPoint: true
   keyExists: replace

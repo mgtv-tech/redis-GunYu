@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/metric"
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	"github.com/ikenchina/redis-GunYu/pkg/store"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
@@ -65,16 +67,17 @@ type Input interface {
 }
 
 type RedisInput struct {
-	id           int
-	cfg          config.RedisConfig
-	wait         usync.WaitCloser
-	channel      Channel
-	output       Output
-	fsm          *SyncFiniteStateMachine
-	logger       log.Logger
-	runIds       []string
-	mutex        sync.RWMutex
-	metricOffset metric.Gauge
+	id        string
+	inputAddr string
+	cfg       config.RedisConfig
+	wait      usync.WaitCloser
+	channel   Channel
+	output    Output
+	fsm       *SyncFiniteStateMachine
+	logger    log.Logger
+	runIds    []string
+	mutex     sync.RWMutex
+	//metricOffset metric.Gauge
 }
 
 type StorerConf struct {
@@ -87,19 +90,23 @@ type StorerConf struct {
 
 func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {
 	return &RedisInput{
-		id:     id,
-		wait:   usync.NewWaitCloser(nil),
-		fsm:    NewSyncFiniteStateMachine(),
-		cfg:    redisCfg,
-		logger: log.WithLogger(fmt.Sprintf("[RedisInput(%d)] ", id)),
-		metricOffset: metric.NewGauge(metric.GaugeOpts{
-			Namespace:   config.AppName,
-			Subsystem:   "input",
-			Name:        "offset",
-			ConstLabels: map[string]string{"input": redisCfg.Address()},
-		}),
+		id:        strconv.Itoa(id),
+		inputAddr: redisCfg.Address(),
+		wait:      usync.NewWaitCloser(nil),
+		fsm:       NewSyncFiniteStateMachine(),
+		cfg:       redisCfg,
+		logger:    log.WithLogger(fmt.Sprintf("[RedisInput(%d)] ", id)),
 	}
 }
+
+var (
+	metricOffset = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "offset",
+		Labels:    []string{"id", "input"},
+	})
+)
 
 func (ri *RedisInput) Id() string {
 	return ri.cfg.Address()
@@ -398,7 +405,7 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 			select {
 			case <-ri.fsm.StateNotify(SyncStateFullSynced):
 				ackOffset = writer.Right()
-				ri.metricOffset.Set(float64(ackOffset))
+				metricOffset.Set(float64(ackOffset), ri.id, ri.inputAddr)
 			default:
 			}
 			if err := cli.SendPSyncAck(ackOffset); err != nil {
@@ -413,6 +420,8 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 func (ri *RedisInput) Run() (err error) {
 	ri.logger.Infof("Run")
 
+	ri.checkSyncDelay(ri.wait)
+
 	ri.wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer ri.wait.WgDone()
@@ -420,6 +429,10 @@ func (ri *RedisInput) Run() (err error) {
 			err := ri.run()
 			if err != nil {
 				ri.logger.Errorf("%v", err)
+				// handle corrupted data, @TODO just delete corrupted file ?
+				if errors.Is(err, ErrCorrupted) {
+					ri.channel.DelRunId(ri.channel.RunId())
+				}
 				if errors.Is(err, ErrBreak) {
 					ri.wait.Close(err)
 					break
@@ -432,8 +445,36 @@ func (ri *RedisInput) Run() (err error) {
 	})
 
 	ri.wait.WgWait()
-	ri.metricOffset.Close()
 	return ri.wait.Error()
+}
+
+func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser) {
+	testKey := config.Get().Input.SyncDelayTestKey
+	if testKey == "" {
+		return
+	}
+	timeout := config.Get().Server.GracefullStopTimeout
+	usync.SafeGo(func() {
+		cfgs := ri.cfg.SelNodes(true, config.SelNodeStrategyMaster)
+		for !wait.IsClosed() {
+			if len(cfgs) > 0 {
+				cli, err := client.NewRedis(cfgs[0])
+				if err != nil {
+					ri.logger.Errorf("checkSyncDelay, new redis : addr(%s), error(%v)", ri.cfg.Address(), err)
+					wait.Sleep(timeout)
+					continue
+				}
+				for !wait.IsClosed() {
+					now := time.Now().UnixNano()
+					cli.SendAndFlush("SET", testKey, now)
+					wait.Sleep(1 * time.Second)
+				}
+				cli.Close()
+			} else {
+				ri.logger.Errorf("checkSyncDelay, no redis : %s", ri.cfg.Address())
+			}
+		}
+	}, nil)
 }
 
 func (ri *RedisInput) run() error {
