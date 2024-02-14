@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	"github.com/ikenchina/redis-GunYu/pkg/store"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
@@ -42,6 +45,8 @@ func (rc *AofCmd) Run() error {
 		rc.Parse()
 	case "verify":
 		rc.Verify()
+	case "cmd":
+		rc.Cmd()
 	default:
 		panic(fmt.Errorf("unsupported mode : %s", action))
 	}
@@ -51,6 +56,53 @@ func (rc *AofCmd) Run() error {
 const (
 	headerSize = int64(16)
 )
+
+func (rc *AofCmd) Cmd() {
+	aofPath := config.GetFlag().AofCmd.Path
+	start := config.GetFlag().AofCmd.Offset
+	size := config.GetFlag().AofCmd.Size
+
+	fi, err := os.Stat(aofPath)
+	util.PanicIfErr(err)
+
+	left, err := strconv.ParseInt(strings.TrimSuffix(fi.Name(), ".aof"), 10, 64)
+	util.PanicIfErr(err)
+
+	if size <= 0 {
+		size = fi.Size() - headerSize
+	} else if size > fi.Size()-headerSize {
+		size = fi.Size() - headerSize
+	}
+	if start < left {
+		start = left
+	}
+
+	file, err := os.OpenFile(aofPath, os.O_RDONLY, 0777)
+	util.PanicIfErr(err)
+
+	if start > 0 {
+		_, err = file.Seek(start-left+headerSize, 0)
+		util.PanicIfErr(err)
+	}
+
+	decoder := client.NewDecoder(bufio.NewReader(file))
+	for {
+		resp, incrOffset, err := client.MustDecodeOpt(decoder)
+		if err != nil {
+			log.Errorf("%v", err)
+			return
+		}
+
+		sCmd, argv, err := client.ParseArgs(resp) // lower case
+		if err != nil {
+			log.Errorf("%v", err)
+			log.Info("offset(%d), cmd(%d), %s", incrOffset, sCmd, argv)
+			return
+		}
+
+	}
+
+}
 
 func (rc *AofCmd) Parse() {
 	aofPath := config.GetFlag().AofCmd.Path

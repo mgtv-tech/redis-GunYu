@@ -12,7 +12,7 @@ import (
 
 func TestGetSlotDistribution(t *testing.T) {
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{"localhost:6310"},
+		Addresses: []string{"localhost:16300"},
 	})
 	assert.Nil(t, err)
 	slots, err := GetSlotDistribution(cli)

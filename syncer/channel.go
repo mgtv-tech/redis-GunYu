@@ -17,8 +17,8 @@ type Channel interface {
 	DelRunId(string) error
 	RunId() string
 	IsValidOffset(Offset) bool
-	GetOffsetRange(Offset) (int64, int64)
-	GetRdbSize(Offset) int64
+	GetOffsetRange(string) (int64, int64)
+	GetRdb(string) (int64, int64)
 	NewRdbWriter(io.Reader, int64, int64) (*store.RdbWriter, error)
 	NewAofWritter(r io.Reader, offset int64) (*store.AofWriter, error)
 	NewReader(Offset) (*store.Reader, error)
@@ -35,7 +35,7 @@ func NewStoreChannel(cfg StorerConf) *StoreChannel {
 	storer := store.NewStorer(cfg.Id, cfg.Dir, cfg.MaxSize, cfg.LogSize, cfg.flush)
 	return &StoreChannel{
 		storer: storer,
-		logger: log.WithLogger(fmt.Sprintf("[StoreChannel(%d)] ", cfg.Id)),
+		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[StoreChannel(%d)] ", cfg.Id))),
 	}
 }
 
@@ -65,7 +65,7 @@ func (sc *StoreChannel) StartPoint(ids []string) (StartPoint, error) {
 
 func (sc *StoreChannel) IsValidOffset(off Offset) bool {
 	if off.RunId == "?" {
-		return !sc.storer.IsValidOffset(0)
+		return !sc.storer.IsValidOffset(-1)
 	}
 	if off.RunId != sc.storer.RunId() {
 		return false
@@ -73,18 +73,18 @@ func (sc *StoreChannel) IsValidOffset(off Offset) bool {
 	return sc.storer.IsValidOffset(off.Offset)
 }
 
-func (sc *StoreChannel) GetOffsetRange(off Offset) (int64, int64) {
-	if off.RunId != sc.storer.RunId() {
+func (sc *StoreChannel) GetOffsetRange(runId string) (int64, int64) {
+	if runId != sc.storer.RunId() {
 		return -1, -1
 	}
-	return sc.storer.GetOffsetRange(off.Offset)
+	return sc.storer.GetOffsetRange()
 }
 
-func (sc *StoreChannel) GetRdbSize(off Offset) int64 {
-	if off.RunId != sc.storer.RunId() {
-		return -1
+func (sc *StoreChannel) GetRdb(runId string) (int64, int64) {
+	if runId != sc.storer.RunId() {
+		return -1, -1
 	}
-	return sc.storer.GetRdbSize(off.Offset)
+	return sc.storer.GetRdb()
 }
 
 func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {

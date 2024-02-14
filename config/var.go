@@ -282,6 +282,9 @@ func (ec *EtcdConfig) fix() error {
 	if ec.Ttl == 0 {
 		ec.Ttl = 30
 	}
+	if ec.DialTimeout == 0 {
+		ec.DialTimeout = 10 * time.Second
+	}
 	return nil
 }
 

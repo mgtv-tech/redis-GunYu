@@ -1,9 +1,10 @@
 id: 1
 server:
-  httpPort: 8801
+  http:
+    httpPort: 8801
 input:
   redis:
-    addresses: [127.0.0.1:16300]
+    addresses: [10.100.4.111:6420]
     type: cluster
   rdbParallel: 4
   mode: dynamic
@@ -17,7 +18,7 @@ channel:
   staleCheckpointDuration: 10m
 output:
   redis:
-    addresses: [127.0.0.1:16310]
+    addresses: [10.100.4.114:6430	]
     type: cluster
   resumeFromBreakPoint: true
   keyExists: replace
@@ -27,12 +28,12 @@ log:
   level: info
   handler:
     stdout: true
-cluster:
-  groupName: redis1
-  leaseTimeout: 3s
-  metaEtcd: 
-    endpoints:
-      - 127.0.0.1:2379
-  replica:
-    listen: "0.0.0.0:8088"
-    listenPeer: "127.0.0.1:8088"
+# cluster:
+#   groupName: redis1
+#   leaseTimeout: 3s
+#   metaEtcd: 
+#     endpoints:
+#       - 127.0.0.1:2379
+#   replica:
+#     listen: "0.0.0.0:8088"
+#     listenPeer: "127.0.0.1:8088"

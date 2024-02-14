@@ -49,7 +49,7 @@ func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 		client:   cc,
 		recvChan: make(chan reply, RecvChanSize),
 		cfg:      cfg,
-		logger:   log.WithLogger("[Redis cluster] "),
+		logger:   log.WithLogger(config.LogModuleName("[Redis cluster] ")),
 	}, nil
 }
 
@@ -71,7 +71,7 @@ func (cc *ClusterRedis) Err() error {
 }
 
 func (cc *ClusterRedis) DoWithStringReply(cmd string, args ...interface{}) (string, error) {
-	err := cc.Send(cmd, args...)
+	err := cc.SendAndFlush(cmd, args...)
 	if err != nil {
 		return "", err
 	}
@@ -83,8 +83,16 @@ func (cc *ClusterRedis) DoWithStringReply(cmd string, args ...interface{}) (stri
 	return reply, nil
 }
 
+func (cc *ClusterRedis) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
+	cc.client.IterateNodes(result, cmd, args...)
+}
+
 func (cc *ClusterRedis) Do(cmd string, args ...interface{}) (interface{}, error) {
 	return cc.client.Do(cmd, args...)
+}
+
+func (cc *ClusterRedis) NewBatcher() common.CmdBatcher {
+	return cc.client.NewBatcher()
 }
 
 // @TODO
@@ -101,6 +109,7 @@ func (cc *ClusterRedis) SendAndFlush(cmd string, args ...interface{}) error {
 	return cc.Flush()
 }
 
+// not thread safe
 func (cc *ClusterRedis) getBatcher() *cluster.Batch {
 	if cc.batcher == nil {
 		cc.batcher = cc.client.NewBatch()

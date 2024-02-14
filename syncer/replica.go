@@ -53,7 +53,7 @@ type ReplicaLeader struct {
 
 func NewReplicaLeader(input Input, channel Channel) *ReplicaLeader {
 	replica := &ReplicaLeader{
-		logger:  log.WithLogger("[ReplicaLeader] "),
+		logger:  log.WithLogger(config.LogModuleName("[ReplicaLeader] ")),
 		input:   input,
 		channel: channel,
 	}
@@ -234,7 +234,7 @@ type ReplicaFollower struct {
 
 func NewReplicaFollower(inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
 	replica := &ReplicaFollower{
-		logger:       log.WithLogger("[ReplicaFollower] "),
+		logger:       log.WithLogger(config.LogModuleName("[ReplicaFollower] ")),
 		wait:         usync.NewWaitCloser(nil),
 		channel:      channel,
 		leader:       leader,

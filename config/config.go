@@ -36,6 +36,13 @@ type Config struct {
 	Server  ServerConfig `yaml:"server"`
 }
 
+func (c *Config) GetLog() *LogConfig {
+	if c == nil {
+		return nil
+	}
+	return c.Log
+}
+
 func (c *Config) fix() error {
 	type fixInter interface {
 		fix() error
@@ -91,25 +98,45 @@ func (c *Config) fix() error {
 }
 
 type ServerConfig struct {
-	HttpBind                 string        `yaml:"httpBind"`
-	HttpPort                 int           `yaml:"httpPort"`
-	CheckRedisTypologyTicker uint          `yaml:"checkRedisTypologyTicker"` // seconds
+	Http                     *HttpServer
+	CheckRedisTypologyTicker time.Duration `yaml:"checkRedisTypologyTicker"` // seconds
 	GracefullStopTimeout     time.Duration `yaml:"gracefullStopTimeout"`
 }
 
 func (sc *ServerConfig) fix() error {
 	if sc.CheckRedisTypologyTicker == 0 {
-		sc.CheckRedisTypologyTicker = 30 // 30 seconds
+		sc.CheckRedisTypologyTicker = 30 * time.Second // 30 seconds
+	} else if sc.CheckRedisTypologyTicker < 1*time.Second {
+		sc.CheckRedisTypologyTicker = 1 * time.Second // 30 seconds
 	}
 
 	if sc.GracefullStopTimeout < time.Second {
 		sc.GracefullStopTimeout = 5 * time.Second
 	}
-
-	if sc.HttpPort == 0 {
-		sc.HttpPort = 18000
+	if sc.Http != nil {
+		if err := sc.Http.fix(); err != nil {
+			return err
+		}
 	}
 
+	return nil
+}
+
+type HttpServer struct {
+	HttpBind        string `yaml:"httpBind"`
+	HttpPort        int    `yaml:"httpPort"`
+	MetricRoutePath string `yaml:"metricRoutePath"`
+}
+
+func (hs *HttpServer) fix() error {
+	if hs.HttpPort == 0 {
+		hs.HttpPort = 18000
+	}
+	if hs.MetricRoutePath == "" {
+		hs.MetricRoutePath = "/prometheus"
+	} else if hs.MetricRoutePath[0] != '/' {
+		hs.MetricRoutePath = "/" + hs.MetricRoutePath
+	}
 	return nil
 }
 
@@ -206,22 +233,23 @@ func (sc *StorerConfig) fix() error {
 }
 
 type OutputConfig struct {
-	Redis                    *RedisConfig
-	ResumeFromBreakPoint     *bool       `yaml:"resumeFromBreakPoint"`
-	ReplaceHashTag           bool        `yaml:"replaceHashTag"`
-	FakeExpireTime           FakeTime    `yaml:"fakeExpireTime"`
-	KeyExists                string      `yaml:"keyExists"` // replace|ignore|error
-	KeyExistsLog             bool        `yaml:"keyExistsLog"`
-	FunctionExists           string      `yaml:"functionExists"`
-	MaxProtoBulkLen          int         `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
-	TargetDbCfg              *int        `yaml:"targetDb"`
-	TargetDb                 int         `yaml:"-"`
-	TargetDbMap              map[int]int `yaml:"targetDbMap"`
-	BatchCmdCount            uint        `yaml:"batchCmdCount"`
-	BatchTickerMs            int         `yaml:"batchTickerMs"`
-	BatchBufferSize          uint64      `yaml:"batchBufferSize"`
-	ReplayRdbParallel        int         `yaml:"replayRdbParallel"`
-	UpdateCheckpointTickerMs int         `yaml:"updateCheckpointTickerMs"`
+	Redis                  *RedisConfig
+	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint"`
+	ReplaceHashTag         bool          `yaml:"replaceHashTag"`
+	FakeExpireTime         FakeTime      `yaml:"fakeExpireTime"`
+	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
+	KeyExistsLog           bool          `yaml:"keyExistsLog"`
+	FunctionExists         string        `yaml:"functionExists"`
+	MaxProtoBulkLen        int           `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
+	TargetDbCfg            *int          `yaml:"targetDb"`
+	TargetDb               int           `yaml:"-"`
+	TargetDbMap            map[int]int   `yaml:"targetDbMap"`
+	BatchCmdCount          uint          `yaml:"batchCmdCount"`
+	BatchTicker            time.Duration `yaml:"batchTicker"`
+	BatchBufferSize        uint64        `yaml:"batchBufferSize"`
+	KeepaliveTicker        time.Duration `yaml:"keepaliveTicker"`
+	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
+	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 }
 
 func (of *OutputConfig) fix() error {
@@ -256,11 +284,14 @@ func (of *OutputConfig) fix() error {
 	if of.BatchCmdCount <= 0 || of.BatchCmdCount > 200 {
 		of.BatchCmdCount = 100
 	}
-	if of.BatchTickerMs <= 0 || of.BatchTickerMs > 5000 {
-		of.BatchTickerMs = 20
+	if of.BatchTicker <= time.Millisecond || of.BatchTicker > 10*time.Second {
+		of.BatchTicker = 10 * time.Millisecond
 	}
-	if of.UpdateCheckpointTickerMs <= 0 || of.UpdateCheckpointTickerMs > 5000 {
-		of.UpdateCheckpointTickerMs = 1000 // 1 second
+	if of.KeepaliveTicker <= time.Second {
+		of.KeepaliveTicker = time.Second * 3
+	}
+	if of.UpdateCheckpointTicker <= time.Millisecond || of.UpdateCheckpointTicker > 5*time.Second {
+		of.UpdateCheckpointTicker = time.Second // 1 second
 	}
 
 	if of.BatchBufferSize == 0 {
@@ -305,6 +336,19 @@ type LogConfig struct {
 	StacktraceLevelStr string `yaml:"StacktraceLevel"`
 	stacktraceLevel    zapcore.Level
 	Hander             LogHandlerConfig `yaml:"handler"`
+	Caller             *bool            `yaml:"withCaller"`
+	Func               *bool            `yaml:"withFunc"`
+	ModuleName         *bool            `yaml:"withModuleName"`
+}
+
+func LogModuleName(prefix string) string {
+	if cfg == nil || cfg.Log == nil || cfg.Log.ModuleName == nil {
+		return prefix
+	}
+	if *cfg.Log.ModuleName {
+		return prefix
+	}
+	return ""
 }
 
 func SetLogLevel(l zapcore.Level) {
@@ -319,7 +363,18 @@ func (lc *LogConfig) fix() error {
 	if lc.Hander.File == nil && !lc.Hander.StdOut {
 		lc.Hander.StdOut = true
 	}
-
+	if lc.Caller == nil {
+		caller := true
+		lc.Caller = &caller
+	}
+	if lc.Func == nil {
+		funcn := false
+		lc.Func = &funcn
+	}
+	if lc.ModuleName == nil {
+		mn := true
+		lc.ModuleName = &mn
+	}
 	return nil
 }
 
@@ -340,10 +395,11 @@ func InitConfig(path string) error {
 type RedisConfig struct {
 	Addresses      []string
 	shards         []*RedisClusterShard
-	UserName       string `yaml:"userName"`
-	Password       string `yaml:"password"`
-	TlsEnable      bool   `yaml:"tlsEnable"`
-	Type           RedisType
+	UserName       string    `yaml:"userName"`
+	Password       string    `yaml:"password"`
+	TlsEnable      bool      `yaml:"tlsEnable"`
+	Type           RedisType // for new redis client
+	Otype          RedisType // original type
 	Version        string
 	slotLeft       int // @TODO remove it
 	slotRight      int
@@ -361,6 +417,7 @@ func (rc *RedisConfig) Clone() *RedisConfig {
 		Password:       rc.Password,
 		TlsEnable:      rc.TlsEnable,
 		Type:           rc.Type,
+		Otype:          rc.Type,
 		Version:        rc.Version,
 		slotLeft:       rc.slotLeft,
 		slotRight:      rc.slotRight,
@@ -535,6 +592,10 @@ type RedisNode struct {
 	Health     string
 }
 
+func (rn *RedisNode) IsHealth() bool {
+	return rn.Health == "online"
+}
+
 func (rn *RedisNode) AddressEqual(b *RedisNode) bool {
 	return rn.Ip == b.Ip && rn.Port == b.Port && rn.TlsPort == b.TlsPort
 }
@@ -595,6 +656,7 @@ func (rc *RedisConfig) fix() error {
 		rc.ClusterOptions = &RedisClusterOptions{}
 		rc.ClusterOptions.fix()
 	}
+	rc.Otype = rc.Type
 	return nil
 }
 
@@ -619,6 +681,7 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 		Password:  rc.Password,
 		TlsEnable: rc.TlsEnable,
 		Type:      rc.Type,
+		Otype:     rc.Type,
 	}
 	if slots != nil {
 		sre.slots = *slots
@@ -626,6 +689,20 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 		sre.slotRight = slots.Ranges[len(slots.Ranges)-1].Right
 	}
 	return sre
+}
+
+func (rc *RedisConfig) FindNode(addr string) *RedisNode {
+	for _, shard := range rc.shards {
+		if shard.Master.Address == addr {
+			return &shard.Master
+		}
+		for _, s := range shard.Slaves {
+			if s.Address == addr {
+				return &s
+			}
+		}
+	}
+	return nil
 }
 
 func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisConfig {
@@ -687,6 +764,7 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 			Password:       rc.Password,
 			TlsEnable:      rc.TlsEnable,
 			Type:           rc.Type,
+			Otype:          rc.Type,
 			ClusterOptions: rc.ClusterOptions.Clone(),
 			isMigrating:    rc.isMigrating,
 		}

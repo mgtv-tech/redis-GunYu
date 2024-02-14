@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
@@ -98,7 +99,7 @@ func NewCluster(options *Options) (*Cluster, error) {
 		password:        options.Password,
 		handleMoveError: options.HandleMoveError,
 		handleAskError:  options.HandleAskError,
-		logger:          log.WithLogger("[redis cluster] "),
+		logger:          log.WithLogger(config.LogModuleName("[redis cluster] ")),
 	}
 
 	errList := make([]error, 0)
@@ -127,6 +128,20 @@ func NewCluster(options *Options) (*Cluster, error) {
 		options.StartNodes, errList)
 }
 
+func (cluster *Cluster) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
+	nodes := []*redisNode{}
+	cluster.rwLock.Lock()
+	for _, node := range cluster.nodes {
+		nodes = append(nodes, node)
+	}
+	cluster.rwLock.Unlock()
+
+	for _, node := range nodes {
+		ret, err := cluster.do(node, cmd, args...)
+		result(node.address, ret, err)
+	}
+}
+
 // Do excute a redis command with random number arguments. First argument will
 // be used as key to hash to a slot, so it only supports a subset of redis
 // commands.
@@ -149,6 +164,10 @@ func (cluster *Cluster) Do(cmd string, args ...interface{}) (interface{}, error)
 		return nil, nil // no need to run
 	}
 
+	return cluster.do(node, cmd, args...)
+}
+
+func (cluster *Cluster) do(node *redisNode, cmd string, args ...interface{}) (interface{}, error) {
 	reply, err := node.do(cmd, args...)
 	if err != nil {
 		if err == common.ErrNil {
@@ -156,31 +175,34 @@ func (cluster *Cluster) Do(cmd string, args ...interface{}) (interface{}, error)
 		}
 		return nil, fmt.Errorf("Do failed[%v]", err)
 	}
+	return cluster.handleReply(node, reply, cmd, args...)
+}
 
-	resp := checkReply(reply)
+func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd string, args ...interface{}) (interface{}, error) {
 
+	resp := common.CheckReply(reply)
 	switch resp {
-	case kRespOK, kRespError:
+	case common.KrespOK, common.KrespError:
 		return reply, nil
-	case kRespMove:
+	case common.KrespMove:
 		if !cluster.handleMoveError {
 			return nil, common.ErrMove
 		}
-		if ret, err := cluster.handleMove(node, reply.(redisError).Error(), cmd, args); err != nil {
+		if ret, err := cluster.handleMove(node, reply.(common.RedisError).Error(), cmd, args); err != nil {
 			return ret, errors.Join(common.ErrMove, fmt.Errorf("handle move failed[%w]", err))
 		} else {
 			return ret, nil
 		}
-	case kRespAsk:
+	case common.KrespAsk:
 		if !cluster.handleAskError {
 			return nil, common.ErrAsk
 		}
-		if ret, err := cluster.handleAsk(node, reply.(redisError).Error(), cmd, args); err != nil {
+		if ret, err := cluster.handleAsk(node, reply.(common.RedisError).Error(), cmd, args); err != nil {
 			return ret, errors.Join(common.ErrAsk, fmt.Errorf("handle ask failed[%w]", err))
 		} else {
 			return ret, nil
 		}
-	case kRespConnTimeout:
+	case common.KrespConnTimeout:
 		if ret, err := cluster.handleConnTimeout(node, cmd, args); err != nil {
 			return ret, fmt.Errorf("handle timeout failed[%w]", err)
 		} else {
@@ -189,6 +211,10 @@ func (cluster *Cluster) Do(cmd string, args ...interface{}) (interface{}, error)
 	}
 
 	panic("unreachable")
+}
+
+func (cluster *Cluster) NewBatcher() common.CmdBatcher {
+	return cluster.NewBatch()
 }
 
 // Close cluster connection, any subsequent method call will fail.
@@ -210,7 +236,7 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 	var err error
 
 	switch strings.ToUpper(cmd) {
-	case "PING":
+	case "PING", "CLUSTER":
 		if node, err = cluster.getRandomNode(); err != nil {
 			return nil, fmt.Errorf("PING: %w", err)
 		}
@@ -293,8 +319,9 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 			if cluster.transactionNode == nil {
 				cluster.transactionNode = node
 			} else if cluster.transactionNode != node {
-				return nil, fmt.Errorf("transaction command[%v] key[%v] not hashed in the same node: current[%v], previous[%v]",
-					cmd, string(args[0].([]byte)), node.address, cluster.transactionNode.address)
+				ckey, _ := key(args[0])
+				return nil, errors.Join(common.ErrCrossSlots, fmt.Errorf("transaction command[%s] key[%s] not hashed in the same node: current[%s], previous[%s]",
+					cmd, ckey, node.address, cluster.transactionNode.address))
 			}
 		}
 	}
@@ -381,11 +408,11 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 		}
 		return nil, fmt.Errorf("random node[%v] connection still failed: %w, previous node[%v]",
 			node.address, err, node.address)
-	} else if checkReply(reply) == kRespConnTimeout {
+	} else if common.CheckReply(reply) == common.KrespConnTimeout {
 		return fmt.Errorf("%v. previous node[%v]", reply, node.address), nil
 	}
 
-	if _, ok := reply.(redisError); !ok {
+	if _, ok := reply.(common.RedisError); !ok {
 		// we happen to choose the right node, which means
 		// that cluster has changed, so inform update routine.
 		cluster.inform(randomNode)
@@ -393,7 +420,7 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 	}
 
 	// ignore replies other than MOVED
-	errMsg := reply.(redisError).Error()
+	errMsg := reply.(common.RedisError).Error()
 	if len(errMsg) < 5 || string(errMsg[:5]) != "MOVED" {
 		return nil, errors.New(errMsg)
 	}
@@ -437,35 +464,7 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 
 const (
 	kClusterSlots = 16384
-
-	kRespOK          = 0
-	kRespMove        = 1
-	kRespAsk         = 2
-	kRespConnTimeout = 3
-	kRespError       = 4
 )
-
-func checkReply(reply interface{}) int {
-	if _, ok := reply.(redisError); !ok {
-		return kRespOK
-	}
-
-	errMsg := reply.(redisError).Error()
-
-	if len(errMsg) >= 3 && string(errMsg[:3]) == "ASK" {
-		return kRespAsk
-	}
-
-	if len(errMsg) >= 5 && string(errMsg[:5]) == "MOVED" {
-		return kRespMove
-	}
-
-	if len(errMsg) >= 12 && string(errMsg[:12]) == "ECONNTIMEOUT" {
-		return kRespConnTimeout
-	}
-
-	return kRespError
-}
 
 func (cluster *Cluster) update(node *redisNode) error {
 	info, err := common.Values(node.do("CLUSTER", "SLOTS"))
@@ -639,6 +638,11 @@ func (cluster *Cluster) getNodeByKey(arg interface{}) (*redisNode, error) {
 	return node, nil
 }
 
+var (
+	// not thread safe
+	myRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+)
+
 func (cluster *Cluster) getRandomNode() (*redisNode, error) {
 	cluster.rwLock.RLock()
 	defer cluster.rwLock.RUnlock()
@@ -648,8 +652,7 @@ func (cluster *Cluster) getRandomNode() (*redisNode, error) {
 	}
 
 	// random slot
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	slot := r.Intn(kClusterSlots)
+	slot := myRand.Intn(kClusterSlots)
 	node := cluster.slots[slot]
 	if node == nil {
 		return nil, fmt.Errorf("getRandomNode: slot[%d] no node found", slot)

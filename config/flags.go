@@ -55,7 +55,7 @@ func LoadFlags() error {
 	flag.StringVar(&flagVar.DiffCmd.B, "diff.b", "", "")
 	flag.IntVar(&flagVar.DiffCmd.Parallel, "diff.parallel", -1, "")
 
-	flag.StringVar(&flagVar.AofCmd.Action, "aof.action", "parse", "parse/verify")
+	flag.StringVar(&flagVar.AofCmd.Action, "aof.action", "parse", "parse/verify/cmd")
 	flag.StringVar(&flagVar.AofCmd.Path, "aof.path", "", "aof path")
 	flag.Int64Var(&flagVar.AofCmd.Offset, "aof.offset", 0, "aof offset")
 	flag.Int64Var(&flagVar.AofCmd.Size, "aof.size", -1, "aof size")

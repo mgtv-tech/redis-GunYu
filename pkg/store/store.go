@@ -41,7 +41,7 @@ func NewStorer(id int, baseDir string, maxSize, logSize int64, flush config.Flus
 		logSize:     logSize,
 		readBufSize: 10 * 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
-		logger:      log.WithLogger(fmt.Sprintf("[Storer(%d)] ", id)),
+		logger:      log.WithLogger(config.LogModuleName(fmt.Sprintf("[Storer(%d)] ", id))),
 		dataSet:     newDataSet(nil, nil),
 		flush:       flush,
 	}
@@ -227,14 +227,18 @@ func (s *Storer) IsValidOffset(offset int64) bool {
 	return ds.InRange(offset)
 }
 
-func (s *Storer) GetOffsetRange(offset int64) (int64, int64) {
+func (s *Storer) GetOffsetRange() (int64, int64) {
 	ds := s.getDataSet()
 	return ds.Range()
 }
 
-func (s *Storer) GetRdbSize(offset int64) int64 {
+func (s *Storer) GetRdb() (int64, int64) {
 	ds := s.getDataSet()
-	return ds.RdbSize()
+	rdb := ds.GetRdb()
+	if rdb == nil {
+		return -1, -1
+	}
+	return rdb.Left(), rdb.Size()
 }
 
 // for a rdb writer, Reader returns io.EOF when data has been drained
@@ -271,7 +275,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 				rd.reader = reader
 				rd.size = rdb.Size()
 				rd.left = left
-				rd.logger = log.WithLogger("[Reader(rdb)] ")
+				rd.logger = log.WithLogger(config.LogModuleName("[Reader(rdb)] "))
 				rdb.AddReader(rr)
 				rr.SetObserver(&observerProxy{
 					close: s.newRdbRCloseObserver(rr, rdb),
@@ -291,7 +295,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 	rd.aof = rr
 	rd.reader = reader
 	rd.size = -1
-	rd.logger = log.WithLogger("[Reader(aof)] ")
+	rd.logger = log.WithLogger(config.LogModuleName("[Reader(aof)] "))
 
 	err = rr.Seek(offset)
 	if err != nil {

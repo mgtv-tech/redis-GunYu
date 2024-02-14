@@ -6,12 +6,9 @@ import (
 	"io"
 	"sync/atomic"
 
+	"github.com/ikenchina/redis-GunYu/pkg/common"
 	"github.com/ikenchina/redis-GunYu/pkg/rdb"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
-)
-
-var (
-	ErrCorrupted = errors.New("corrupted")
 )
 
 func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersion string) chan *rdb.BinEntry {
@@ -21,7 +18,7 @@ func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersi
 		l := rdb.NewLoader(NewCountReader(reader, rbytes), targetRedisVersion)
 		if err := l.Header(); err != nil {
 			pipe <- &rdb.BinEntry{
-				Err: errors.Join(ErrCorrupted, fmt.Errorf("parse rdb header error : %w", err)),
+				Err: errors.Join(common.ErrCorrupted, fmt.Errorf("parse rdb header error : %w", err)),
 			}
 			return
 		}
@@ -38,12 +35,12 @@ func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersi
 					if rdb.RdbVersion > 2 {
 						if err := l.Footer(); err != nil {
 							pipe <- &rdb.BinEntry{
-								Err: errors.Join(ErrCorrupted, fmt.Errorf("parse rdb checksum error : %w", err)),
+								Err: errors.Join(common.ErrCorrupted, fmt.Errorf("parse rdb checksum error : %w", err)),
 							}
 						}
 					}
 					pipe <- &rdb.BinEntry{
-						Err: io.EOF,
+						Done: true,
 					}
 					return
 				}

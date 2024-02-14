@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
@@ -24,7 +25,7 @@ type Loader struct {
 
 func NewLoader(r io.Reader, targetRedisVersion string) *Loader {
 	l := &Loader{
-		logger:             log.WithLogger("[RdbLoader] "),
+		logger:             log.WithLogger(config.LogModuleName("[RdbLoader] ")),
 		targetRedisVersion: targetRedisVersion,
 	}
 	l.crc = digest.New()
@@ -73,6 +74,7 @@ type BinEntry struct {
 	Freq         uint8
 	Err          error
 	ObjectParser Parser
+	Done         bool
 }
 
 func (be *BinEntry) FirstBin() bool {

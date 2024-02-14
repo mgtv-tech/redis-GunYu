@@ -52,7 +52,7 @@ type SyncerCmd struct {
 func NewSyncerCmd() *SyncerCmd {
 	return &SyncerCmd{
 		waitCloser: usync.NewWaitCloser(nil),
-		logger:     log.WithLogger("[SyncerCommand] "),
+		logger:     log.WithLogger(config.LogModuleName("[SyncerCommand] ")),
 		syncers:    make(map[string]syncerInfo),
 	}
 }
@@ -76,6 +76,7 @@ func (sc *SyncerCmd) stop() {
 func (sc *SyncerCmd) Run() error {
 	err := sc.fixConfig()
 	if err != nil {
+		sc.logger.Errorf("fixConfig : %v", err)
 		return err
 	}
 
@@ -96,7 +97,7 @@ func (sc *SyncerCmd) Run() error {
 			sc.logger.Infof("syncer restart : err(%v)", err)
 			fixErr := util.RetryLinearJitter(sc.waitCloser.Context(), func() error {
 				return sc.fixConfig()
-			}, 3, time.Second*3, 0.3)
+			}, 60, time.Second*3, 0.3) // a long consensus time for redis cluster
 			if fixErr != nil {
 				err = errors.Join(fixErr, err)
 				break
@@ -110,6 +111,7 @@ func (sc *SyncerCmd) Run() error {
 					config.Get().Output.Redis.SetMigrating(true)
 				}
 			}
+			sc.waitCloser.Sleep(1 * time.Second)
 			continue
 		}
 	}
@@ -236,7 +238,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 						scg := syncer.SyncerConfig{
 							Id:             i,
 							CanTransaction: true,
-							Output:         sortedOut[i], // @TODO cluster mode or stadalone mode?
+							Output:         sortedOut[i],
 							Input:          source,
 							Channel:        *config.Get().Channel.Clone(),
 						}
@@ -360,16 +362,14 @@ func checkMigrating(ctx context.Context, redisCfg config.RedisConfig) (bool, err
 			}
 			defer cli.Close()
 
-			mm, _, err := redis.GetAllClusterNode(cli)
+			mig, err := redis.GetClusterIsMigrating(cli)
 			if err != nil {
 				return err
 			}
-			for _, m := range mm {
-				if len(m.MigratingSlots) > 0 {
-					select {
-					case retCh <- true:
-					default:
-					}
+			if mig {
+				select {
+				case retCh <- true:
+				default:
 				}
 			}
 			return nil
@@ -795,9 +795,9 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 	prevOutRedisCfg := config.Get().Output.Redis
 	allShards := config.Get().Input.Mode != config.InputModeStatic
 	syncFrom := config.Get().Input.SyncFrom
-	interval := time.Duration(config.Get().Server.CheckRedisTypologyTicker) * time.Second
+	interval := config.Get().Server.CheckRedisTypologyTicker
 
-	sc.logger.Infof("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut)
+	sc.logger.Infof("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v), ticker(%s)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut, interval)
 
 	util.CronWithCtx(wait.Context(), interval, func(ctx context.Context) {
 		defer util.RecoverCallback(func(e interface{}) { wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("panic : %v", e))) })
@@ -824,10 +824,12 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 	syncFrom config.SelNodeStrategy, replayTransaction bool) bool {
 
 	prevInSelNodes := prevInRedisCfg.SelNodes(allShards, syncFrom)
+	prevOutSelNodes := prevOutRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 	var inRedisCfg, outRedisCfg *config.RedisConfig
 	restart := false
 
 	util.AndCondition(func() bool {
+		// check shards, syncFrom
 		if watchIn {
 			inRedisCfg = prevInRedisCfg.Clone()
 			err := redis.FixTopology(inRedisCfg)
@@ -837,13 +839,36 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			}
 
 			inSelNodes := inRedisCfg.SelNodes(allShards, syncFrom)
+			// check shard
 			if len(inSelNodes) != len(prevInSelNodes) {
 				// @TODO only start affected syncer
 				restart = true
 				return false
 			}
-			// the addresses of selected nodes are different, e.g. prefer_slave
-			// up to configration @TODO
+			if syncFrom == config.SelNodeStrategyMaster {
+				for _, a := range inSelNodes {
+					find := false
+					for _, b := range prevInSelNodes {
+						if a.Address() == b.Address() {
+							find = true
+							break
+						}
+					}
+					if !find {
+						restart = true
+						return false
+					}
+				}
+			} else {
+				for _, b := range prevInSelNodes {
+					// @TODO restart if node is changed, e.g. syncFrom is prefer_slave and now it is a master
+					node := inRedisCfg.FindNode(b.Address())
+					if node == nil {
+						restart = true
+						return false
+					}
+				}
+			}
 		}
 		return true
 	}, func() bool {
@@ -854,7 +879,26 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				sc.logger.Errorf("FixTypology : redis(%s), error(%v)", outRedisCfg.Address(), err)
 				return false
 			}
-			// if master is changed, restart ? redis client will handle it
+
+			// if master is changed, restart
+			outSelNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
+			if len(outSelNodes) != len(prevOutSelNodes) {
+				restart = true
+				return false
+			}
+			for _, a := range outSelNodes {
+				find := false
+				for _, b := range prevOutSelNodes {
+					if a.Address() == b.Address() {
+						find = true
+						break
+					}
+				}
+				if !find {
+					restart = true
+					return false
+				}
+			}
 		}
 		return true
 	}, func() bool {
@@ -863,6 +907,14 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			watchIn && watchOut && (prevInRedisCfg.IsCluster() && prevOutRedisCfg.IsCluster()) {
 			inNodes := inRedisCfg.SelNodes(allShards, syncFrom)
 			outNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
+			if len(inNodes) != len(outNodes) {
+				if txnMode {
+					restart = true
+					return !restart
+				} else {
+					return false
+				}
+			}
 			for _, in := range inNodes {
 				inSlots := in.GetAllSlots()
 				equal := false
@@ -873,12 +925,18 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 				}
 				if !equal {
-					restart = txnMode
-					return !restart
+					if txnMode {
+						restart = true
+						return false
+					} else {
+						restart = false
+						return false
+					}
 				}
 			}
 			return true
 		}
+		// non transaction, stop check
 		return false
 	}, func() bool {
 		// check migration status
@@ -905,14 +963,12 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			return false
 		} else {
 			// @TODO only restart affected nodes
-			if txnMode == migrating { // to non-txn state
+			if txnMode == migrating { // true == true || false == false
 				restart = true
 			} else if txnMode && !migrating {
 				// do nothing
 			} else if !txnMode && migrating {
 				return false
-			} else if !txnMode && !migrating {
-				restart = true
 			}
 		}
 		return !restart
@@ -922,18 +978,33 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 }
 
 func (sc *SyncerCmd) startHttpServer() {
-	listen := fmt.Sprintf("%s:%d", config.Get().Server.HttpBind, config.Get().Server.HttpPort)
+	httpCfg := config.Get().Server.Http
+	if httpCfg == nil {
+		return
+	}
+
+	listen := fmt.Sprintf("%s:%d", httpCfg.HttpBind, httpCfg.HttpPort)
 	router := httprouter.New()
 
 	// prometheus
-	router.Handler(http.MethodGet, "/prometheus", promhttp.Handler())
+	router.Handler(http.MethodGet, httpCfg.MetricRoutePath, promhttp.Handler())
+
+	// process
 	router.HandlerFunc(http.MethodDelete, "/", func(w http.ResponseWriter, r *http.Request) {
 		sc.Stop()
 	})
-	router.HandlerFunc(http.MethodGet, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
+
+	// storage
+	router.HandlerFunc(http.MethodPost, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
 		sc.gcStaleCheckpoint(sc.runWait.Context())
 	})
 
+	// syncer command
+	router.HandlerFunc(http.MethodPost, "/syncer/restart", func(w http.ResponseWriter, r *http.Request) {
+		sc.runWait.Close(errors.Join(context.Canceled, syncer.ErrRestart))
+	})
+
+	// pprof
 	router.HandlerFunc(http.MethodGet, "/debug/pprof/", pprof.Index)
 	router.HandlerFunc(http.MethodGet, "/debug/pprof/cmdline", pprof.Cmdline)
 	router.HandlerFunc(http.MethodGet, "/debug/pprof/profile", pprof.Profile)

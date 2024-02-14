@@ -15,7 +15,11 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
+
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 // Batch pack multiple commands, which should be supported by Do method.
@@ -23,6 +27,7 @@ type Batch struct {
 	cluster *Cluster
 	batches []nodeBatch
 	index   []int
+	err     error
 }
 
 type nodeBatch struct {
@@ -49,11 +54,18 @@ func (cluster *Cluster) NewBatch() *Batch {
 	}
 }
 
+func (tb *Batch) joinError(err error) error {
+	tb.err = errors.Join(tb.err, err)
+	return err
+}
+
 // Put add a redis command to batch, DO NOT put MGET/MSET/MSETNX.
+// it ignores multi/exec transaction
 func (batch *Batch) Put(cmd string, args ...interface{}) error {
 	node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
-		return fmt.Errorf("run ChooseNodeWithCmd error : %w", err)
+		err = fmt.Errorf("run ChooseNodeWithCmd error : %w", err)
+		return batch.joinError(err)
 	}
 	if node == nil {
 		// node is nil means no need to put
@@ -72,6 +84,9 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 	}
 
 	if i == len(batch.batches) {
+		if batch.cluster.transactionEnable && len(batch.batches) == 1 {
+			return batch.joinError(common.ErrCrossSlots)
+		}
 		batch.batches = append(batch.batches,
 			nodeBatch{
 				node: node,
@@ -91,9 +106,20 @@ func (batch *Batch) GetBatchSize() int {
 	return len(batch.index)
 }
 
-// RunBatch execute commands in batch simutaneously. If multiple commands are
-// directed to the same node, they will be merged and sent at once using pipeling.
-func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
+func (batch *Batch) Len() int {
+	ll := 0
+	for _, b := range batch.batches {
+		ll += len(b.cmds)
+	}
+	return ll
+}
+
+func (bat *Batch) Exec() ([]interface{}, error) {
+
+	if bat.err != nil {
+		return nil, bat.err
+	}
+
 	if bat == nil || bat.batches == nil || len(bat.batches) == 0 {
 		return []interface{}{}, nil
 	}
@@ -111,12 +137,17 @@ func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
 		if bat.batches[i].err != nil {
 			return nil, bat.batches[i].err
 		}
-
 		replies = append(replies, bat.batches[i].cmds[0].reply)
 		bat.batches[i].cmds = bat.batches[i].cmds[1:]
 	}
 
 	return replies, nil
+}
+
+// RunBatch execute commands in batch simutaneously. If multiple commands are
+// directed to the same node, they will be merged and sent at once using pipeling.
+func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
+	return bat.Exec()
 }
 
 func doBatch(batch *nodeBatch) {
@@ -127,11 +158,13 @@ func doBatch(batch *nodeBatch) {
 		return
 	}
 
+	exec := util.OpenCircuitExec{}
+
 	for i := range batch.cmds {
-		conn.send(batch.cmds[i].cmd, batch.cmds[i].args...)
+		exec.Do(func() error { return conn.send(batch.cmds[i].cmd, batch.cmds[i].args...) })
 	}
 
-	err = conn.flush()
+	err = exec.Do(func() error { return conn.flush() })
 	if err != nil {
 		batch.err = err
 		conn.shutdown()
@@ -141,6 +174,13 @@ func doBatch(batch *nodeBatch) {
 
 	for i := range batch.cmds {
 		reply, err := conn.receive()
+		if err != nil {
+			batch.err = err
+			conn.shutdown()
+			batch.done <- 1
+			return
+		}
+		reply, err = common.HandleReply(reply)
 		if err != nil {
 			batch.err = err
 			conn.shutdown()

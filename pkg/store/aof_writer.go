@@ -164,7 +164,7 @@ func NewAofRotater(dir string, offset int64, maxLogSize int64, flush config.Flus
 	w := &AofRotater{
 		dir:         dir,
 		maxLogSize:  maxLogSize,
-		logger:      log.WithLogger("[AofRotater] "),
+		logger:      log.WithLogger(config.LogModuleName("[AofRotater] ")),
 		flushPolicy: flush,
 	}
 
@@ -332,7 +332,7 @@ func (w *AofRotater) closeAof() error { // ensure close() and write() are in sam
 			return ret(err)
 		}
 
-		_, err = w.file.Write(w.header[:])
+		_, err = w.file.Write(w.header[:headerSize])
 		err = ret(err)
 		if err == nil {
 			w.getObserver().Close(w.left, w.filesize-headerSize)

@@ -65,8 +65,6 @@ func InitLog(cfg config.LogConfig) error {
 		TimeKey:        "ts",
 		LevelKey:       "level",
 		NameKey:        "logger",
-		CallerKey:      "caller",
-		FunctionKey:    "func",
 		MessageKey:     "msg",
 		StacktraceKey:  "stacktrace",
 		LineEnding:     zapcore.DefaultLineEnding,
@@ -75,6 +73,12 @@ func InitLog(cfg config.LogConfig) error {
 		EncodeDuration: zapcore.SecondsDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 		//EncodeName:     zapcore.FullNameEncoder,
+	}
+	if *cfg.Caller {
+		encodeCfg.CallerKey = "caller"
+	}
+	if *cfg.Func {
+		encodeCfg.FunctionKey = "func"
 	}
 
 	core := zapcore.NewCore(

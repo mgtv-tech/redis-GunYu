@@ -4,6 +4,7 @@ import (
 	"bufio"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/conn"
 )
 
@@ -21,6 +22,11 @@ type Redis interface {
 	Flush() error
 	RedisType() config.RedisType
 	Addresses() []string
+
+	NewBatcher() common.CmdBatcher
+
+	// for cluster
+	IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{})
 }
 
 func NewRedis(cfg config.RedisConfig) (Redis, error) {

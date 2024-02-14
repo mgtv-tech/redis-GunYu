@@ -39,7 +39,7 @@ func NewStandaloneRedis(cfg config.RedisConfig) (*StandaloneRedis, error) {
 
 	return &StandaloneRedis{
 		cli:    cli,
-		logger: log.WithLogger("[Redis] "),
+		logger: log.WithLogger(config.LogModuleName("[Redis] ")),
 	}, nil
 }
 
@@ -56,7 +56,7 @@ func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64,
 
 	sr.logger.Infof("send psync : %s, %d", runid, offset)
 
-	err := sr.cli.Send("psync", runid, strconv.FormatInt(offset, 10))
+	err := sr.cli.SendAndFlush("psync", runid, strconv.FormatInt(offset, 10))
 	if err != nil {
 		return "", -1, nil, err
 	}
@@ -144,7 +144,7 @@ func (sr *StandaloneRedis) SendPSyncAck(offset int64) error {
 }
 
 func (sr *StandaloneRedis) SelectDB(db int) error {
-	err := sr.cli.Send("select", strconv.Itoa(db))
+	err := sr.cli.SendAndFlush("select", strconv.Itoa(db))
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (sr *StandaloneRedis) AuthPassword(authType, passwd string) error {
 		return fmt.Errorf("empty passwd")
 	}
 
-	err := sr.cli.Send(authType, passwd)
+	err := sr.cli.SendAndFlush(authType, passwd)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func Iocopy(r io.Reader, w io.Writer, p []byte, max int64) (int, error) {
 
 func (sr *StandaloneRedis) GetInfoReplication() (string, string, error) {
 
-	err := sr.cli.Send("info", "replication")
+	err := sr.cli.SendAndFlush("info", "replication")
 	if err != nil {
 		return "", "", err
 	}

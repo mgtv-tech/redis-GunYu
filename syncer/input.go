@@ -18,6 +18,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	"github.com/ikenchina/redis-GunYu/pkg/store"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 type StartPoint struct {
@@ -95,7 +96,7 @@ func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {
 		wait:      usync.NewWaitCloser(nil),
 		fsm:       NewSyncFiniteStateMachine(),
 		cfg:       redisCfg,
-		logger:    log.WithLogger(fmt.Sprintf("[RedisInput(%d)] ", id)),
+		logger:    log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisInput(%d)] ", id))),
 	}
 }
 
@@ -153,13 +154,12 @@ func (ri *RedisInput) fetchInput(wait usync.WaitCloser) (outSp StartPoint) {
 	ri.rdbLimiterAcquire(wait.Done())
 
 	// for input redis, shouldn't reconnect to redis if encounters error or connection is broken
-	redisCli, err := ri.newRedisConn()
+	redisCli, err := ri.newRedisConn(wait.Context())
 	if err != nil {
-		wait.Close(err)
+		wait.Close(errors.Join(ErrRestart, err)) // check typology
 		ri.rdbLimiterRelease()
 		return
 	}
-	// @TODO restart if input reports error, and check typology of redis
 
 	// meta
 	isFullSync, rdbSize, locSp, outSp, err := ri.syncMeta(wait.Context(), redisCli)
@@ -169,12 +169,20 @@ func (ri *RedisInput) fetchInput(wait usync.WaitCloser) (outSp StartPoint) {
 		redisCli.Close()
 		return
 	}
-	if !isFullSync {
-		ri.rdbLimiterRelease()
-	}
 
 	// data
 	ri.syncData(wait, redisCli, isFullSync, rdbSize, locSp.Offset)
+	return
+}
+
+func (ri *RedisInput) getOutputStartPoint(ctx context.Context, ids []string) (sp StartPoint, err error) {
+	util.RetryLinearJitter(ctx, func() error {
+		sp, err = ri.output.StartPoint(ctx, ids)
+		return err
+	}, 3, time.Second*2, 0.5)
+	if err != nil {
+		err = errors.Join(ErrBreak, err)
+	}
 	return
 }
 
@@ -191,7 +199,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	inputIds := []string{id1, id2}
 	ri.setRunIds(inputIds)
 
-	outSp, err = ri.output.StartPoint(inputIds)
+	outSp, err = ri.getOutputStartPoint(ctx, inputIds)
 	if err != nil {
 		err = fmt.Errorf("output start point error : runIds(%v), err(%w)", inputIds, err)
 		// may cause full sync if does not return
@@ -242,16 +250,17 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	} else if slices.Contains(inputIds, locSp.RunId) && outSp.IsInitial() { // outSp is ?
 		// @TODO @OPTIMIZE : if gap is very large, it's better to send full sync
 		// channel has a RDB file, so set offset to zero
-		l, r := ri.channel.GetOffsetRange(Offset{RunId: locSp.RunId, Offset: 0})
-		if l >= 0 {
+		locRdbLeft, locRdbSize := ri.channel.GetRdb(locSp.RunId)
+		if locRdbLeft != -1 && locRdbSize != -1 { // a valid RDB
 			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, locSp.ToOffset())
 			if err != nil {
 				return
 			}
-			if !isFullSync { // continue to sync with local rdb/aof
-				locSp.Offset = r
-				rdbSize := ri.channel.GetRdbSize(Offset{RunId: locSp.RunId, Offset: l})
-				outSp.Offset = l - rdbSize
+			if !isFullSync { // continue to sync with local RDB
+				_, locRight := ri.channel.GetOffsetRange(locSp.RunId)
+				locSp.Offset = locRight
+				outSp.Offset = locRdbLeft - locRdbSize
+				rdbSize = locRdbSize
 			}
 		} else {
 			synSp.Initialize()
@@ -260,7 +269,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 				return
 			}
 		}
-	} else {
+	} else { // full sync
 		synSp.Initialize()
 		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, synSp.ToOffset())
 		if err != nil {
@@ -321,6 +330,7 @@ func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.Standalone
 		aofWriter, err = ri.channel.NewAofWritter(redisCli.Client().BufioReader(), offset)
 	}
 	if err != nil {
+		ri.rdbLimiterRelease()
 		wait.Close(err)
 		return
 	}
@@ -332,15 +342,18 @@ func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.Standalone
 			}
 		}()
 		if wait.IsClosed() {
+			ri.rdbLimiterRelease()
 			return nil
 		}
 		if isFullSync {
 			err = ri.syncRdb(wait.Context(), redisCli.Client().BufioReader(), rdbWriter)
-			ri.rdbLimiterRelease()
 			if err != nil {
+				ri.rdbLimiterRelease()
 				return err
 			}
 		}
+		ri.rdbLimiterRelease()
+
 		if aofWriter == nil {
 			aofWriter, err = ri.channel.NewAofWritter(redisCli.Client().BufioReader(), offset)
 			if err != nil {
@@ -388,6 +401,11 @@ func (ri *RedisInput) syncIncr(ctx context.Context, reader *bufio.Reader, offset
 	}
 	writer.Close()
 	ri.fsm.SetState(SyncStateIncrSynced)
+
+	// @TODO
+	// EOF, need restart ? check typology
+	// e.g. new slave will discard master_replid after execute failover, if connect it again, will cause a full sync
+
 	return err
 }
 
@@ -420,7 +438,7 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 func (ri *RedisInput) Run() (err error) {
 	ri.logger.Infof("Run")
 
-	ri.checkSyncDelay(ri.wait)
+	ri.checkSyncDelay(ri.wait, ri.cfg)
 
 	ri.wait.WgAdd(1)
 	usync.SafeGo(func() {
@@ -428,7 +446,7 @@ func (ri *RedisInput) Run() (err error) {
 		for !ri.wait.IsClosed() {
 			err := ri.run()
 			if err != nil {
-				ri.logger.Errorf("%v", err)
+				ri.logger.Errorf("run error : %v", err)
 				// handle corrupted data, @TODO just delete corrupted file ?
 				if errors.Is(err, ErrCorrupted) {
 					ri.channel.DelRunId(ri.channel.RunId())
@@ -448,31 +466,33 @@ func (ri *RedisInput) Run() (err error) {
 	return ri.wait.Error()
 }
 
-func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser) {
+func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConfig) {
 	testKey := config.Get().Input.SyncDelayTestKey
 	if testKey == "" {
 		return
 	}
 	timeout := config.Get().Server.GracefullStopTimeout
+	cfg.Type = cfg.Otype
+
 	usync.SafeGo(func() {
-		cfgs := ri.cfg.SelNodes(true, config.SelNodeStrategyMaster)
 		for !wait.IsClosed() {
-			if len(cfgs) > 0 {
-				cli, err := client.NewRedis(cfgs[0])
-				if err != nil {
-					ri.logger.Errorf("checkSyncDelay, new redis : addr(%s), error(%v)", ri.cfg.Address(), err)
-					wait.Sleep(timeout)
-					continue
-				}
-				for !wait.IsClosed() {
-					now := time.Now().UnixNano()
-					cli.SendAndFlush("SET", testKey, now)
-					wait.Sleep(1 * time.Second)
-				}
-				cli.Close()
-			} else {
-				ri.logger.Errorf("checkSyncDelay, no redis : %s", ri.cfg.Address())
+			// @TODO
+			// leader should check every node
+			cli, err := client.NewRedis(cfg)
+			if err != nil {
+				ri.logger.Errorf("checkSyncDelay, new redis : addr(%s), error(%v)", ri.cfg.Address(), err)
+				wait.Sleep(timeout)
+				continue
 			}
+			for !wait.IsClosed() {
+				val := fmt.Sprintf("%s_%d", cfg.Address(), time.Now().UnixNano())
+				_, err := cli.Do("SET", testKey, val)
+				if err != nil {
+					ri.logger.Errorf("checkSyncDelay, set testkey : addr(%s), error(%v)", ri.cfg.Address(), err)
+				}
+				wait.Sleep(1 * time.Second)
+			}
+			cli.Close()
 		}
 	}, nil)
 }
@@ -524,15 +544,19 @@ func (ri *RedisInput) StateNotify(state SyncState) usync.WaitChannel {
 	return ri.fsm.StateNotify(state)
 }
 
-func (ri *RedisInput) newRedisConn() (*redis.StandaloneRedis, error) {
-	return redis.NewStandaloneRedis(ri.cfg)
+func (ri *RedisInput) newRedisConn(ctx context.Context) (cli *redis.StandaloneRedis, err error) {
+	util.RetryLinearJitter(ctx, func() error {
+		cli, err = redis.NewStandaloneRedis(ri.cfg)
+		return err
+	}, 3, time.Second*1, 0.3)
+	return
 }
 
 // continue psync ?
 func (ri *RedisInput) pSync(cli *redis.StandaloneRedis, offset Offset) (
 	off Offset, fullSync bool, rdbSize int64, err error) {
 
-	err = cli.SendPSyncListeningPort(config.Get().Server.HttpPort)
+	err = cli.SendPSyncListeningPort(config.Get().Server.Http.HttpPort)
 	if err != nil {
 		ri.logger.Errorf("psync error : offset(%v), err(%v)", offset, err)
 		return
@@ -548,11 +572,10 @@ func (ri *RedisInput) sendPsync(cli *redis.StandaloneRedis, offset Offset) (Offs
 	if err != nil {
 		ri.logger.Errorf("send psync : offset(%v), err(%v), input(%s, %d)", offset, err, pRunId, pOff)
 		return Offset{}, false, 0, err
-	} else {
-		ri.logger.Infof("send psync : offset(%v), input(%s, %d)", offset, pRunId, pOff)
 	}
 	var rdbSize int64
 	if wait == nil {
+		ri.logger.Infof("send psync : offset(%v), input(%s, %d), incr_sync", offset, pRunId, pOff)
 		return Offset{RunId: pRunId, Offset: pOff}, false, rdbSize, nil
 	}
 
@@ -565,5 +588,7 @@ func (ri *RedisInput) sendPsync(cli *redis.StandaloneRedis, offset Offset) (Offs
 			}
 		}
 	}
+
+	ri.logger.Infof("send psync : offset(%v), input(%s, %d), full_sync(%d)", offset, pRunId, pOff, rdbSize)
 	return Offset{RunId: pRunId, Offset: pOff}, true, rdbSize, nil
 }

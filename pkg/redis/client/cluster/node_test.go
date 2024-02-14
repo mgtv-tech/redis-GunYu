@@ -68,7 +68,7 @@ func TestRedisDo(t *testing.T) {
 	if err != nil {
 		t.Errorf("GET error: %s\n", err.Error())
 	}
-	if _, ok := reply.(redisError); !ok {
+	if _, ok := reply.(common.RedisError); !ok {
 		t.Errorf("unexpected value %v\n", reply)
 	}
 
@@ -76,7 +76,7 @@ func TestRedisDo(t *testing.T) {
 	if err != nil {
 		t.Errorf("GET error: %s\n", err.Error())
 	}
-	if _, ok := reply.(redisError); !ok {
+	if _, ok := reply.(common.RedisError); !ok {
 		t.Errorf("unexpected value %v\n", reply)
 	}
 
@@ -177,11 +177,36 @@ func TestRedisPipeline(t *testing.T) {
 
 func newRedisNode() *redisNode {
 	return &redisNode{
-		address:      "127.0.0.1:6300",
+		address:      "127.0.0.1:16302",
 		keepAlive:    3,
 		aliveTime:    60 * time.Second,
 		connTimeout:  5 * time.Second,
 		readTimeout:  5 * time.Second,
 		writeTimeout: 5 * time.Second,
+	}
+}
+
+func TestMulti(t *testing.T) {
+	node := newRedisNode()
+	// fmt.Println(node.do("multi"))
+	// fmt.Println(node.do("set", "e", 1))
+	// fmt.Println(node.do("set", "e", 1))
+	// fmt.Println(node.do("set", "e", 1))
+	// fmt.Println(node.do("exec"))
+
+	conn, _ := node.getConn()
+	//conn.send("multi")
+	conn.send("set", "e", 1)
+	conn.send("set", "e", 1)
+	conn.send("set", "e", 1)
+	//conn.send("exec")
+	conn.flush()
+
+	for {
+		ret, err := conn.receive()
+		if err != nil {
+			break
+		}
+		fmt.Println(ret)
 	}
 }

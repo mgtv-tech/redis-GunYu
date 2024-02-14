@@ -5,7 +5,9 @@ import (
 	"sort"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/errors"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
+	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
 )
 
 // @TODO it's deprecated
@@ -15,20 +17,43 @@ func GetSlotDistribution(cli client.Redis) ([]SlotOwner, error) {
 		return nil, err
 	}
 
+	shards, ok := content.([]interface{})
+	if !ok {
+		return nil, errors.Errorf("invalid result : %v", content)
+	}
+
 	ret := make([]SlotOwner, 0, 3)
 	// fetch each shard info
-	for _, shard := range content.([]interface{}) {
-		shardVar := shard.([]interface{})
-		left := shardVar[0].(int64)
-		right := shardVar[1].(int64)
+	for _, shard := range shards {
+		shardVar, ok := shard.([]interface{})
+		if !ok {
+			return nil, errors.Errorf("invalid result : %v", shard)
+		}
+		left, err1 := common.Int(shardVar[0], nil)
+		if err1 != nil {
+			return nil, errors.WithStack(err1)
+		}
+		right, err2 := common.Int(shardVar[1], nil)
+		if err2 != nil {
+			return nil, errors.WithStack(err1)
+		}
 
 		// iterator each role
 		var master string
 		slave := make([]string, 0, 2)
 		for i := 2; i < len(shardVar); i++ {
-			roleVar := shardVar[i].([]interface{})
-			ip := roleVar[0]
-			port := roleVar[1]
+			roleVar, ok := shardVar[i].([]interface{})
+			if !ok {
+				return nil, errors.Errorf("invalid result : %v", shardVar[i])
+			}
+			ip, err := common.String(roleVar[0], nil)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			port, err := common.Int(roleVar[1], nil)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
 			combine := fmt.Sprintf("%s:%d", ip, port)
 			if i == 2 {
 				master = combine
@@ -40,8 +65,8 @@ func GetSlotDistribution(cli client.Redis) ([]SlotOwner, error) {
 		ret = append(ret, SlotOwner{
 			Master:            master,
 			Slave:             slave,
-			SlotLeftBoundary:  int(left),
-			SlotRightBoundary: int(right),
+			SlotLeftBoundary:  left,
+			SlotRightBoundary: right,
 		})
 	}
 
@@ -58,20 +83,45 @@ func GetClusterSlotDistribution(cli client.Redis) (map[string]*config.RedisSlots
 		return nil, nil, err
 	}
 
+	shards, ok := content.([]interface{})
+	if !ok {
+		return nil, nil, errors.Errorf("invalid result : %v", content)
+	}
+
 	redisSlots := &config.RedisSlots{}
 	slotMap := make(map[string]*config.RedisSlots)
-	for _, shard := range content.([]interface{}) {
-		shardVar := shard.([]interface{})
-		left := int(shardVar[0].(int64))
-		right := int(shardVar[1].(int64))
+	for _, shard := range shards {
+		shardVar, ok := shard.([]interface{})
+		if !ok {
+			return nil, nil, errors.Errorf("invalid result : %v", shard)
+		}
+		left, err1 := common.Int(shardVar[0], nil)
+		if err1 != nil {
+			return nil, nil, errors.WithStack(err1)
+		}
+		right, err2 := common.Int(shardVar[1], nil)
+		if err2 != nil {
+			return nil, nil, errors.WithStack(err1)
+		}
 		redisSlots.Ranges = append(redisSlots.Ranges, config.RedisSlotRange{
 			Left:  left,
 			Right: right,
 		})
 
 		for i := 2; i < len(shardVar); i++ {
-			roleVar := shardVar[i].([]interface{})
-			ipPort := fmt.Sprintf("%s:%d", roleVar[0], roleVar[1])
+			roleVar, ok := shardVar[i].([]interface{})
+			if !ok {
+				return nil, nil, errors.Errorf("invalid result : %v", shardVar[i])
+			}
+			ip, err := common.String(roleVar[0], nil)
+			if err != nil {
+				return nil, nil, errors.WithStack(err)
+			}
+			port, err := common.Int(roleVar[1], nil)
+			if err != nil {
+				return nil, nil, errors.WithStack(err)
+			}
+			ipPort := fmt.Sprintf("%s:%d", ip, port)
 			slots, ok := slotMap[ipPort]
 			if !ok {
 				slotMap[ipPort] = &config.RedisSlots{

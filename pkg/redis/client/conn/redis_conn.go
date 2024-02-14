@@ -11,6 +11,7 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/proto"
+	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
 
 const (
@@ -94,7 +95,7 @@ func (r *RedisConn) Addresses() []string {
 }
 
 func (r *RedisConn) doGetString(cmd string, args ...interface{}) (string, error) {
-	err := r.Send(cmd, args...)
+	err := r.SendAndFlush(cmd, args...)
 	if err != nil {
 		return "", err
 	}
@@ -107,11 +108,15 @@ func (r *RedisConn) doGetString(cmd string, args ...interface{}) (string, error)
 }
 
 func (r *RedisConn) Do(cmd string, args ...interface{}) (interface{}, error) {
-	err := r.Send(cmd, args...)
+	err := r.SendAndFlush(cmd, args...)
 	if err != nil {
 		return nil, err
 	}
 	return r.Receive()
+}
+
+func (r *RedisConn) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
+
 }
 
 // @TODO 需要调用Flush吗？cluster模式并没有调用
@@ -120,14 +125,15 @@ func (r *RedisConn) Send(cmd string, args ...interface{}) error {
 	argsInterface[0] = cmd
 	copy(argsInterface[1:], args)
 	err := r.protoWriter.WriteArgs(argsInterface)
+	return err
+}
+
+func (r *RedisConn) SendAndFlush(cmd string, args ...interface{}) error {
+	err := r.Send(cmd, args...)
 	if err != nil {
 		return err
 	}
 	return r.flush()
-}
-
-func (r *RedisConn) SendAndFlush(cmd string, args ...interface{}) error {
-	return r.Send(cmd, args...)
 }
 
 func (r *RedisConn) flush() error {
@@ -156,4 +162,61 @@ func (r *RedisConn) BufioWriter() *bufio.Writer {
 
 func (r *RedisConn) Flush() error {
 	return r.flush()
+}
+
+func (r *RedisConn) NewBatcher() common.CmdBatcher {
+	return &batcher{
+		conn: r,
+	}
+}
+
+type batcher struct {
+	conn    *RedisConn
+	cmds    []string
+	cmdArgs [][]interface{}
+}
+
+func (tb *batcher) Put(cmd string, args ...interface{}) error {
+	tb.cmds = append(tb.cmds, cmd)
+	tb.cmdArgs = append(tb.cmdArgs, args)
+	return nil
+}
+
+func (tb *batcher) Len() int {
+	return len(tb.cmds)
+}
+
+func (tb *batcher) Exec() ([]interface{}, error) {
+
+	exec := util.OpenCircuitExec{}
+
+	for i := 0; i < len(tb.cmds); i++ {
+		exec.Do(func() error { return tb.conn.Send(tb.cmds[i], tb.cmdArgs[i]...) })
+	}
+
+	err := exec.Do(func() error { return tb.conn.flush() })
+	if err != nil {
+		tb.conn.Close()
+		return nil, err
+	}
+
+	receiveSize := len(tb.cmds)
+
+	replies := []interface{}{}
+	for i := 0; i < receiveSize; i++ {
+		rpl, err := tb.conn.Receive()
+		if err != nil {
+			tb.conn.Close()
+			return nil, err
+		}
+
+		rpl, err = common.HandleReply(rpl)
+		if err != nil {
+			tb.conn.Close()
+			return nil, err
+		}
+
+		replies = append(replies, rpl)
+	}
+	return replies, nil
 }

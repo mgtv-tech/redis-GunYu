@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/ikenchina/redis-GunYu/pkg/errors"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
@@ -20,7 +21,7 @@ type RdbReader struct {
 }
 
 func NewRdbReader(r io.Reader) *RdbReader {
-	return &RdbReader{raw: r, logger: log.WithLogger("[RdbReader] ")}
+	return &RdbReader{raw: r, logger: log.WithLogger(config.LogModuleName("[RdbReader] "))}
 }
 
 func (r *RdbReader) Read(p []byte) (int, error) {

@@ -106,7 +106,7 @@ ReadByte:
 	d.offset++
 	if b, err := d.r.ReadByte(); err != nil {
 		return 0, errors.WithStack(err)
-	} else if string(b) == "\n" {
+	} else if b == '\n' {
 		goto ReadByte
 	} else {
 		return respType(b), nil

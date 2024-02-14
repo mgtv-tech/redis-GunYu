@@ -65,7 +65,7 @@ type Syncer interface {
 func NewSyncer(cfg SyncerConfig) Syncer {
 	sy := &syncer{
 		cfg:    cfg,
-		logger: log.WithLogger(fmt.Sprintf("[syncer(%d)] ", cfg.Id)),
+		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%d)] ", cfg.Id))),
 	}
 	sy.channel = NewStoreChannel(StorerConf{
 		Id:      cfg.Id,
@@ -97,16 +97,23 @@ func (s *syncer) RunIds() []string {
 	return s.input.RunIds()
 }
 
-func (s *syncer) getInputRunIds() (string, string, error) {
-	cli, err := client.NewRedis(s.cfg.Input)
+func (s *syncer) getInputRunIds() (id1 string, id2 string, err error) {
+	err = util.RetryLinearJitter(s.wait.Context(), func() error {
+		cli, err := client.NewRedis(s.cfg.Input)
+		if err != nil {
+			s.logger.Errorf("new redis error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
+			return err
+		}
+
+		id1, id2, err = redis.GetRunIds(cli)
+		if err != nil {
+			s.logger.Errorf("get run ids error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
+		}
+
+		return err
+	}, 3, time.Second*1, 0.3)
 	if err != nil {
-		s.logger.Errorf("new redis error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
-		return "", "", err
-	}
-	defer cli.Close()
-	id1, id2, err := redis.GetRunIds(cli)
-	if err != nil {
-		s.logger.Errorf("get run ids error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
+		err = errors.Join(ErrRestart, err)
 	}
 
 	return id1, id2, err

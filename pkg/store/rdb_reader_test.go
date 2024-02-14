@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/common"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -72,7 +73,7 @@ func (ts *rdbReaderTestSuite) TestCorrupted() {
 		ts.data[15] = 0
 		clean := created(false)
 		defer clean()
-		ts.True(errors.Is(ts.isCorrupted(0), ErrCorrupted))
+		ts.True(errors.Is(ts.isCorrupted(0), common.ErrCorrupted))
 	})
 
 	ts.Run("writting rdb file", func() {

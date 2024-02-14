@@ -2,22 +2,26 @@ id: 1
 httpProfile: 18000
 input:
   redis:
-    addresses: [127.0.0.1:6707]
+    addresses: [127.0.0.1:6721]
     type: standalone
   rdbParallel: 1
 channel:
   storer:
     dirPath: /tmp/redisgunyu
     maxSize: 10737418240 
+    logSize: 1097152
 output:
   redis:
-    addresses: [127.0.0.1:6717]
+    addresses: [127.0.0.1:6722]
     type: standalone
   resumeFromBreakPoint: true
   keyExists: replace
   metric: true
   targetDb: -1
   bigKeyThreshold: 200000
+filter:
+  commandBlacklist:
+    - flushdb
 log:
   level: debug
   handler:

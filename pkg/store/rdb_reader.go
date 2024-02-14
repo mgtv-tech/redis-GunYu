@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ikenchina/redis-GunYu/pkg/common"
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
@@ -116,7 +117,7 @@ func (r *RdbReader) checkHeader() error {
 	}
 
 	if dataCrc != fileCrc {
-		return errors.Join(ErrCorrupted,
+		return errors.Join(common.ErrCorrupted,
 			fmt.Errorf("rdb file is corrupted : file(%s), crc(%d), dataCrc(%d)", r.filePath, fileCrc, dataCrc))
 	}
 	return nil

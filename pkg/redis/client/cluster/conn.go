@@ -19,10 +19,6 @@ var (
 	pongReply interface{} = "PONG"
 )
 
-type redisError string
-
-func (err redisError) Error() string { return string(err) }
-
 type redisConn struct {
 	c net.Conn
 	t time.Time
@@ -258,7 +254,7 @@ func (conn *redisConn) readReply() (interface{}, error) {
 		if common.IsNilReply(line) {
 			return nil, common.ErrNil
 		}
-		return redisError(string(line[1:])), nil
+		return common.RedisError(string(line[1:])), nil
 	case ':':
 		return parseInt(line[1:])
 	case '$':

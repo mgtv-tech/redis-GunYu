@@ -11,13 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/common"
 	"github.com/ikenchina/redis-GunYu/pkg/digest"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
-)
-
-var (
-	ErrCorrupted = errors.New("corrupted")
 )
 
 type aofStorer interface {
@@ -51,7 +49,7 @@ func NewAofRotateReader(dir string, offset int64, aof aofStorer, writer io.Write
 		dir:       dir,
 		verifyCrc: verifyCrc,
 		aof:       aof,
-		logger:    log.WithLogger("[AofRotateReader] "),
+		logger:    log.WithLogger(config.LogModuleName("[AofRotateReader] ")),
 	}
 	r.wait = usync.NewWaitCloser(func(err error) {
 		r.close()
@@ -178,7 +176,7 @@ func (r *AofRotateReader) isCorrupted() error {
 		return err
 	}
 	if s != len(r.header) {
-		return errors.Join(io.EOF, ErrCorrupted)
+		return errors.Join(io.EOF, common.ErrCorrupted)
 	}
 
 	expCrc := binary.LittleEndian.Uint64(r.header[1:9])
@@ -191,7 +189,7 @@ func (r *AofRotateReader) isCorrupted() error {
 	sn := fi.Size()
 
 	if int64(expSize) != sn-int64(headerSize) {
-		return errors.Join(ErrCorrupted, fmt.Errorf("failed check size : file(%s), fileSize(%d), size(%d)", r.filepath, expSize, sn-int64(headerSize)))
+		return errors.Join(common.ErrCorrupted, fmt.Errorf("failed check size : file(%s), fileSize(%d), size(%d)", r.filepath, expSize, sn-int64(headerSize)))
 	}
 
 	_, err = r.file.Seek(headerSize, 0)
@@ -215,7 +213,7 @@ func (r *AofRotateReader) isCorrupted() error {
 
 	actCrc := crc.Sum64()
 	if actCrc != expCrc {
-		return errors.Join(ErrCorrupted, fmt.Errorf("failed check CRC : file(%s), fileCrc(%d), crc(%d)", r.filepath, expCrc, actCrc))
+		return errors.Join(common.ErrCorrupted, fmt.Errorf("failed check CRC : file(%s), fileCrc(%d), crc(%d)", r.filepath, expCrc, actCrc))
 	}
 
 	_, err = r.file.Seek(headerSize, 0)
@@ -347,7 +345,7 @@ func (rd *AofReader) Verify() error {
 		return err
 	}
 	if s != len(rd.header) {
-		return errors.Join(io.EOF, ErrCorrupted)
+		return errors.Join(io.EOF, common.ErrCorrupted)
 	}
 
 	expCrc := binary.LittleEndian.Uint64(rd.header[1:9])
@@ -360,7 +358,7 @@ func (rd *AofReader) Verify() error {
 	sn := fi.Size()
 
 	if int64(expSize) != sn-int64(headerSize) {
-		return errors.Join(ErrCorrupted, fmt.Errorf("failed check size : file(%s), fileSize(%d), size(%d)", rd.filePath, expSize, sn-int64(headerSize)))
+		return errors.Join(common.ErrCorrupted, fmt.Errorf("failed check size : file(%s), fileSize(%d), size(%d)", rd.filePath, expSize, sn-int64(headerSize)))
 	}
 
 	_, err = rd.file.Seek(headerSize, 0)
@@ -384,7 +382,7 @@ func (rd *AofReader) Verify() error {
 
 	actCrc := crc.Sum64()
 	if actCrc != expCrc {
-		return errors.Join(ErrCorrupted, fmt.Errorf("failed check CRC : file(%s), fileCrc(%d), crc(%d)", rd.filePath, expCrc, actCrc))
+		return errors.Join(common.ErrCorrupted, fmt.Errorf("failed check CRC : file(%s), fileCrc(%d), crc(%d)", rd.filePath, expCrc, actCrc))
 	}
 
 	_, err = rd.file.Seek(headerSize, 0)

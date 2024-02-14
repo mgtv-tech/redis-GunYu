@@ -296,7 +296,7 @@ func (ds *dataSet) InRange(offset int64) bool {
 
 	ll, rr := ds.getRange()
 	// left <= offset <= right
-	if offset != -1 && ll <= offset && rr >= offset {
+	if offset > 0 && ll <= offset && rr >= offset {
 		return true
 	} else if ll >= offset && ds.rdb != nil { // offset <= rdb.left
 		return true

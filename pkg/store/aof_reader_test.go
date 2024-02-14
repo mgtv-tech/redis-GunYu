@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/common"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -69,7 +70,7 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 		file.Sync()
 		ts.Nil(syscall.Munmap(data2))
 		err = ts.isCorrupted(0)
-		ts.True(errors.Is(err, ErrCorrupted))
+		ts.True(errors.Is(err, common.ErrCorrupted))
 		ts.True(strings.Contains(err.Error(), "check CRC"))
 		file.Close()
 	})
@@ -82,7 +83,7 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 		file.Write([]byte("x"))
 		file.Close()
 		err = ts.isCorrupted(0)
-		ts.True(errors.Is(err, ErrCorrupted))
+		ts.True(errors.Is(err, common.ErrCorrupted))
 		ts.True(strings.Contains(err.Error(), "check size"))
 
 		// writting file

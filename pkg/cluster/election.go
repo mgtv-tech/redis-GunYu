@@ -37,8 +37,15 @@ type Cluster struct {
 
 func NewCluster(ctx context.Context, cfg config.EtcdConfig) (*Cluster, error) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints: cfg.Endpoints,
-		Context:   ctx,
+		Context:              ctx,
+		Endpoints:            cfg.Endpoints,
+		AutoSyncInterval:     cfg.AutoSyncInterval,
+		DialTimeout:          cfg.DialTimeout,
+		DialKeepAliveTime:    cfg.DialKeepAliveTime,
+		DialKeepAliveTimeout: cfg.DialKeepAliveTimeout,
+		Username:             cfg.Username,
+		Password:             cfg.Password,
+		RejectOldCluster:     cfg.RejectOldCluster,
 	})
 	if err != nil {
 		return nil, err

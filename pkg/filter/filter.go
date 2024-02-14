@@ -13,12 +13,38 @@ var (
 	}
 )
 
+var (
+	noRouteCmd = map[string]struct{}{}
+)
+
+func init() {
+	// @TODO
+	cmds := []string{
+		// cluster
+		"CLUSTER", "ASKING", "READONLY", "READWRITE",
+		// connection management, without PING
+		"AUTH", "CLIENT", "QUIT", "RESET", "ECHO",
+		// generic
+		// pub/sub, script,
+		// server
+		"COMMAND", "FLUSHALL", "FLUSHDB", "LATENCY", "MODULE", "PSYNC", "REPLCONF", "SAVE", "SHUTDOWN", "SLAVEOF",
+		"SLOWLOG", "SWAPDB", "SYNC", "BGSAVE", "BGREWRITEAOF",
+		// others
+		"OPINFO", "LASTSAVE", "MONITOR", "ROLE", "DEBUG",
+		"RESTORE-ASKING", "MIGRATE", "ASKING", "WAIT",
+		"PFSELFTEST", "PFDEBUG"}
+	for _, cmd := range cmds {
+		noRouteCmd[cmd] = struct{}{}
+	}
+}
+
+func FilterCommandNoRoute(cmd string) bool {
+	_, ok := noRouteCmd[strings.ToUpper(cmd)]
+	return ok
+}
+
 // filter out
 func FilterCommands(cmd string) bool {
-	if strings.EqualFold(cmd, "opinfo") {
-		return true
-	}
-
 	if len(config.Get().Filter.CommandWhitelist) != 0 {
 		return matchOne(cmd, config.Get().Filter.CommandWhitelist)
 	}

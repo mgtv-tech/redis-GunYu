@@ -154,6 +154,11 @@ func (r *Reader) readLine() ([]byte, error) {
 	return b[:len(b)-2], nil
 }
 
+var (
+	OkReply   interface{} = "OK"
+	PongReply interface{} = "PONG"
+)
+
 func (r *Reader) ReadReply() (interface{}, error) {
 	line, err := r.ReadLine()
 	if err != nil {

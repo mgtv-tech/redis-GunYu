@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/ikenchina/redis-GunYu/pkg/errors"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
@@ -16,7 +17,7 @@ import (
 
 func ParseKeyspace(content []byte) (map[int32]int64, error) {
 	if !bytes.HasPrefix(content, []byte("# Keyspace")) {
-		return nil, fmt.Errorf("invalid info Keyspace: %s", string(content))
+		return nil, errors.Errorf("invalid info Keyspace: %s", string(content))
 	}
 
 	lines := bytes.Split(content, []byte("\n"))
@@ -24,7 +25,6 @@ func ParseKeyspace(content []byte) (map[int32]int64, error) {
 	for _, line := range lines {
 		line = bytes.TrimSpace(line)
 		if bytes.HasPrefix(line, []byte("db")) {
-			// line "db0:keys=18,expires=0,avg_ttl=0"
 			items := bytes.Split(line, []byte(":"))
 			db, err := strconv.Atoi(string(items[0][2:]))
 			if err != nil {
@@ -32,15 +32,15 @@ func ParseKeyspace(content []byte) (map[int32]int64, error) {
 			}
 			nums := bytes.Split(items[1], []byte(","))
 			if !bytes.HasPrefix(nums[0], []byte("keys=")) {
-				return nil, fmt.Errorf("invalid info Keyspace: %s", string(content))
+				return nil, errors.Errorf("invalid info Keyspace: %s", string(content))
 			}
 			keysNum, err := strconv.ParseInt(string(nums[0][5:]), 10, 0)
 			if err != nil {
 				return nil, err
 			}
 			reply[int32(db)] = int64(keysNum)
-		} // end true
-	} // end for
+		}
+	}
 	return reply, nil
 }
 
@@ -48,7 +48,7 @@ func SelectDB(c client.Redis, db uint32) error {
 	if c.RedisType() == config.RedisTypeCluster {
 		return nil
 	}
-	err := c.Send("select", db)
+	err := c.SendAndFlush("select", db)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func SelectDB(c client.Redis, db uint32) error {
 	}
 
 	if ok != "OK" {
-		return fmt.Errorf("select db(%d) error : reply(%s)", db, ok)
+		return errors.Errorf("select db(%d) error : reply(%s)", db, ok)
 	}
 	return nil
 }
@@ -67,7 +67,7 @@ func SelectDB(c client.Redis, db uint32) error {
 func lpush(cli client.Redis, key []byte, field []byte) error {
 	_, err := common.Int64(cli.Do("lpush", string(key), string(field)))
 	if err != nil {
-		return fmt.Errorf("lpush command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("lpush command error : key(%s), error(%w)", key, err)
 	}
 	return nil
 }
@@ -75,7 +75,7 @@ func lpush(cli client.Redis, key []byte, field []byte) error {
 func rpush(cli client.Redis, key []byte, field []byte) error {
 	_, err := common.Int64(cli.Do("rpush", string(key), string(field)))
 	if err != nil {
-		return fmt.Errorf("rpush command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("rpush command error : key(%s), error(%w)", key, err)
 	}
 	return nil
 }
@@ -87,7 +87,7 @@ func Float64ToByte(float float64) string {
 func zadd(cli client.Redis, key []byte, score []byte, member []byte) error {
 	_, err := common.Int64(cli.Do("zadd", string(key), string(score), string(member)))
 	if err != nil {
-		return fmt.Errorf("zadd command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("zadd command error : key(%s), error(%w)", key, err)
 	}
 	return nil
 }
@@ -95,7 +95,7 @@ func zadd(cli client.Redis, key []byte, score []byte, member []byte) error {
 func sadd(cli client.Redis, key []byte, member []byte) error {
 	_, err := common.Int64(cli.Do("sadd", key, member))
 	if err != nil {
-		return fmt.Errorf("sadd command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("sadd command error : key(%s), error(%w)", key, err)
 	}
 	return nil
 }
@@ -103,7 +103,7 @@ func sadd(cli client.Redis, key []byte, member []byte) error {
 func hset(cli client.Redis, key []byte, field []byte, value []byte) error {
 	_, err := common.Int64(cli.Do("hset", string(key), string(field), string(value)))
 	if err != nil {
-		return fmt.Errorf("hset command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("hset command error : key(%s), error(%w)", key, err)
 	}
 	return nil
 }
@@ -111,10 +111,10 @@ func hset(cli client.Redis, key []byte, field []byte, value []byte) error {
 func set(cli client.Redis, key []byte, value []byte) error {
 	s, err := common.String(cli.Do("set", string(key), string(value)))
 	if err != nil {
-		return fmt.Errorf("set command error : key(%s), error(%w)", key, err)
+		return errors.Errorf("set command error : key(%s), error(%w)", key, err)
 	}
 	if s != "OK" {
-		return fmt.Errorf("set command response is not ok : key(%s), resp(%s)", key, s)
+		return errors.Errorf("set command response is not ok : key(%s), resp(%s)", key, s)
 	}
 	return nil
 }
@@ -129,7 +129,7 @@ func GetRedisVersion(cli client.Redis) (string, error) {
 	if value, ok := infoKV["redis_version"]; ok {
 		return value, nil
 	} else {
-		return "", fmt.Errorf("miss redis version info")
+		return "", errors.Errorf("miss redis version info")
 	}
 }
 
@@ -145,36 +145,6 @@ func ParseRedisInfo(content []byte) map[string]string {
 		result[string(items[0])] = string(items[1])
 	}
 	return result
-}
-
-func GetAllClusterAddress(cli client.Redis) ([]string, []string, error) {
-	masters, slaves, err := GetAllClusterNode(cli)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	ms := []string{}
-	ss := []string{}
-	for _, m := range masters {
-		ms = append(ms, m.Address)
-	}
-	for _, s := range slaves {
-		ss = append(ss, s.Address)
-	}
-
-	return ms, ss, nil
-}
-
-func GetAllClusterNode(cli client.Redis) ([]*ClusterNodeInfo, []*ClusterNodeInfo, error) {
-	ret, err := common.String(cli.Do("cluster", "nodes"))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nodeList := ParseClusterNode(ret)
-	masters := ClusterNodeChoose(nodeList, config.RedisRoleMaster)
-	slaves := ClusterNodeChoose(nodeList, config.RedisRoleSlave)
-	return masters, slaves, nil
 }
 
 func ClusterNodeChoose(input []*ClusterNodeInfo, role config.RedisRole) []*ClusterNodeInfo {
@@ -214,6 +184,9 @@ func ParseClusterNode(content string) []*ClusterNodeInfo {
 		}
 
 		items := strings.Split(line, " ")
+		if len(items) < 8 {
+			continue
+		}
 		address := strings.Split(items[1], "@")
 		flags := strings.Split(string(items[2]), ",")
 
@@ -264,13 +237,16 @@ func splitLineToArgs(line []byte) [][]byte {
 	return ret
 }
 
-// @TODO iterate all nodes?
-// the reply message of 'cluster nodes' only contains migrating slots of current node
 func GetClusterIsMigrating(cli client.Redis) (bool, error) {
 	ret, err := common.String(cli.Do("cluster", "nodes"))
 	if err != nil {
 		return false, err
 	}
+	return parseClusterIsMigrating(ret)
+}
+
+// the reply message of 'cluster nodes' only contains migrating slots of current node
+func parseClusterIsMigrating(ret string) (bool, error) {
 
 	content := (util.StringToBytes(ret))
 	lines := bytes.Split(content, []byte("\n"))
@@ -286,7 +262,7 @@ func GetClusterIsMigrating(cli client.Redis) (bool, error) {
 
 		for i := 8; i < len(items); i++ {
 			item := items[i]
-			if item[0] == '[' {
+			if len(item) > 0 && item[0] == '[' {
 				return true, nil
 			}
 		}
@@ -402,14 +378,20 @@ func clusterNodeInfoToNode(cni *ClusterNodeInfo) (config.RedisNode, error) {
 	// 4.0 "%.40s %s:%d@%d " : ip:port@cport
 	// 7.0 " %s:%i@%i,%s "   : ip:port@cport,hostname
 	idx := strings.Index(nodeCoord, ":")
-	node.Ip = nodeCoord[:idx]
-	nodeCoord = nodeCoord[idx+1:]
-	idx = strings.Index(nodeCoord, "@")
-	port, err := strconv.Atoi(nodeCoord[:idx])
-	if err != nil {
-		return config.RedisNode{}, err
+	if idx != -1 {
+		node.Ip = nodeCoord[:idx]
+		nodeCoord = nodeCoord[idx+1:]
 	}
-	node.Port = port
+
+	idx = strings.Index(nodeCoord, "@")
+	if idx != -1 {
+		port, err := strconv.Atoi(nodeCoord[:idx])
+		if err != nil {
+			return config.RedisNode{}, err
+		}
+		node.Port = port
+	}
+
 	node.Address = cni.Address
 
 	// role
@@ -466,9 +448,15 @@ func GetAllClusterShard7(cli client.Redis) ([]*config.RedisClusterShard, error) 
 func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 	cShards := []*config.RedisClusterShard{}
 
-	shards := ret.([]interface{})
+	shards, ok := ret.([]interface{})
+	if !ok {
+		return nil, errors.Errorf("invalid result : %v", ret)
+	}
 	for _, shard := range shards {
-		kvs := shard.([]interface{})
+		kvs, ok := shard.([]interface{})
+		if !ok {
+			return nil, errors.Errorf("invalid result : %v", shard)
+		}
 		key := ""
 		cShard := &config.RedisClusterShard{}
 		for _, kv := range kvs {
@@ -481,9 +469,14 @@ func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 				if key == "slots" {
 					if len(tv)%2 == 0 {
 						for i := 0; i < len(tv); i += 2 {
+							left, err1 := common.Int64(tv[i], nil)
+							right, err2 := common.Int64(tv[i+1], nil)
+							if err1 != nil || err2 != nil {
+								return nil, errors.Errorf("invalid result : %v, %v", err1, err2)
+							}
 							cShard.Slots.Ranges = append(cShard.Slots.Ranges, config.RedisSlotRange{
-								Left:  int(tv[i].(int64)),
-								Right: int(tv[i+1].(int64)),
+								Left:  int(left),
+								Right: int(right),
 							})
 						}
 					} else {
@@ -492,7 +485,10 @@ func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 				} else if key == "nodes" {
 					for _, node := range tv {
 						cNode := config.RedisNode{}
-						eleKvs := node.([]interface{})
+						eleKvs, ok := node.([]interface{})
+						if !ok {
+							return nil, errors.Errorf("invalid result : %v", node)
+						}
 						for i := 0; i < len(eleKvs); i += 2 {
 							key, err := common.String(eleKvs[i], nil)
 							if err != nil {
@@ -560,17 +556,14 @@ func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 }
 
 func FixTopology(redisCfg *config.RedisConfig) error {
-	//inputMode := config.InputModeStatic
-	// if config.Get().Cluster != nil {
-	// 	inputMode = config.Get().Input.Mode
-	// }
 
 	if redisCfg.Type == config.RedisTypeCluster {
 		cli, err := client.NewRedis(*redisCfg)
 
 		// fix addresses
 		if err != nil {
-			return fmt.Errorf("new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
+			err = errors.Errorf("fix typology : new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
+			return err
 		}
 		defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
 
@@ -589,7 +582,7 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		redisCfg.SetMigrating(migrating)
 	} else if redisCfg.Type == config.RedisTypeSentinel {
 		// @TODO
-		return fmt.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
+		return errors.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
 	} else if redisCfg.Type == config.RedisTypeStandalone {
 		shards := []*config.RedisClusterShard{}
 		for _, addr := range redisCfg.Addresses {
@@ -611,7 +604,7 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		redisCfg.SetClusterShards(shards)
 		return nil
 	} else {
-		return fmt.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
+		return errors.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
 	}
 	return nil
 }

@@ -14,11 +14,13 @@ import (
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/sync"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
+	"github.com/ikenchina/redis-GunYu/pkg/version"
 )
 
 func main() {
 	maxprocs.Set()
 	panicIfError(config.LoadFlags())
+	version.Init()
 	panicIfError(runCmd())
 }
 

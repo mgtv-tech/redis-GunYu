@@ -3,8 +3,11 @@ package common
 import "errors"
 
 var (
-	ErrMove = errors.New("move")
-	ErrAsk  = errors.New("ask")
+	ErrMove        = errors.New("move")
+	ErrAsk         = errors.New("ask")
+	ErrConnTimeout = errors.New("conn timeout")
+	ErrUnknown     = errors.New("unknown")
+	ErrCrossSlots  = errors.New("cross slots")
 )
 
 // redis resp protocol data type.
