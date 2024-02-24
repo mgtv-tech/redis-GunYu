@@ -41,7 +41,12 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 		return restoreOnce(cli, e)
 	}
 
-	if e.ObjectParser.ValueDumpSize() > config.Get().Output.MaxProtoBulkLen || e.ObjectParser.IsSplited() {
+	restoreCmd := *config.Get().Output.ReplayRdbEnableRestore
+	if restoreCmd && e.ObjectParser.ValueDumpSize() > config.Get().Output.MaxProtoBulkLen || e.ObjectParser.IsSplited() {
+		restoreCmd = false
+	}
+
+	if !restoreCmd {
 		if e.FirstBin() {
 			exist, err := common.Bool(cli.Do("exists", e.Key))
 			if err != nil {

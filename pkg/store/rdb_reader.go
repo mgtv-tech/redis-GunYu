@@ -173,6 +173,9 @@ func (r *RdbReader) pump() (err error) {
 			break
 		}
 	}
+	if rdbSize != 0 {
+		return errors.Join(err, fmt.Errorf("imcomplete rdb replay : rdbSize(%d), remains(%d)", r.size, rdbSize))
+	}
 	return err
 }
 

@@ -134,7 +134,7 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 			dbnum := l.ReadLengthP()
 			l.db = dbnum
 		case RdbFlagEOF:
-			return nil, nil
+			return nil, nil // means EOF
 		case RdbFlagModuleAux:
 			_ = l.ReadLength64P() // uint64_t moduleid = rdbLoadLen(rdb,NULL);
 			rdbLoadCheckModuleValue(l)

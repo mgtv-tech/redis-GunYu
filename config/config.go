@@ -107,7 +107,7 @@ func (sc *ServerConfig) fix() error {
 	if sc.CheckRedisTypologyTicker == 0 {
 		sc.CheckRedisTypologyTicker = 30 * time.Second // 30 seconds
 	} else if sc.CheckRedisTypologyTicker < 1*time.Second {
-		sc.CheckRedisTypologyTicker = 1 * time.Second // 30 seconds
+		sc.CheckRedisTypologyTicker = 1 * time.Second // 1 second
 	}
 
 	if sc.GracefullStopTimeout < time.Second {
@@ -249,6 +249,7 @@ type OutputConfig struct {
 	BatchBufferSize        uint64        `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
+	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 }
 
@@ -267,6 +268,10 @@ func (of *OutputConfig) fix() error {
 	if of.ResumeFromBreakPoint == nil {
 		*of.ResumeFromBreakPoint = true
 		of.TargetDb = -1
+	}
+	if of.ReplayRdbEnableRestore == nil {
+		restore := true
+		of.ReplayRdbEnableRestore = &restore
 	}
 
 	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
@@ -390,6 +395,14 @@ func InitConfig(path string) error {
 		return err
 	}
 	return nil
+}
+
+func GetAddressesFromRedisConfigSlice(rcfg []RedisConfig) []string {
+	addrs := []string{}
+	for _, r := range rcfg {
+		addrs = append(addrs, r.Addresses...)
+	}
+	return addrs
 }
 
 type RedisConfig struct {

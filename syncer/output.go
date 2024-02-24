@@ -263,7 +263,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 				pingC = 0
 				return
 			}
-			if time.Since(ticker) > time.Second*5 {
+			if time.Since(ticker) > time.Second*3 {
 				ticker = time.Now()
 				if _, err := cli.Do("PING"); err != nil {
 					ro.logger.Errorf("PING error : %v", err)
@@ -341,7 +341,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 
 	if len(errs) > 0 {
 		err := errors.Join(errs...)
-		ro.logger.Infof("send rdb ERROR : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), err)
+		ro.logger.Infof("send rdb ERROR : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), errs[0])
 		return err
 	}
 	ro.logger.Infof("send rdb OK : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
@@ -951,7 +951,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		transactionLabel = "yes"
 	}
 
-	sendFunc := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
+	sendFuncOnce := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
 
 		batcher := conn.NewBatcher()
 		cmdCounter := uint(0)
@@ -985,6 +985,9 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		if shouldInTransaction {
 			batcher.Put("exec")
 		}
+		if batcher.Len() == 0 {
+			return nil
+		}
 
 		rets, err := batcher.Exec()
 		if delayNs > 0 {
@@ -995,7 +998,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			ro.logger.Errorf("exec error %v", err)
 			failCounter.Inc(ro.Id, ro.cfg.InputName)
 			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, transactionLabel, "error")
-			return handleDirectError(err)
+			return err
 		}
 
 		sendOffsetGauge.Set(float64(lastOffset), ro.Id, ro.cfg.InputName)
@@ -1023,11 +1026,37 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		return nil
 	}
 
+	sendFunc := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
+		maxRetries := 0
+		for {
+			err := sendFuncOnce(shouldInTransaction, shouldUpdateCP, lastOffset)
+			if err == nil {
+				return err
+			}
+			maxRetries++
+
+			if errors.Is(err, common.ErrMove) || errors.Is(err, common.ErrAsk) || errors.Is(err, common.ErrCrossSlots) {
+				// @TODO split cmdQueue to different slots for executing,
+				if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
+					return handleDirectError(err)
+				}
+				if maxRetries < 3 { // retry 3 times, avoid restarting syncer immediately if batch contains a migrating key
+					replayWait.Sleep(1 * time.Second)
+					continue
+				}
+				err = handleDirectError(err)
+				ro.logger.Errorf("send error : error(%v), offset(%d)", err, lastOffset)
+				return err
+			}
+			return err
+		}
+	}
+
 	inTransaction := false // in transaction batch, [multi, cmds, exec], don't send to redis separatelly
 	lastOffset := int64(-1)
 	for {
 		transactionBatch := transactionMode
-		shouldUpdateCP := ro.cfg.EnableResumeFromBreakPoint
+		shouldUpdateCP := ro.cfg.EnableResumeFromBreakPoint && transactionMode
 		select {
 		case item, ok := <-sendBuf:
 			if !ok {
@@ -1093,11 +1122,18 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				needFlush = true
 			}
 		case <-updateCpTicker.C:
-			if !inTransaction && !needFlush {
-				needFlush = true
-				if len(cmdQueue) == 0 {
-					transactionBatch = false
+			// in non-transaction model, should flush pending commands before update checkpoint,
+			// avoid the case that update checkpoint but the commands execution fail
+			if !inTransaction {
+				if len(cmdQueue) > 0 {
+					err := sendFunc(transactionBatch, shouldUpdateCP, lastOffset)
+					if err != nil {
+						return err
+					}
 				}
+				transactionBatch = false
+				needFlush = true
+				shouldUpdateCP = true
 			}
 		case <-replayWait.Done():
 			return nil

@@ -810,7 +810,6 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 			syncFrom, *config.Get().Output.Redis.ClusterOptions.ReplayTransaction)
 
 		if restart {
-			sc.logger.Infof("checkTypology : restart")
 			wait.Close(syncer.ErrRestart)
 			return
 		}
@@ -827,6 +826,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 	prevOutSelNodes := prevOutRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 	var inRedisCfg, outRedisCfg *config.RedisConfig
 	restart := false
+	var reason string
 
 	util.AndCondition(func() bool {
 		// check shards, syncFrom
@@ -843,6 +843,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			if len(inSelNodes) != len(prevInSelNodes) {
 				// @TODO only start affected syncer
 				restart = true
+				reason = fmt.Sprintf("the numbers of input nodes were changed : previous(%d), now(%d)", len(prevInSelNodes), len(inSelNodes))
 				return false
 			}
 			if syncFrom == config.SelNodeStrategyMaster {
@@ -856,6 +857,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 					if !find {
 						restart = true
+						reason = fmt.Sprintf("input nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
 						return false
 					}
 				}
@@ -864,6 +866,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					// @TODO restart if node is changed, e.g. syncFrom is prefer_slave and now it is a master
 					node := inRedisCfg.FindNode(b.Address())
 					if node == nil {
+						reason = fmt.Sprintf("input nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
 						restart = true
 						return false
 					}
@@ -883,6 +886,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			// if master is changed, restart
 			outSelNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 			if len(outSelNodes) != len(prevOutSelNodes) {
+				reason = fmt.Sprintf("the numbers of output nodes were changed : previous(%d), now(%d)", len(prevOutSelNodes), len(outSelNodes))
 				restart = true
 				return false
 			}
@@ -895,6 +899,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 				}
 				if !find {
+					reason = fmt.Sprintf("output nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevOutSelNodes), config.GetAddressesFromRedisConfigSlice(outSelNodes))
 					restart = true
 					return false
 				}
@@ -909,6 +914,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			outNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 			if len(inNodes) != len(outNodes) {
 				if txnMode {
+					reason = fmt.Sprintf("transaction mode, the numbers of input nodes(%d) and output nodes(%d) are not equal", len(inNodes), len(outNodes))
 					restart = true
 					return !restart
 				} else {
@@ -926,6 +932,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				}
 				if !equal {
 					if txnMode {
+						reason = fmt.Sprintf("transaction mode, input nodes and output nodes are not equal : input(%v), output(%v)", inNodes, outNodes)
 						restart = true
 						return false
 					} else {
@@ -955,6 +962,9 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				// go ahead
 			}
 		}
+		if restart {
+			reason = fmt.Sprintf("input : txnMode(%v) and migration(%v)", txnMode, migrating)
+		}
 		return !restart
 	}, func() bool {
 		migrating, err := checkMigrating(ctx, *outRedisCfg)
@@ -971,8 +981,15 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				return false
 			}
 		}
+		if restart {
+			reason = fmt.Sprintf("output : txnMode(%v) and migration(%v)", txnMode, migrating)
+		}
 		return !restart
 	})
+
+	if restart {
+		sc.logger.Infof("check typology, restart(%s)", reason)
+	}
 
 	return restart
 }
