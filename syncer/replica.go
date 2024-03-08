@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +66,7 @@ func (rl *ReplicaLeader) Start() {
 }
 
 func (rl *ReplicaLeader) Stop() {
+	rl.start.Store(false)
 }
 
 func (rl *ReplicaLeader) handleError(stream pb.ReplService_SyncServer, err error, code pb.SyncResponse_Code, msg string, runId string) error {
@@ -230,6 +232,8 @@ type ReplicaFollower struct {
 	inputAddress string
 	channel      Channel
 	leader       *cluster.RoleInfo
+	mux          sync.RWMutex
+	conn         *grpc.ClientConn
 }
 
 func NewReplicaFollower(inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
@@ -250,12 +254,18 @@ func (rf *ReplicaFollower) Run() error {
 	}
 	defer conn.Close()
 
+	rf.mux.Lock()
+	rf.conn = conn
+	rf.mux.Unlock()
+
 	cli := pb.NewReplServiceClient(conn)
 
 	state := 1
 	var leaderSp, followerSp StartPoint
 	var stream pb.ReplService_SyncClient
 	var resp *pb.SyncResponse
+	rf.wait.WgAdd(1)
+	defer rf.wait.WgDone()
 
 	for !rf.wait.IsClosed() {
 		switch state {
@@ -307,6 +317,12 @@ func (rf *ReplicaFollower) Run() error {
 
 func (rf *ReplicaFollower) Stop() {
 	rf.wait.Close(nil)
+	rf.mux.RLock()
+	conn := rf.conn
+	rf.mux.RUnlock()
+	conn.Close()
+
+	rf.wait.WgWait()
 }
 
 func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse) error {
@@ -409,14 +425,12 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ReplService_
 		return nil
 	}
 	left := resp.GetOffset()
-	if left > followerSp.Offset {
-		if err := rf.channel.DelRunId(followerSp.RunId); err != nil {
-			return errors.Join(ErrRestart, err)
-		}
-		followerSp.Offset = left
-		if err := rf.channel.SetRunId(followerSp.RunId); err != nil {
-			return errors.Join(ErrRestart, err)
-		}
+	if err := rf.channel.DelRunId(followerSp.RunId); err != nil {
+		return errors.Join(ErrRestart, err)
+	}
+	followerSp.Offset = left
+	if err := rf.channel.SetRunId(followerSp.RunId); err != nil {
+		return errors.Join(ErrRestart, err)
 	}
 
 	rf.logger.Infof("start to sync rdb from leader : offset(%d), size(%d)", resp.GetOffset(), resp.GetSize())

@@ -123,7 +123,7 @@ func (sc *StoreChannel) SetRunId(runId string) error {
 	if err != nil {
 		sc.logger.Errorf("SetRunId : runId(%s), err(%v)", runId, err)
 	} else {
-		sc.logger.Infof("SetRunId : runId(%s)", runId)
+		sc.logger.Debugf("SetRunId : runId(%s)", runId)
 	}
 	return err
 }

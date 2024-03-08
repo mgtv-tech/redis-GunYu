@@ -1,8 +1,9 @@
 id: 2
 server:
   http:
-    httpPort: 18801
+    listenPeer: 127.0.0.1:18801
   gracefullStopTimeout: 1s
+  checkRedisTypologyTicker: 10s
 input:
   redis:
     addresses: [127.0.0.1:16300,127.0.0.1:16310]
@@ -25,10 +26,14 @@ output:
   keyExists: replace
   metric: true
   targetDb: -1
+  replayRdbParallel: 4
+  replayTransaction: false
 log:
   level: info
   handler:
     stdout: true
+  withCaller: false
+  withFunc: false
 cluster:
   groupName: redis1
   leaseTimeout: 3s

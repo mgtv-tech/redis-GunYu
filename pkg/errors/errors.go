@@ -32,3 +32,27 @@ func WithStack(err error) error {
 func Errorf(f string, args ...interface{}) error {
 	return WithStack(fmt.Errorf(f, args...))
 }
+
+type ValueError struct {
+	Value interface{}
+	Err   error
+}
+
+func (ve *ValueError) Error() string {
+	return fmt.Sprintf("value error: %s", ve.Err)
+}
+
+func NewValueError(value interface{}, err error) *ValueError {
+	return &ValueError{
+		Value: value,
+		Err:   err,
+	}
+}
+
+func ToValueError(err error) *ValueError {
+	v, ok := err.(*ValueError)
+	if !ok {
+		return nil
+	}
+	return v
+}

@@ -295,7 +295,7 @@ type ReplicaConfig struct {
 
 func (rc *ReplicaConfig) fix() error {
 	if rc.Listen == "" {
-		return newConfigError("cluster.replica.listen is empty")
+		rc.Listen = "0.0.0.0:18002"
 	}
 	if rc.ListenPeer == "" {
 		rc.ListenPeer = rc.Listen

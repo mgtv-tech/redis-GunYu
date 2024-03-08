@@ -42,7 +42,7 @@ type AofRotateReader struct {
 }
 
 func NewAofRotateReader(dir string, offset int64, aof aofStorer, writer io.WriteCloser, verifyCrc bool) (*AofRotateReader, error) {
-	log.Infof("NewAofReader : dir(%s), offset(%d)", dir, offset)
+	log.Debugf("NewAofReader : dir(%s), offset(%d)", dir, offset)
 
 	r := &AofRotateReader{
 		writer:    writer,

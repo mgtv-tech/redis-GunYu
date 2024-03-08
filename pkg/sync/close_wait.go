@@ -43,6 +43,12 @@ func NewWaitChannel() WaitChannel {
 	return make(chan struct{})
 }
 
+type WaitNotifier chan struct{}
+
+func NewWaitNotifier() WaitNotifier {
+	return make(chan struct{})
+}
+
 func NewWaitCloser(stopFun func(error)) WaitCloser {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &waitCloser{

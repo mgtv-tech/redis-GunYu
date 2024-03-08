@@ -65,3 +65,34 @@ func (ts *clusterTestSuite) TestElection() {
 	ts.Equal(RoleLeader, roleB)
 
 }
+
+func (ts *clusterTestSuite) TestSvcDs() {
+	ctx := context.Background()
+
+	svcs := []string{"A", "B"}
+	path := "/testsvc/"
+	ts.Nil(ts.cliA.Register(ctx, path+svcs[0], svcs[0]))
+	ts.Nil(ts.cliA.Register(ctx, path+svcs[1], svcs[1]))
+
+	acts, err := ts.cliB.Discovery(ctx, path)
+	ts.Nil(err)
+
+	ts.Equal(svcs, acts)
+}
+
+func (ts *clusterTestSuite) TestSvcLease() {
+	ctx := context.Background()
+
+	svcs := []string{"A", "B"}
+	path := "/testsvc/"
+	ts.Nil(ts.cliA.Register(ctx, path+svcs[0], svcs[0]))
+	ts.Nil(ts.cliB.Register(ctx, path+svcs[1], svcs[1]))
+
+	ts.cliA.Close()
+
+	acts, err := ts.cliB.Discovery(ctx, path)
+	ts.Nil(err)
+
+	ts.Equal(1, len(acts))
+	ts.Equal(svcs[1], acts[0])
+}

@@ -183,7 +183,7 @@ func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error 
 			ro.logger.Errorf("send rdb done : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), err)
 		}
 	} else {
-		ro.logger.Infof("send rdb done : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
+		ro.logger.Debugf("send rdb done : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 	}
 	return err
 }
@@ -198,7 +198,7 @@ func (ro *RedisOutput) SendAof(ctx context.Context, reader *store.Reader) error 
 			ro.logger.Errorf("send aof done : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), err)
 		}
 	} else {
-		ro.logger.Infof("send aof done : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
+		ro.logger.Debugf("send aof done : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 	}
 	return err
 }
@@ -344,7 +344,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		ro.logger.Infof("send rdb ERROR : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), errs[0])
 		return err
 	}
-	ro.logger.Infof("send rdb OK : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
+	ro.logger.Debugf("send rdb OK : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 
 	return ro.setCheckpoint(ctx, reader.RunId(), reader.Left(), config.Version)
 }
@@ -1123,20 +1123,16 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			}
 		case <-updateCpTicker.C:
 			// in non-transaction model, should flush pending commands before update checkpoint,
-			// avoid the case that update checkpoint but the commands execution fail
-			if !inTransaction {
-				if len(cmdQueue) > 0 {
-					err := sendFunc(transactionBatch, shouldUpdateCP, lastOffset)
-					if err != nil {
-						return err
-					}
-				}
-				transactionBatch = false
+			// avoid the case that update checkpoint succeeds but the commands execution fails
+			if !inTransaction && !transactionBatch {
 				needFlush = true
 				shouldUpdateCP = true
 			}
 		case <-replayWait.Done():
-			return nil
+			if !inTransaction && !transactionBatch {
+				needFlush = true
+				shouldUpdateCP = true
+			}
 		}
 
 		if !needFlush && !inTransaction &&
@@ -1146,12 +1142,16 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		}
 
 		if needFlush {
+			// @TODO non-transaction : update checkpoint everytime, update checkpoint is a hotspot operation
 			err := sendFunc(transactionBatch, shouldUpdateCP, lastOffset)
 			if err != nil {
 				return err
 			}
 			needFlush = false
 			inTransaction = false
+		}
+		if replayWait.IsClosed() {
+			return nil
 		}
 	}
 }

@@ -80,3 +80,17 @@ func TestChooseNodeWithCmd(t *testing.T) {
 		assert.Equal(t, node, expect, "should be equal")
 	}
 }
+func TestSlots(t *testing.T) {
+
+	baseKey := "a"
+	hashA := hash(baseKey)
+	fmt.Println(hashA)
+
+	for i := 1; i < 1000; i++ {
+		key := fmt.Sprintf("%s%d", baseKey, i)
+		//key := string([]byte{byte(i + 'a')})
+		if hash(key) > 10923 {
+			fmt.Println(key)
+		}
+	}
+}

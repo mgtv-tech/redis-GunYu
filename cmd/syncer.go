@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/pprof"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/julienschmidt/httprouter"
+	"github.com/gin-contrib/pprof"
+	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,21 +42,27 @@ type syncerInfo struct {
 }
 
 type SyncerCmd struct {
-	syncers    map[string]syncerInfo
-	mutex      sync.RWMutex
-	logger     log.Logger
-	grpcSvr    *grpc.Server
-	httpSvr    *http.Server
-	waitCloser usync.WaitCloser // object scope
-	runWait    usync.WaitCloser // run function scope
+	syncers     map[string]syncerInfo
+	mutex       sync.RWMutex
+	logger      log.Logger
+	grpcSvr     *grpc.Server
+	httpSvr     *http.Server
+	waitCloser  usync.WaitCloser // object scope
+	runWait     usync.WaitCloser // run function scope
+	clusterCli  *cluster.Cluster
+	registerKey string
 }
 
 func NewSyncerCmd() *SyncerCmd {
-	return &SyncerCmd{
+	cmd := &SyncerCmd{
 		waitCloser: usync.NewWaitCloser(nil),
 		logger:     log.WithLogger(config.LogModuleName("[SyncerCommand] ")),
 		syncers:    make(map[string]syncerInfo),
 	}
+	if config.Get().Cluster != nil {
+		cmd.registerKey = fmt.Sprintf("/redis-gunyu/svcDS/%s/", config.Get().Cluster.GroupName)
+	}
+	return cmd
 }
 
 func (sc *SyncerCmd) Name() string {
@@ -74,6 +82,7 @@ func (sc *SyncerCmd) stop() {
 }
 
 func (sc *SyncerCmd) Run() error {
+	sc.logger.Infof("syncer command")
 	err := sc.fixConfig()
 	if err != nil {
 		sc.logger.Errorf("fixConfig : %v", err)
@@ -135,7 +144,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 
 	syncFrom := config.Get().Input.SyncFrom
 	inputMode := config.Get().Input.Mode
-	enableTransaction := *outputRedis.ClusterOptions.ReplayTransaction
+	enableTransaction := *config.Get().Output.ReplayTransaction
 
 	if outputRedis.IsStanalone() {
 		// standalone <-> standalone  ==> multi/exec
@@ -315,6 +324,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			if err == nil {
 				inputRedis.SetMigrating(true)
 			}
+			txnMode = false
 		}
 	}
 	if outputRedis.IsCluster() && txnMode {
@@ -330,9 +340,9 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			if err == nil {
 				outputRedis.SetMigrating(true)
 			}
+			txnMode = false
 		}
 	}
-
 	return
 }
 
@@ -404,23 +414,29 @@ func (sc *SyncerCmd) delSyncer(key string) {
 	delete(sc.syncers, key)
 }
 
-func (sc *SyncerCmd) getSyncer(key string) (syncer.Syncer, usync.WaitCloser) {
+func (sc *SyncerCmd) getSyncer(key string) syncerInfo {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
 	d := sc.syncers[key]
-	return d.sync, d.wait
+	return d
+}
+
+func (sc *SyncerCmd) getRunWait() usync.WaitCloser {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	return sc.runWait
 }
 
 func (sc *SyncerCmd) run() error {
-	sc.logger.Infof("syncer is running")
+	sc.logger.Debugf("syncer is running")
 	sc.waitCloser.WgAdd(1)
 	defer sc.waitCloser.WgDone()
 
 	sc.mutex.Lock()
 	sc.syncers = make(map[string]syncerInfo)
+	runWait := usync.NewWaitCloserFromParent(sc.waitCloser, nil) // run scope
+	sc.runWait = runWait
 	sc.mutex.Unlock()
-
-	sc.runWait = usync.NewWaitCloserFromParent(sc.waitCloser, nil) // run scope
 
 	// syncer configurations
 	cfgs, watchIn, watchOut, txnMode, err := sc.syncerConfigs()
@@ -429,27 +445,41 @@ func (sc *SyncerCmd) run() error {
 	}
 
 	if watchIn || watchOut {
-		sc.checkTypology(sc.runWait, watchIn, watchOut, txnMode)
+		sc.checkTypology(runWait, watchIn, watchOut, txnMode)
 	}
 
-	// single or cluster mode
+	// standalone or cluster mode
 	if config.Get().Cluster == nil {
-		sc.runSingle(sc.runWait, cfgs)
+		sc.runSingle(runWait, cfgs)
+		runWait.WgWait()
+		return runWait.Error()
+	}
+
+	// all syncers share one lease
+	cli, err := cluster.NewCluster(runWait.Context(), *config.Get().Cluster.MetaEtcd)
+	if err != nil {
+		runWait.Close(err)
 	} else {
-		// all syncers share one lease
-		cli, err := cluster.NewCluster(sc.runWait.Context(), *config.Get().Cluster.MetaEtcd)
+		sc.mutex.Lock()
+		sc.clusterCli = cli
+		sc.mutex.Unlock()
+
+		ipForPeer := config.Get().Server.Http.ListenPeer
+		err := cli.Register(runWait.Context(), sc.registerKey, ipForPeer)
 		if err != nil {
-			sc.runWait.Close(err)
-		} else {
-			defer func() { cli.Close() }()
-			sc.runCluster(sc.runWait, cli, cfgs)
+			runWait.Close(err)
+			return err
 		}
+		sc.runCluster(runWait, cli, cfgs)
 	}
 
 	// @TODO should remove directories of stale runID
 
-	sc.runWait.WgWait()
-	return sc.runWait.Error()
+	runWait.WgWait()
+
+	cli.Close()
+
+	return runWait.Error()
 }
 
 func (sc *SyncerCmd) runSingle(runWait usync.WaitCloser, cfgs []syncer.SyncerConfig) {
@@ -797,7 +827,7 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 	syncFrom := config.Get().Input.SyncFrom
 	interval := config.Get().Server.CheckRedisTypologyTicker
 
-	sc.logger.Infof("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v), ticker(%s)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut, interval)
+	sc.logger.Debugf("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v), ticker(%s), txnMode(%v)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut, interval, txnMode)
 
 	util.CronWithCtx(wait.Context(), interval, func(ctx context.Context) {
 		defer util.RecoverCallback(func(e interface{}) { wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("panic : %v", e))) })
@@ -807,7 +837,7 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 		restart := sc.diffTypology(ctx, watchIn, watchOut,
 			prevInRedisCfg, prevOutRedisCfg,
 			txnMode, allShards,
-			syncFrom, *config.Get().Output.Redis.ClusterOptions.ReplayTransaction)
+			syncFrom, *config.Get().Output.ReplayTransaction)
 
 		if restart {
 			wait.Close(syncer.ErrRestart)
@@ -994,55 +1024,134 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 	return restart
 }
 
+func (sc *SyncerCmd) allInputs(ctx context.Context) []string {
+	all := config.Get().Input.Mode != config.InputModeStatic
+	inputRedis := config.Get().Input.Redis.SelNodes(all, config.Get().Input.SyncFrom)
+	addrs := []string{}
+	for _, r := range inputRedis {
+		addrs = append(addrs, r.Addresses...)
+	}
+	return addrs
+}
+
+func (sc *SyncerCmd) allOutputs(ctx context.Context) []config.RedisConfig {
+	rr := config.Get().Output.Redis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+	return rr
+}
+
 func (sc *SyncerCmd) startHttpServer() {
 	httpCfg := config.Get().Server.Http
 	if httpCfg == nil {
 		return
 	}
 
-	listen := fmt.Sprintf("%s:%d", httpCfg.HttpBind, httpCfg.HttpPort)
-	router := httprouter.New()
+	listen := httpCfg.Listen
+	gin.SetMode(gin.ReleaseMode)
+	engine := gin.New()
 
-	// prometheus
-	router.Handler(http.MethodGet, httpCfg.MetricRoutePath, promhttp.Handler())
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		err = fmt.Errorf("http listen(%s) failed : %+v", listen, err)
+		sc.waitCloser.Close(err)
+		return
+	}
+
+	sc.logger.Infof("start http server : %s", listen)
+
+	httpSvr := &http.Server{
+		Handler: engine,
+	}
+
+	// metrics
+	engine.GET(httpCfg.MetricRoutePath, func(ctx *gin.Context) {
+		h := promhttp.Handler()
+		h.ServeHTTP(ctx.Writer, ctx.Request)
+	})
+
+	// debug
+	pprof.Register(engine, "/debug/pprof")
+	engine.GET("/debug/health", func(ctx *gin.Context) {
+		ctx.AbortWithStatus(http.StatusOK)
+	})
 
 	// process
-	router.HandlerFunc(http.MethodDelete, "/", func(w http.ResponseWriter, r *http.Request) {
+	engine.DELETE("/", func(ctx *gin.Context) {
 		sc.Stop()
 	})
 
 	// storage
-	router.HandlerFunc(http.MethodPost, "/storage/gc", func(w http.ResponseWriter, r *http.Request) {
-		sc.gcStaleCheckpoint(sc.runWait.Context())
+	engine.POST("/storage/gc", func(ctx *gin.Context) {
+		sc.gcStaleCheckpoint(sc.getRunWait().Context())
 	})
 
-	// syncer command
-	router.HandlerFunc(http.MethodPost, "/syncer/restart", func(w http.ResponseWriter, r *http.Request) {
-		sc.runWait.Close(errors.Join(context.Canceled, syncer.ErrRestart))
+	syncerGroup := engine.Group("/syncer/")
+	type syncerStatus struct {
+		Input       string
+		Role        string
+		Transaction bool
+		State       string
+	}
+	syncerGroup.GET("status", func(ctx *gin.Context) {
+		sys := []syncerStatus{}
+		sc.mutex.Lock()
+		for key, val := range sc.syncers {
+			st := syncerStatus{
+				Input:       key,
+				Role:        "follower",
+				Transaction: val.sync.TransactionMode(),
+				State:       val.sync.State(),
+			}
+			if val.sync.IsLeader() {
+				st.Role = "leader"
+			}
+			sys = append(sys, st)
+		}
+		sc.mutex.Unlock()
+		ctx.JSON(http.StatusOK, sys)
 	})
 
-	// pprof
-	router.HandlerFunc(http.MethodGet, "/debug/pprof/", pprof.Index)
-	router.HandlerFunc(http.MethodGet, "/debug/pprof/cmdline", pprof.Cmdline)
-	router.HandlerFunc(http.MethodGet, "/debug/pprof/profile", pprof.Profile)
-	router.HandlerFunc(http.MethodGet, "/debug/pprof/symbol", pprof.Symbol)
-	router.HandlerFunc(http.MethodGet, "/debug/pprof/trace", pprof.Trace)
-	router.Handler(http.MethodGet, "/debug/pprof/allocs", pprof.Handler("allocs"))
-	router.Handler(http.MethodGet, "/debug/pprof/goroutine", pprof.Handler("goroutine"))
-	router.Handler(http.MethodGet, "/debug/pprof/heap", pprof.Handler("heap"))
-	router.Handler(http.MethodGet, "/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
-	router.Handler(http.MethodGet, "/debug/pprof/block", pprof.Handler("block"))
+	syncerGroup.POST("restart", func(ctx *gin.Context) {
+		sc.getRunWait().Close(errors.Join(context.Canceled, syncer.ErrRestart))
+	})
+
+	syncerGroup.POST("stopsync", func(ctx *gin.Context) {
+		sc.getRunWait().Close(syncer.ErrStopSync)
+	})
+
+	syncerGroup.POST("handover", func(ctx *gin.Context) {
+		inputs := sc.parseInputsFromQuery(ctx)
+		if len(inputs) == 0 {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		for _, input := range inputs {
+			sync := sc.getSyncer(input)
+			if sync.wait != nil && sync.sync.IsLeader() {
+				sync.wait.Close(syncer.ErrLeaderHandover)
+			}
+		}
+	})
+
+	syncerGroup.POST("fullsync", sc.fullSyncHandler)
 
 	sc.httpSvr = &http.Server{
 		Addr:    listen,
-		Handler: router, // Use the default handler
+		Handler: engine,
 	}
 
 	usync.SafeGo(func() {
-		if err := sc.httpSvr.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		err := httpSvr.Serve(listener)
+		if err != http.ErrServerClosed {
 			sc.waitCloser.Close(err)
 		}
 	}, nil)
+}
+
+func (sc *SyncerCmd) allSyncers(ctx context.Context) ([]string, error) {
+	sc.mutex.Lock()
+	ips, err := sc.clusterCli.Discovery(sc.getRunWait().Context(), sc.registerKey)
+	sc.mutex.Unlock()
+	return ips, err
 }
 
 func (sc *SyncerCmd) stopHttpServer() {
@@ -1104,19 +1213,19 @@ func (sc *SyncerCmd) stopGrpcServer() {
 
 func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ReplService_SyncServer) error {
 	addr := req.GetNode().GetAddress()
-	sy, wait := sc.getSyncer(addr)
-	if sy == nil || wait.IsClosed() {
+	sy := sc.getSyncer(addr)
+	if sy.sync == nil || sy.wait.IsClosed() {
 		return status.Error(codes.Unavailable, "syncer is not running")
 	}
-	wait.WgAdd(1)
-	defer wait.WgDone()
+	sy.wait.WgAdd(1)
+	defer sy.wait.WgDone()
 
-	err := sy.ServiceReplica(wait, req, stream)
+	err := sy.sync.ServiceReplica(req, stream)
 	if err != nil {
 		if errors.Is(err, syncer.ErrBreak) { // restart or quit
-			sc.runWait.Close(err) // stop all syncers
+			sc.getRunWait().Close(err) // stop all syncers
 		} else if errors.Is(err, syncer.ErrRole) {
-			wait.Close(err) // stop current syncer
+			sy.wait.Close(err) // stop current syncer
 		}
 	}
 	return err
@@ -1192,4 +1301,367 @@ func shardsEqual(shardA []*config.RedisClusterShard, shardB []*config.RedisClust
 	}
 
 	return true
+}
+
+func (sc *SyncerCmd) parseInputsFromQuery(ctx *gin.Context) []string {
+	qInputs := ctx.Query("inputs")
+	if len(qInputs) == 0 {
+		return []string{}
+	}
+
+	var inputs []string
+	if qInputs == "all" {
+		inputs = sc.allInputs(sc.getRunWait().Context())
+	} else {
+		qips := strings.Split(qInputs, ",")
+		for _, ip := range qips {
+			if ip != "" {
+				inputs = append(inputs, ip)
+			}
+		}
+	}
+
+	realInputs := []string{}
+	inputRedis := config.Get().Input.Redis
+	for _, input := range inputs {
+		sy := sc.getSyncer(input)
+		if sy.sync == nil {
+			shard := inputRedis.GetClusterShard(input)
+			if shard == nil {
+				return nil
+			}
+			var real string
+			sc.mutex.RLock()
+			for _, addr := range shard.AllAddresses() {
+				sy := sc.syncers[addr]
+				if sy.sync != nil {
+					real = addr
+					break
+				}
+			}
+			sc.mutex.RUnlock()
+			if len(real) == 0 {
+				return nil
+			}
+			realInputs = append(realInputs, real)
+		} else {
+			realInputs = append(realInputs, input)
+		}
+	}
+
+	return realInputs
+}
+
+func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
+	inputs := sc.parseInputsFromQuery(ginCtx)
+	if len(inputs) == 0 {
+		ginCtx.AbortWithError(http.StatusBadRequest, errors.New("no input"))
+		return
+	}
+	ctx := ginCtx.Request.Context()
+	flushdb := ginCtx.Query("flushdb") == "yes"
+
+	followers := []string{}
+	if config.Get().Cluster != nil {
+		selfSyncs := map[string]syncerInfo{}
+		for _, in := range inputs {
+			syncer := sc.getSyncer(in)
+			if syncer.sync == nil {
+				ginCtx.AbortWithError(http.StatusBadRequest, fmt.Errorf("syncer does not exist : input(%s)", in))
+				return
+			}
+			if syncer.sync.IsLeader() {
+				selfSyncs[in] = syncer
+			}
+		}
+		if len(selfSyncs) != len(inputs) {
+			allSyncers, err := sc.allSyncers(sc.getRunWait().Context())
+			if err != nil {
+				ginCtx.AbortWithError(http.StatusInternalServerError, err)
+				return
+			}
+			for _, s := range allSyncers {
+				if s != config.Get().Server.Http.ListenPeer {
+					followers = append(followers, s)
+				}
+			}
+		}
+	}
+
+	// takeover leadership from leaders
+	// @TODO distribute fullSync to peers
+	if len(followers) > 0 {
+		err := sc.takeover(ctx, inputs)
+		if err != nil {
+			ginCtx.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	// pause all syncers, delete run IDs
+	for _, input := range inputs {
+		si := sc.getSyncer(input)
+		if si.sync != nil {
+			si.sync.Pause()
+			si.sync.DelRunId()
+		}
+	}
+
+	// flushdb
+	if flushdb {
+		err := sc.flushdb(ctx, inputs)
+		if err != nil {
+			// resume @TODO
+			ginCtx.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	// delete checkpoints,
+	// if flush all nodes of cluster, ignore... @TODO
+	err := sc.delCheckpoints(ctx, inputs)
+	if err != nil {
+		sc.resume(ctx, inputs)
+		ginCtx.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	err = sc.resume(ctx, inputs)
+	if err != nil {
+		ginCtx.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+}
+
+func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
+	takeover := func() error {
+		cg := usync.NewConGroup(20)
+		group := cg.NewGroup(ctx, usync.WithCancelIfError(false))
+		syncers, err := sc.allSyncers(ctx)
+		if err != nil {
+			return err
+		}
+
+		for _, vv := range syncers {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s/syncer/handover", vv), nil)
+			query := url.Values{}
+			query.Set("inputs", strings.Join(inputs, ","))
+			req.URL.RawQuery = query.Encode()
+
+			group.Go(func(ctx context.Context) error {
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return err
+				}
+				if resp.StatusCode != 200 {
+					return fmt.Errorf("status code : %d", resp.StatusCode)
+				}
+				return nil
+			})
+		}
+		return group.Wait()
+	}
+
+	takeoverForce := func() error {
+		for {
+			err := takeover()
+			if err == nil {
+				return nil
+			}
+			sc.logger.Errorf("takeover error : %v", err)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+	}
+
+	err := takeoverForce()
+	if err != nil {
+		return err
+	}
+
+	// check results
+	sleepC := 0
+	for {
+		select {
+		case <-time.After(1 * time.Second):
+			sleepC++
+			if sleepC > 5 {
+				sleepC = 0
+				err = takeoverForce()
+				if err != nil {
+					return err
+				}
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		sc.mutex.RLock()
+		allIsLeader := true
+		for _, sy := range sc.syncers {
+			if allIsLeader && !sy.sync.IsLeader() {
+				allIsLeader = false
+			}
+		}
+		sc.mutex.RUnlock()
+		if allIsLeader {
+			return nil
+		}
+	}
+}
+
+func (sc *SyncerCmd) filterOutput(ctx context.Context, inputs []string) ([]config.RedisConfig, error) {
+	outputCfgs := []config.RedisConfig{}
+	allInputs := sc.allInputs(ctx)
+	if len(allInputs) == len(inputs) {
+		outputCfgs = sc.allOutputs(ctx)
+	} else { // partial : select related outputs
+		outputRedis := config.Get().Output.Redis
+		inputRedis := config.Get().Input.Redis
+		if (inputRedis.IsStanalone() && outputRedis.IsCluster()) ||
+			inputRedis.IsCluster() && outputRedis.IsStanalone() { // can't select related outputs
+			return nil, errors.New("redis type of input and output are different")
+		} else if inputRedis.IsStanalone() && outputRedis.IsStanalone() {
+			for _, input := range inputs {
+				for i := 0; i < len(inputRedis.Addresses); i++ {
+					if inputRedis.Addresses[i] == input {
+						outputCfgs = append(outputCfgs, outputRedis.Index(i))
+					}
+				}
+			}
+		} else if inputRedis.IsCluster() && outputRedis.IsCluster() {
+			if len(inputRedis.GetClusterShards()) != len(outputRedis.GetClusterShards()) ||
+				!inputRedis.GetAllSlots().Equal(outputRedis.GetAllSlots()) {
+				return nil, errors.New("slots of input and output are inconsistent")
+			}
+
+			outputNodes := outputRedis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+			for _, input := range inputs {
+				inputNode := inputRedis.SelNodeByAddress(input)
+				if inputNode == nil {
+					return nil, fmt.Errorf("no this redis : %s", input)
+				}
+				inSlots := inputNode.GetAllSlots()
+				for _, out := range outputNodes {
+					if inSlots.Equal(out.GetAllSlots()) {
+						outputCfgs = append(outputCfgs, out)
+					}
+				}
+			}
+		}
+	}
+	if len(inputs) != len(outputCfgs) {
+		return nil, fmt.Errorf("the number of input and output are not equal : input(%d), output(%d)", len(inputs), len(outputCfgs))
+	}
+	return outputCfgs, nil
+}
+
+func (sc *SyncerCmd) flushdb(ctx context.Context, inputs []string) error {
+	// check outputs
+	outputCfgs, err := sc.filterOutput(ctx, inputs)
+	if err != nil {
+		return err
+	}
+
+	flushdbOnce := func() error {
+		cg := usync.NewConGroup(10)
+		group := cg.NewGroup(ctx, usync.WithCancelIfError(false))
+		for _, output := range outputCfgs {
+			rcfg := output
+			rcfg.Type = config.RedisTypeStandalone
+			group.Go(func(ctx context.Context) error {
+				cli, err := redis.NewStandaloneRedis(rcfg)
+				if err != nil {
+					return err
+				}
+				err = common.StringIsOk(cli.Client().Do("flushdb"))
+				if err == nil {
+					sc.logger.Infof("send flushdb to %s", rcfg.Address())
+				} else {
+					sc.logger.Errorf("send flushdb to %s : %v", rcfg.Address(), err)
+				}
+
+				return err
+			})
+		}
+		return group.Wait()
+	}
+
+	return util.RetryLinearJitter(ctx, func() error {
+		return flushdbOnce()
+	}, 10, time.Second, 0.3)
+}
+
+func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error {
+	runIdMap := make(map[string]struct{}, len(inputs)*2)
+	for _, in := range inputs {
+		sy := sc.getSyncer(in)
+		if sy.wait == nil {
+			continue
+		}
+		runIds := sy.sync.RunIds()
+		for _, id := range runIds {
+			runIdMap[id] = struct{}{}
+		}
+	}
+
+	delCheckpoint := func(cli client.Redis) error {
+		data, err := checkpoint.GetAllCheckpointHash(cli)
+		if err != nil {
+			return fmt.Errorf("get checkpoint from hash error : redis(%v), err(%v)", cli.Addresses(), err)
+		}
+		if len(data)%2 == 1 {
+			return fmt.Errorf("the number of values of checkpoint hash is not even : addr(%v)", data)
+		}
+		for i := 0; i < len(data)-1; i += 2 {
+			runId := data[i]
+			cpn := data[i+1]
+			_, exist := runIdMap[runId]
+			if exist {
+				err = checkpoint.DelCheckpoint(cli, cpn, runId)
+				if err != nil {
+					return fmt.Errorf("DelStaleCheckpoint : cp(%s), runId(%s), error(%v)", cpn, runId, err)
+				}
+			}
+		}
+		return nil
+	}
+
+	if config.Get().Output.Redis.Type == config.RedisTypeCluster {
+		cli, err := client.NewRedis(*config.Get().Output.Redis)
+		if err != nil {
+			sc.logger.Errorf("new redis error : addr(%s), err(%v)", config.Get().Output.Redis.Address(), err)
+			return err
+		}
+		err = delCheckpoint(cli)
+		cli.Close()
+		if err != nil {
+			return err
+		}
+	} else if config.Get().Output.Redis.Type == config.RedisTypeStandalone {
+		outputs := config.Get().Output.Redis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+		for _, out := range outputs {
+			cli, err := client.NewRedis(out)
+			if err != nil {
+				return err
+			}
+			err = delCheckpoint(cli)
+			cli.Close()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (sc *SyncerCmd) resume(ctx context.Context, inputs []string) error {
+	for _, input := range inputs {
+		si := sc.getSyncer(input)
+		if si.sync != nil {
+			si.sync.Resume()
+		}
+	}
+	return nil
 }

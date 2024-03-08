@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,10 @@ func (c *Config) fix() error {
 		return err
 	}
 
+	if c.Server.Http == nil && c.Cluster != nil {
+		return newConfigError("cluster is configured, but server is empty")
+	}
+
 	return nil
 }
 
@@ -123,15 +128,29 @@ func (sc *ServerConfig) fix() error {
 }
 
 type HttpServer struct {
-	HttpBind        string `yaml:"httpBind"`
-	HttpPort        int    `yaml:"httpPort"`
+	Listen          string
+	ListenPort      int    `yaml:"-"`
+	ListenPeer      string `yaml:"listenPeer"` // Used to communicate with peers. if it's empty, use Listen field
 	MetricRoutePath string `yaml:"metricRoutePath"`
 }
 
 func (hs *HttpServer) fix() error {
-	if hs.HttpPort == 0 {
-		hs.HttpPort = 18000
+	if hs.Listen == "" {
+		hs.Listen = "0.0.0.0:18001"
 	}
+	if hs.ListenPeer == "" {
+		hs.ListenPeer = hs.Listen
+	}
+	ls := strings.Split(hs.Listen, ":")
+	if len(ls) != 2 {
+		return newConfigError("invalid http.listen")
+	}
+	port, err := strconv.Atoi(ls[1])
+	if err != nil {
+		return newConfigError("invalid http.listen")
+	}
+	hs.ListenPort = port
+
 	if hs.MetricRoutePath == "" {
 		hs.MetricRoutePath = "/prometheus"
 	} else if hs.MetricRoutePath[0] != '/' {
@@ -251,6 +270,7 @@ type OutputConfig struct {
 	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
 	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
+	ReplayTransaction      *bool         `yaml:"replayTransaction"`
 }
 
 func (of *OutputConfig) fix() error {
@@ -276,6 +296,11 @@ func (of *OutputConfig) fix() error {
 
 	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
 		return newConfigError("resume from breakpoint, but targetdb is not -1 : db(%d)", of.TargetDb)
+	}
+
+	if of.ReplayTransaction == nil {
+		txn := true
+		of.ReplayTransaction = &txn
 	}
 
 	of.KeyExists = strings.ToLower(of.KeyExists)
@@ -459,9 +484,8 @@ func (rc *RedisConfig) SetMigrating(m bool) {
 }
 
 type RedisClusterOptions struct {
-	HandleMoveErr     bool  `yaml:"handleMoveErr"`
-	HandleAskErr      bool  `yaml:"handleAskErr"`
-	ReplayTransaction *bool `yaml:"replayTransaction"`
+	HandleMoveErr bool `yaml:"handleMoveErr"`
+	HandleAskErr  bool `yaml:"handleAskErr"`
 }
 
 func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
@@ -469,21 +493,12 @@ func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
 		HandleMoveErr: rco.HandleMoveErr,
 		HandleAskErr:  rco.HandleAskErr,
 	}
-	if rco.ReplayTransaction != nil {
-		rt := *rco.ReplayTransaction
-		t.ReplayTransaction = &rt
-	}
-
 	return t
 }
 
 func (rco *RedisClusterOptions) fix() error {
 	rco.HandleAskErr = true
 	rco.HandleMoveErr = true
-	if rco.ReplayTransaction == nil {
-		txn := true
-		rco.ReplayTransaction = &txn
-	}
 	return nil
 }
 
@@ -539,6 +554,20 @@ func (rc *RedisConfig) SetClusterShards(sds []*RedisClusterShard) {
 	rc.SetSlots(slotMap, slotRange)
 }
 
+func (rc *RedisConfig) GetClusterShard(addr string) *RedisClusterShard {
+	for _, s := range rc.shards {
+		if s.Master.Address == addr {
+			return s
+		}
+		for _, sl := range s.Slaves {
+			if sl.Address == addr {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
 func (rc *RedisConfig) GetClusterShards() []*RedisClusterShard {
 	return rc.shards
 }
@@ -548,6 +577,14 @@ type RedisClusterShard struct {
 	Slots  RedisSlots // sorted
 	Master RedisNode
 	Slaves []RedisNode
+}
+
+func (rcs *RedisClusterShard) AllAddresses() []string {
+	addrs := []string{rcs.Master.Address}
+	for _, sl := range rcs.Slaves {
+		addrs = append(addrs, sl.Address)
+	}
+	return addrs
 }
 
 func (rcs *RedisClusterShard) Clone() *RedisClusterShard {
@@ -718,6 +755,42 @@ func (rc *RedisConfig) FindNode(addr string) *RedisNode {
 	return nil
 }
 
+func (rc *RedisConfig) SelNodeByAddress(addr string) *RedisConfig {
+
+	var selShard *RedisClusterShard
+	for _, shard := range rc.shards {
+		if shard.Master.Address == addr {
+			selShard = shard
+		}
+		for _, s := range shard.Slaves {
+			if s.Address == addr {
+				selShard = shard
+				break
+			}
+		}
+		if selShard != nil {
+			break
+		}
+	}
+	if selShard == nil {
+		return nil
+	}
+
+	sre := RedisConfig{
+		Addresses:      []string{addr},
+		UserName:       rc.UserName,
+		Password:       rc.Password,
+		TlsEnable:      rc.TlsEnable,
+		Type:           rc.Type,
+		Otype:          rc.Type,
+		ClusterOptions: rc.ClusterOptions.Clone(),
+		isMigrating:    rc.isMigrating,
+	}
+	sre.SetClusterShards([]*RedisClusterShard{selShard})
+
+	return &sre
+}
+
 func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisConfig {
 	ret := []RedisConfig{}
 	var addrs []string
@@ -785,15 +858,6 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 		ret = append(ret, sre)
 	}
 	return ret
-}
-
-func GetTotalLink() int {
-	return len(cfg.Input.Redis.Addresses)
-	// if conf.Options.Type == conf.TypeSync || conf.Options.Type == conf.TypeRump || conf.Options.Type == conf.TypeDump {
-	// 	return len(conf.Options.SourceAddressList)
-	// } else if conf.Options.Type == conf.TypeDecode || conf.Options.Type == conf.TypeRestore {
-	// 	return len(conf.Options.SourceRdbInput)
-	// }
 }
 
 type ClusterConfig struct {

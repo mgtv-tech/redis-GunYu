@@ -31,6 +31,9 @@ var (
 	// syncer role is changed
 	ErrRole = errors.New("role")
 
+	// stop sync
+	ErrStopSync = errors.New("stop sync")
+
 	// second level
 
 	// quit process
@@ -38,7 +41,7 @@ var (
 	// restart command
 	ErrRestart = fmt.Errorf("%w %s", ErrBreak, "restart")
 	// restart all syncers
-	ErrRedisTypologyChanged = fmt.Errorf("%w %s", ErrBreak, "redis typology is changed")
+	ErrRedisTypologyChanged = fmt.Errorf("%w %s", ErrRestart, "redis typology is changed")
 	// leadership
 	ErrLeaderHandover = fmt.Errorf("%w %s", ErrRole, "hand over leadership")
 	ErrLeaderTakeover = fmt.Errorf("%w %s", ErrRole, "take over leadership")
@@ -58,8 +61,14 @@ type Syncer interface {
 	RunLeader() error
 	RunFollower(leader *cluster.RoleInfo) error
 	Stop()
-	ServiceReplica(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ReplService_SyncServer) error
+	ServiceReplica(req *pb.SyncRequest, stream pb.ReplService_SyncServer) error
 	RunIds() []string
+	IsLeader() bool
+	Pause()
+	DelRunId()
+	Resume()
+	State() string
+	TransactionMode() bool
 }
 
 func NewSyncer(cfg SyncerConfig) Syncer {
@@ -79,26 +88,71 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 }
 
 type syncer struct {
-	cfg     SyncerConfig
-	logger  log.Logger
-	wait    usync.WaitCloser
-	mux     sync.RWMutex
-	input   Input
-	channel Channel
-	leader  *ReplicaLeader
+	cfg    SyncerConfig
+	logger log.Logger
+
+	guard     sync.RWMutex
+	wait      usync.WaitCloser
+	input     Input
+	channel   Channel
+	leader    *ReplicaLeader
+	slaveOf   *cluster.RoleInfo
+	state     syncerState
+	role      syncerRole
+	pauseWait usync.WaitNotifier
+}
+
+type syncerState int
+type syncerRole int
+
+const (
+	// state
+	syncerStateReadyRun syncerState = iota
+	syncerStateRun      syncerState = iota
+	syncerStatePause    syncerState = iota
+	syncerStateStop     syncerState = iota
+
+	// role
+	syncerRoleLeader   syncerRole = iota
+	syncerRoleFollower syncerRole = iota
+)
+
+func (s *syncer) TransactionMode() bool {
+	return s.cfg.CanTransaction
+}
+
+func (s *syncer) State() string {
+	state := s.getState()
+	switch state {
+	case syncerStateReadyRun:
+		return "ready_run"
+	case syncerStateRun:
+		return "run"
+	case syncerStatePause:
+		return "pause"
+	case syncerStateStop:
+		return "stop"
+	}
+	return "unknown"
 }
 
 func (s *syncer) RunIds() []string {
-	s.mux.RLock()
-	defer s.mux.RUnlock()
+	s.guard.RLock()
+	defer s.guard.RUnlock()
 	if s.input == nil {
 		return nil
 	}
 	return s.input.RunIds()
 }
 
-func (s *syncer) getInputRunIds() (id1 string, id2 string, err error) {
-	err = util.RetryLinearJitter(s.wait.Context(), func() error {
+func (s *syncer) getState() syncerState {
+	s.guard.RLock()
+	defer s.guard.RUnlock()
+	return s.state
+}
+
+func (s *syncer) getInputRunIds(wait usync.WaitCloser) (id1 string, id2 string, err error) {
+	err = util.RetryLinearJitter(wait.Context(), func() error {
 		cli, err := client.NewRedis(s.cfg.Input)
 		if err != nil {
 			s.logger.Errorf("new redis error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
@@ -128,74 +182,185 @@ func ClientUnaryCallInterceptor(opts0 ...grpc.CallOption) grpc.UnaryClientInterc
 }
 
 func (s *syncer) Stop() {
-	s.logger.Debugf("stop syncer")
-	s.wait.Close(nil)
+	s.guard.Lock()
+	s.state = syncerStateStop
+	wait := s.wait
+	s.guard.Unlock()
+
+	wait.Close(nil)
 }
 
-func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
-	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
-
-	s.mux.RLock()
-	follower := NewReplicaFollower(s.cfg.Input.Address(), s.channel, leader)
-	s.mux.RUnlock()
-
-	s.wait.WgAdd(1)
-	usync.SafeGo(func() {
-		defer s.wait.WgDone()
-		err := follower.Run()
-		s.wait.Close(err)
-	}, func(i interface{}) {
-		s.wait.Close(fmt.Errorf("panic: %v", i))
-	})
-
-	<-s.wait.Done()
-	follower.Stop()
-	s.wait.WgWait()
-	return s.wait.Error()
+func (s *syncer) getRole() syncerRole {
+	s.guard.RLock()
+	defer s.guard.RUnlock()
+	return s.role
 }
 
 func (s *syncer) RunLeader() error {
-	s.logger.Infof("RunLeader")
+	s.guard.Lock()
+	s.role = syncerRoleLeader
+	s.state = syncerStateReadyRun
+	s.guard.Unlock()
+	return s.run()
+}
 
+func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
+	s.guard.Lock()
+	s.slaveOf = leader
+	s.role = syncerRoleFollower
+	s.state = syncerStateReadyRun
+	s.guard.Unlock()
+	return s.run()
+}
+
+func (s *syncer) Pause() {
+	s.guard.Lock()
+	s.state = syncerStatePause
+	s.pauseWait = usync.NewWaitNotifier()
+	wait := s.wait
+	s.guard.Unlock()
+	wait.Close(nil)
+	wait.WgWait()
+}
+
+func (s *syncer) Resume() {
+	s.guard.Lock()
+	defer s.guard.Unlock()
+	s.state = syncerStateReadyRun
+	close(s.pauseWait)
+	s.pauseWait = nil
+}
+
+func (s *syncer) DelRunId() {
+	s.guard.RLock()
+	input := s.input
+	channel := s.channel
+	s.guard.RUnlock()
+	runIds := input.RunIds()
+	if len(runIds) > 0 {
+		channel.DelRunId(runIds[0])
+	}
+}
+
+func (s *syncer) run() error {
+	for {
+		state := s.getState()
+		switch state {
+		case syncerStateReadyRun, syncerStateRun:
+			role := s.getRole()
+			var err error
+			if role == syncerRoleLeader {
+				err = s.runLeader()
+			} else if role == syncerRoleFollower {
+				err = s.runFollower()
+			}
+			if err != nil {
+				//s.logger.Errorf("run error : %v", err)
+				s.guard.Lock()
+				s.state = syncerStateStop
+				wait := s.wait
+				s.guard.Unlock()
+				wait.Close(err)
+			}
+		case syncerStatePause:
+			s.guard.Lock()
+			waitC := s.pauseWait
+			waitCloser := usync.NewWaitCloser(nil)
+			s.wait = waitCloser
+			s.guard.Unlock()
+			select {
+			case <-waitC:
+			case <-waitCloser.Done():
+				return waitCloser.Error()
+			}
+		case syncerStateStop:
+			s.guard.Lock()
+			channel := s.channel
+			wait := s.wait
+			s.guard.Unlock()
+			channel.Close()
+			return wait.Error()
+		}
+	}
+}
+
+func (s *syncer) runLeader() error {
 	output, err := s.newOutput()
 	if err != nil {
 		return err
 	}
 
-	s.mux.Lock()
+	s.guard.Lock()
 	input := NewRedisInput(s.cfg.Id, s.cfg.Input)
 	input.SetOutput(output)
 	input.SetChannel(s.channel)
 	leader := NewReplicaLeader(input, s.channel)
 	s.input = input
 	s.leader = leader
-	channel := s.channel
-	s.mux.Unlock()
+	s.state = syncerStateRun
+	wait := s.wait
+	s.guard.Unlock()
 
 	leader.Start()
 
-	s.wait.WgAdd(1)
+	wait.WgAdd(1)
 	usync.SafeGo(func() {
-		defer s.wait.WgDone()
+		defer wait.WgDone()
 		err := input.Run()
-		s.wait.Close(err)
+		wait.Close(err)
 	}, func(i interface{}) {
-		s.wait.Close(fmt.Errorf("panic: %v", i))
+		wait.Close(fmt.Errorf("panic: %v", i))
 	})
 
-	<-s.wait.Done()
+	<-wait.Done()
+
 	leader.Stop()
 	input.Stop()
 	output.Close()
-	channel.Close()
 
-	s.wait.WgWait()
-	return s.wait.Error()
+	wait.WgWait()
+	return wait.Error()
+}
+
+func (s *syncer) runFollower() error {
+
+	s.guard.RLock()
+	leader := s.slaveOf
+	follower := NewReplicaFollower(s.cfg.Input.Address(), s.channel, leader)
+	s.state = syncerStateRun
+	wait := s.wait
+	s.guard.RUnlock()
+
+	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
+
+	wait.WgAdd(1)
+	usync.SafeGo(func() {
+		defer wait.WgDone()
+		err := follower.Run()
+		wait.Close(err)
+	}, func(i interface{}) {
+		wait.Close(fmt.Errorf("panic: %v", i))
+	})
+
+	<-wait.Done()
+	follower.Stop()
+	wait.WgWait()
+	return wait.Error()
+}
+
+func (s *syncer) IsLeader() bool {
+	s.guard.Lock()
+	defer s.guard.Unlock()
+	return s.leader != nil
 }
 
 func (s *syncer) newOutput() (*RedisOutput, error) {
+	s.guard.RLock()
+	wait := s.wait
+	s.guard.RUnlock()
+
 	// get run ids
-	id1, id2, err := s.getInputRunIds()
+	id1, id2, err := s.getInputRunIds(wait)
 	if err != nil {
 		return nil, errors.Join(ErrRestart, err)
 	}
@@ -222,12 +387,12 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 			return nil, errors.Join(ErrQuit, err)
 		}
 		// update checkpoint name and run id,
-		err = s.updateCheckpoint(s.wait, localCheckpoint, []string{id1, id2})
+		err = s.updateCheckpoint(wait, localCheckpoint, []string{id1, id2})
 		if err != nil {
 			return nil, errors.Join(ErrRestart, err)
 		}
 		outputCfg.CheckpointName = localCheckpoint
-		s.logger.Infof("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
+		s.logger.Debugf("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
 	}
 
 	output := NewRedisOutput(outputCfg)

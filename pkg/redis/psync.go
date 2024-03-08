@@ -54,7 +54,7 @@ func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64,
 		offset += 1 // redis replication.c : redis' offset will increased by 1 while new slave is connecting to it.
 	}
 
-	sr.logger.Infof("send psync : %s, %d", runid, offset)
+	sr.logger.Debugf("send psync : %s, %d", runid, offset)
 
 	err := sr.cli.SendAndFlush("psync", runid, strconv.FormatInt(offset, 10))
 	if err != nil {

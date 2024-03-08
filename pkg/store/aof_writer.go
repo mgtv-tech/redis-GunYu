@@ -193,7 +193,7 @@ func (w *AofRotater) openFile(offset int64) error {
 
 	filepath := aofFilePath(w.dir, offset)
 	file, err := os.OpenFile(filepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
-	w.logger.Log(err, "new aof file : %s, %v", filepath, err)
+	w.logger.Debugf("new aof file : %s, %v", filepath, err)
 	if err != nil {
 		return err
 	}
