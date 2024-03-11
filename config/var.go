@@ -193,12 +193,10 @@ func (rt *InputMode) UnmarshalYAML(value *yaml.Node) error {
 	switch vv {
 	case "static":
 		*rt = InputModeStatic
-	case "dynamic":
-		*rt = InputModeDynamic
 	case "auto":
 		*rt = InputModeAuto
 	default:
-		return newConfigError("invalid redis input mode : %s", vv)
+		*rt = InputModeDynamic
 	}
 	return nil
 }
@@ -295,7 +293,7 @@ type ReplicaConfig struct {
 
 func (rc *ReplicaConfig) fix() error {
 	if rc.Listen == "" {
-		rc.Listen = "0.0.0.0:18002"
+		rc.Listen = "127.0.0.1:18002"
 	}
 	if rc.ListenPeer == "" {
 		rc.ListenPeer = rc.Listen

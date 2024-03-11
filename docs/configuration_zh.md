@@ -1,36 +1,55 @@
 # 配置
 
+- [配置](#配置)
+  - [配置文件](#配置文件)
+    - [通用配置](#通用配置)
+    - [输入端](#输入端)
+    - [输出端](#输出端)
+    - [缓存区](#缓存区)
+    - [过滤](#过滤)
+    - [集群](#集群)
+    - [日志](#日志)
+    - [服务器](#服务器)
+  - [配置文件示例](#配置文件示例)
+    - [最小配置文件](#最小配置文件)
+    - [较完善配置](#较完善配置)
+
+
+
+
 现阶段使用yaml文件来配置参数，后期会增加命令行和环境变量方式。
+可以直接跳到[最小配置文件](#最小配置文件)。
 
 
 ## 配置文件
 
 
 配置文件分为以下几个配置组：
-- id ： redis-GunYu的唯一ID，类型为字符串
-- input ：输入端的配置
-- output ： 输出端的配置
+- input ：输入端redis（源端）的配置
+- output ： 输出端redis（目标端）的配置
 - channel ： 本地缓存配置
-- filter ： 过滤策略配置
 - cluster ： 集群模式配置
 - log ： 日志配置
 - server ： 服务器相关配置
+- filter ： 过滤策略配置
 
 
-**通用配置**
+### 通用配置
 
 redis配置
-- addresses ： redis地址， 数组
+- addresses ： redis地址， 数组。如果redis是cluster部署的，则`addresses`最好配置多于1个节点的IP地址，避免1个节点故障而无法联系redis集群。
 - userName ： redis用户名
 - password ： redis密码
 - type ： redis类型
   - standalone ： 根据addresses里的地址来同步
   - cluster ： 
 - clusterOptions
-  - replayTransaction ： 是否尝试使用事务进行同步，默认开启
+  - replayTransaction ： 是否尝试使用事务（伪事务，不是基于multi/exec，而是将redis命令打包一次性发送到redis端执行）进行同步，默认开启
 
 
-**input**
+### 输入端
+
+由于现在仅支持从redis同步，所以输入端输出端都只有redis端的配置。
 
 input配置如下
 - redis ： redis配置
@@ -44,7 +63,7 @@ input配置如下
   - slave ： 使用从库同步
 
 
-**output**
+### 输出端
 
 output配置如下：
 - redis ： redis配置
@@ -63,19 +82,20 @@ output配置如下：
 - targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步
 - targetDbMap ： 同步db的映射结构
 - batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
-- batchTickerMs ： 批量同步命令的等待时间，最多等待batchTickerMs毫秒再进行打包同步，默认20，代表20ms
+- batchTickerMs ： 批量同步命令的等待时间，最多等待batchTickerMs毫秒再进行打包同步，默认10ms
 - batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTickerMs、batchBufferSize三者是或关系，只要满足一个，就进行同步。
 - replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量
-- updateCheckpointTickerMs ： 默认1000，1s
+- updateCheckpointTickerMs ： 默认1秒
+- keepaliveTicker ： 默认3秒，保持心跳时间间隔
 
 
-**channel**
+### 缓存区
 
-channel配置
+配置
 - storer ： rdb和aof存储区
-  - dirPath ： 存储目录
-  - maxSize ： 存储最大空间，单位字节
-  - logSize ： 每个aof文件大小
+  - dirPath ： 存储目录，默认使用`/tmp/redis-gunyu`
+  - maxSize ： 存储最大空间，单位字节，默认50GiB
+  - logSize ： 每个aof文件大小，默认100MiB
   - flush ： 同步aof文件到磁盘的策略，默认是auto
     - duration ： 每个多久刷新一次
     - everyWrite ： 每次写入命令到aof后，进行同步
@@ -85,10 +105,13 @@ channel配置
 - staleCheckpointDuration ： 多久以前的快照视为过期快照，默认12小时
 
 
-**filter**
+### 过滤
+
+- commandBlacklist :  命令黑名单，数组结构，忽略掉这些命令
 
 
-**cluster**
+
+### 集群
 
 集群模式配置
 - groupName ： 组名，同一个组的redis-GunYu会进行选举一个leader作为同步的主库
@@ -99,12 +122,12 @@ channel配置
 - leaseTimeout ： leader租期时间，如果在leaseTimeout时间内，leader没有续租，则表示leader过期了，会重新发起选举；默认10秒，值范围为[3s, 600s]
 - leaseRenewInterval ： leader发起租期时间间隔，默认3.33秒，一般选为leaseTimeout的1/3，值范围为[1s, 200s]
 - replica ： 主从相关配置
-  - listen ： 监听的地址，如 "0.0.0.0:8081"
-  - listenPeer ： 主库的通信地址，从库根据此地址和主库同步数据，如"172.27.83.13:8081"
+  - listen ： 监听的地址，如 "127.0.0.1:18082"
+  - listenPeer ： redisGunYu节点的通信地址，从库根据此地址和主库同步数据，默认和listen一样。如"172.27.83.13:18082"
 
 
 
-**log**
+### 日志
 
 日志配置
 - level ： 级别，默认info，级别有debug, info, warn, error, panic, fatal
@@ -115,23 +138,48 @@ channel配置
     - maxBackups ： 最大日志文件数量
     - maxAge ： 日志保留天数
   - stdout ： 默认输出到标准输出
+- withCaller : bool值，日志是否包含源码文件名，默认false
+- withFunc : bool值，日志是否包含函数调用者，默认false
+- withModuleName : bool值，日志是否包含模块名，默认true
 
 
-**server**
+
+### 服务器
 
 服务器配置
-- httpBind ： http服务器监听的网络接口，默认是本机所有网络接口
-- httpPort ： http服务器监听的端口，默认18000
-- checkRedisTypologyTicker ： 检查redis cluster拓扑的时间周期，单位秒，默认30秒
+- http : http server相关配置
+  - listen : 监听地址，默认"127.0.0.1:18001"
+  - metricRoutePath : prometheus的http路径，默认是 "/prometheus"
+  - listenPeer: 和其他进程通信用途，IP:Port，默认和listen一样。
+- checkRedisTypologyTicker ： 检查redis cluster拓扑的时间周期，默认30秒，可以用1s, 1h，1ms等字符串
 - gracefullStopTimeout ： 优雅退出超时时间，默认5秒
+
 
 
 ## 配置文件示例
 
+
+### 最小配置文件
+
 ```
-id: 1 
+input:
+  redis:
+    addresses: [127.0.0.1:10001, 127.0.0.1:10002]   
+    type: cluster
+output:
+  redis:
+    addresses: [127.0.0.1:20001]
+    type: standalone
+```
+
+
+
+### 较完善配置
+```
 server:
-  httpPort: 8801   
+  http:
+    listen: 0.0.0.0:18001 
+    listenPeer: 10.220.14.15:18001  
 input:
   redis:
     addresses: [127.0.0.1:6300]
@@ -154,6 +202,7 @@ log:
   level: info
   handler:
     stdout: true
+  withModuleName: false
 
 # redis-GunYu高可用相关配置，如果不需要支持高可用，则可以忽略
 cluster:
@@ -163,8 +212,8 @@ cluster:
     endpoints:
       - 127.0.0.1:2379
   replica:
-    listen: "0.0.0.0:8088"
-    listenPeer: "127.0.0.1:8088"
+    listen: 0.0.0.0:18002
+    listenPeer: 10.220.14.15:18002
 ```
 
 

@@ -27,7 +27,6 @@ func Get() *Config {
 }
 
 type Config struct {
-	Id      string
 	Input   *InputConfig
 	Output  *OutputConfig
 	Channel *ChannelConfig
@@ -54,10 +53,6 @@ func (c *Config) fix() error {
 	}
 	if c.Log == nil {
 		c.Log = &LogConfig{}
-	}
-
-	if c.Id == "" {
-		c.Id = "redis-gunyu-1"
 	}
 
 	if c.Output.ReplayRdbParallel <= 0 {
@@ -136,7 +131,7 @@ type HttpServer struct {
 
 func (hs *HttpServer) fix() error {
 	if hs.Listen == "" {
-		hs.Listen = "0.0.0.0:18001"
+		hs.Listen = "127.0.0.1:18001"
 	}
 	if hs.ListenPeer == "" {
 		hs.ListenPeer = hs.Listen
@@ -206,7 +201,7 @@ func (cc *ChannelConfig) Clone() *ChannelConfig {
 
 func (cc *ChannelConfig) fix() error {
 	if cc.Storer == nil {
-		return newConfigError("channel.storer is nil")
+		cc.Storer = &StorerConfig{}
 	}
 	if cc.StaleCheckpointDuration == 0 {
 		cc.StaleCheckpointDuration = staleCheckpointDuration
@@ -226,7 +221,7 @@ type StorerConfig struct {
 
 func (sc *StorerConfig) fix() error {
 	if sc.DirPath == "" {
-		return newConfigError("channel.storer.dirPath is empty")
+		sc.DirPath = os.TempDir() + "/redis-gunyu/"
 	}
 
 	if sc.MaxSize == 0 {

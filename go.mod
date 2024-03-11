@@ -6,7 +6,6 @@ require (
 	github.com/agiledragon/gomonkey/v2 v2.11.0
 	github.com/gin-contrib/pprof v1.4.0
 	github.com/gin-gonic/gin v1.9.1
-	github.com/julienschmidt/httprouter v1.3.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/redis/go-redis/v9 v9.3.0
 	github.com/stretchr/testify v1.8.4

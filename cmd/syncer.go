@@ -1114,8 +1114,36 @@ func (sc *SyncerCmd) startHttpServer() {
 		sc.getRunWait().Close(errors.Join(context.Canceled, syncer.ErrRestart))
 	})
 
-	syncerGroup.POST("stopsync", func(ctx *gin.Context) {
+	syncerGroup.POST("stop", func(ctx *gin.Context) {
 		sc.getRunWait().Close(syncer.ErrStopSync)
+	})
+
+	syncerGroup.POST("pause", func(ctx *gin.Context) {
+		inputs := sc.parseInputsFromQuery(ctx)
+		if len(inputs) == 0 {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		for _, input := range inputs {
+			sync := sc.getSyncer(input)
+			if sync.sync != nil {
+				sync.sync.Pause()
+			}
+		}
+	})
+
+	syncerGroup.POST("resume", func(ctx *gin.Context) {
+		inputs := sc.parseInputsFromQuery(ctx)
+		if len(inputs) == 0 {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		for _, input := range inputs {
+			sync := sc.getSyncer(input)
+			if sync.sync != nil {
+				sync.sync.Resume()
+			}
+		}
 	})
 
 	syncerGroup.POST("handover", func(ctx *gin.Context) {

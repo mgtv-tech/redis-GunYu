@@ -41,5 +41,5 @@ cluster:
     endpoints:
       - 127.0.0.1:2379
   replica:
-    listen: "0.0.0.0:18088"
-    listenPeer: "127.0.0.1:18088"
+    listen: 0.0.0.0:18088
+    listenPeer: 127.0.0.1:18088
