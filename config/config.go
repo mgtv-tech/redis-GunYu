@@ -90,10 +90,6 @@ func (c *Config) fix() error {
 		return err
 	}
 
-	if c.Server.Http == nil && c.Cluster != nil {
-		return newConfigError("cluster is configured, but server is empty")
-	}
-
 	return nil
 }
 
@@ -113,10 +109,12 @@ func (sc *ServerConfig) fix() error {
 	if sc.GracefullStopTimeout < time.Second {
 		sc.GracefullStopTimeout = 5 * time.Second
 	}
-	if sc.Http != nil {
-		if err := sc.Http.fix(); err != nil {
-			return err
-		}
+
+	if sc.Http == nil {
+		sc.Http = &HttpServer{}
+	}
+	if err := sc.Http.fix(); err != nil {
+		return err
 	}
 
 	return nil

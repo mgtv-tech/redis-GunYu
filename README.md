@@ -71,7 +71,6 @@ make
 ```
 ./redisGunYu -conf ./config.yaml
 ```
-对于配置文件，请见[配置](docs/configuration_zh.md)
 
 
 ## 文档
