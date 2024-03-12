@@ -62,8 +62,12 @@ func NewCluster(ctx context.Context, cfg config.EtcdConfig) (*Cluster, error) {
 }
 
 func (c *Cluster) Close() error {
-	err := c.sess.Close()
-	return errors.Join(err, c.cli.Close())
+	if c.sess != nil {
+		err := c.sess.Close()
+		return errors.Join(err, c.cli.Close())
+	}
+
+	return nil
 }
 
 type Election struct {

@@ -16,7 +16,7 @@ func (s *syncer) ServiceReplica(req *pb.SyncRequest, stream pb.ReplService_SyncS
 	role := s.role
 	s.guard.RUnlock()
 
-	if role != syncerRoleLeader || state != syncerStateRun || leader == nil {
+	if role != SyncerRoleLeader || state != SyncerStateRun || leader == nil {
 		s.logger.Warnf("role(%v), state(%v)", role, state)
 		stream.Send(&pb.SyncResponse{
 			Code: pb.SyncResponse_FAILURE,

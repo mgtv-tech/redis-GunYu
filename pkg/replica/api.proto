@@ -30,6 +30,7 @@ message SyncResponse {
         META = 0;
         CONTINUE = 1;
         HANDOVER = 2;
+        CLEAR = 3;
         FAULT = 10;    // network or lower level 
         ERROR = 11;    // logical 
         FAILURE = 12;  // service, should be restart

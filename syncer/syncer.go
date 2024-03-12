@@ -67,7 +67,8 @@ type Syncer interface {
 	Pause()
 	DelRunId()
 	Resume()
-	State() string
+	State() SyncerState
+	Role() SyncerRole
 	TransactionMode() bool
 }
 
@@ -97,43 +98,60 @@ type syncer struct {
 	channel   Channel
 	leader    *ReplicaLeader
 	slaveOf   *cluster.RoleInfo
-	state     syncerState
-	role      syncerRole
+	state     SyncerState
+	role      SyncerRole
 	pauseWait usync.WaitNotifier
 }
 
-type syncerState int
-type syncerRole int
+type SyncerState int
+type SyncerRole int
 
 const (
 	// state
-	syncerStateReadyRun syncerState = iota
-	syncerStateRun      syncerState = iota
-	syncerStatePause    syncerState = iota
-	syncerStateStop     syncerState = iota
+	SyncerStateReadyRun SyncerState = iota
+	SyncerStateRun      SyncerState = iota
+	SyncerStatePause    SyncerState = iota
+	SyncerStateStop     SyncerState = iota
 
 	// role
-	syncerRoleLeader   syncerRole = iota
-	syncerRoleFollower syncerRole = iota
+	SyncerRoleLeader   SyncerRole = iota
+	SyncerRoleFollower SyncerRole = iota
 )
+
+func (ss SyncerState) String() string {
+	switch ss {
+	case SyncerStateReadyRun:
+		return "ready_run"
+	case SyncerStateRun:
+		return "run"
+	case SyncerStatePause:
+		return "pause"
+	case SyncerStateStop:
+		return "stop"
+	}
+	return "unknown"
+}
+
+func (sr SyncerRole) String() string {
+	switch sr {
+	case SyncerRoleLeader:
+		return "leader"
+	case SyncerRoleFollower:
+		return "follower"
+	}
+	return "unknown"
+}
 
 func (s *syncer) TransactionMode() bool {
 	return s.cfg.CanTransaction
 }
 
-func (s *syncer) State() string {
-	state := s.getState()
-	switch state {
-	case syncerStateReadyRun:
-		return "ready_run"
-	case syncerStateRun:
-		return "run"
-	case syncerStatePause:
-		return "pause"
-	case syncerStateStop:
-		return "stop"
-	}
-	return "unknown"
+func (s *syncer) State() SyncerState {
+	return s.getState()
+}
+
+func (s *syncer) Role() SyncerRole {
+	return s.getRole()
 }
 
 func (s *syncer) RunIds() []string {
@@ -145,7 +163,7 @@ func (s *syncer) RunIds() []string {
 	return s.input.RunIds()
 }
 
-func (s *syncer) getState() syncerState {
+func (s *syncer) getState() SyncerState {
 	s.guard.RLock()
 	defer s.guard.RUnlock()
 	return s.state
@@ -183,14 +201,14 @@ func ClientUnaryCallInterceptor(opts0 ...grpc.CallOption) grpc.UnaryClientInterc
 
 func (s *syncer) Stop() {
 	s.guard.Lock()
-	s.state = syncerStateStop
+	s.state = SyncerStateStop
 	wait := s.wait
 	s.guard.Unlock()
 
 	wait.Close(nil)
 }
 
-func (s *syncer) getRole() syncerRole {
+func (s *syncer) getRole() SyncerRole {
 	s.guard.RLock()
 	defer s.guard.RUnlock()
 	return s.role
@@ -198,8 +216,8 @@ func (s *syncer) getRole() syncerRole {
 
 func (s *syncer) RunLeader() error {
 	s.guard.Lock()
-	s.role = syncerRoleLeader
-	s.state = syncerStateReadyRun
+	s.role = SyncerRoleLeader
+	s.state = SyncerStateReadyRun
 	s.guard.Unlock()
 	return s.run()
 }
@@ -207,15 +225,15 @@ func (s *syncer) RunLeader() error {
 func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
 	s.guard.Lock()
 	s.slaveOf = leader
-	s.role = syncerRoleFollower
-	s.state = syncerStateReadyRun
+	s.role = SyncerRoleFollower
+	s.state = SyncerStateReadyRun
 	s.guard.Unlock()
 	return s.run()
 }
 
 func (s *syncer) Pause() {
 	s.guard.Lock()
-	s.state = syncerStatePause
+	s.state = SyncerStatePause
 	s.pauseWait = usync.NewWaitNotifier()
 	wait := s.wait
 	s.guard.Unlock()
@@ -226,7 +244,7 @@ func (s *syncer) Pause() {
 func (s *syncer) Resume() {
 	s.guard.Lock()
 	defer s.guard.Unlock()
-	s.state = syncerStateReadyRun
+	s.state = SyncerStateReadyRun
 	close(s.pauseWait)
 	s.pauseWait = nil
 }
@@ -246,23 +264,23 @@ func (s *syncer) run() error {
 	for {
 		state := s.getState()
 		switch state {
-		case syncerStateReadyRun, syncerStateRun:
+		case SyncerStateReadyRun, SyncerStateRun:
 			role := s.getRole()
 			var err error
-			if role == syncerRoleLeader {
+			if role == SyncerRoleLeader {
 				err = s.runLeader()
-			} else if role == syncerRoleFollower {
+			} else if role == SyncerRoleFollower {
 				err = s.runFollower()
 			}
 			if err != nil {
 				//s.logger.Errorf("run error : %v", err)
 				s.guard.Lock()
-				s.state = syncerStateStop
+				s.state = SyncerStateStop
 				wait := s.wait
 				s.guard.Unlock()
 				wait.Close(err)
 			}
-		case syncerStatePause:
+		case SyncerStatePause:
 			s.guard.Lock()
 			waitC := s.pauseWait
 			waitCloser := usync.NewWaitCloser(nil)
@@ -273,7 +291,7 @@ func (s *syncer) run() error {
 			case <-waitCloser.Done():
 				return waitCloser.Error()
 			}
-		case syncerStateStop:
+		case SyncerStateStop:
 			s.guard.Lock()
 			channel := s.channel
 			wait := s.wait
@@ -297,7 +315,7 @@ func (s *syncer) runLeader() error {
 	leader := NewReplicaLeader(input, s.channel)
 	s.input = input
 	s.leader = leader
-	s.state = syncerStateRun
+	s.state = SyncerStateRun
 	wait := s.wait
 	s.guard.Unlock()
 
@@ -326,8 +344,8 @@ func (s *syncer) runFollower() error {
 
 	s.guard.RLock()
 	leader := s.slaveOf
-	follower := NewReplicaFollower(s.cfg.Input.Address(), s.channel, leader)
-	s.state = syncerStateRun
+	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader)
+	s.state = SyncerStateRun
 	wait := s.wait
 	s.guard.RUnlock()
 

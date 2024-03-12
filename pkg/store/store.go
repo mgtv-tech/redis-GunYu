@@ -344,7 +344,7 @@ func (s *Storer) GetRdbWriter(r io.Reader, offset int64, rdbSize int64) (*RdbWri
 
 	s.resetDataSet()
 
-	w, err := NewRdbWriter(r, s.dir, offset, rdbSize)
+	w, err := NewRdbWriter(s.Id, r, s.dir, offset, rdbSize)
 	if err != nil {
 		return nil, err
 	}

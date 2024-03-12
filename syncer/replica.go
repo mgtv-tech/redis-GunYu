@@ -140,7 +140,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 
 	// if follower's offset is newer, try to hand over the leadership
 	if followerOffset-sp.Offset > 0 { // if offset is negative, still workable
-		rl.logger.Infof("peer's offset is newer, hand over leadership : peer(%d), leader(%d)", followerOffset, sp.Offset)
+		rl.logger.Infof("follower's offset is newer, hand over leadership : follower(%d), leader(%d)", followerOffset, sp.Offset)
 		err := stream.Send(&pb.SyncResponse{
 			Code:   pb.SyncResponse_HANDOVER,
 			Meta:   &pb.SyncResponse_Meta{RunId: sp.RunId},
@@ -169,7 +169,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 	})
 	if err != nil {
 		err = errors.Join(fmt.Errorf("channel.NewReader error : offset(%s:%d), error(%w)", reqSp.RunId, reqSp.Offset, err))
-		return rl.handleError(stream, err, pb.SyncResponse_ERROR, "internal error", "")
+		return rl.handleError(stream, err, pb.SyncResponse_CLEAR, "internal error", "")
 	}
 
 	reader.Start(wait)
@@ -227,6 +227,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 // follower
 
 type ReplicaFollower struct {
+	id           int
 	wait         usync.WaitCloser
 	logger       log.Logger
 	inputAddress string
@@ -236,9 +237,10 @@ type ReplicaFollower struct {
 	conn         *grpc.ClientConn
 }
 
-func NewReplicaFollower(inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
+func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
 	replica := &ReplicaFollower{
-		logger:       log.WithLogger(config.LogModuleName("[ReplicaFollower] ")),
+		id:           id,
+		logger:       log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%d)] ", id))),
 		wait:         usync.NewWaitCloser(nil),
 		channel:      channel,
 		leader:       leader,
@@ -320,12 +322,14 @@ func (rf *ReplicaFollower) Stop() {
 	rf.mux.RLock()
 	conn := rf.conn
 	rf.mux.RUnlock()
-	conn.Close()
+	if conn != nil {
+		conn.Close()
+	}
 
 	rf.wait.WgWait()
 }
 
-func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse) error {
+func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse, args ...interface{}) error {
 	if err != nil {
 		return err
 	}
@@ -338,6 +342,12 @@ func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse) error {
 			err = fmt.Errorf("code is fault : %s", resp.GetMeta().GetMsg())
 		} else if resp.GetCode() == pb.SyncResponse_HANDOVER {
 			err = fmt.Errorf("takeover leadership : %w, leader(%d)", ErrLeaderTakeover, resp.GetOffset())
+		} else if resp.GetCode() == pb.SyncResponse_CLEAR {
+			if len(args) == 1 {
+				runId := args[0].(string)
+				rf.channel.DelRunId(runId)
+				err = fmt.Errorf("code is error : %s", resp.GetMeta().GetMsg())
+			}
 		}
 	}
 	return err
@@ -409,7 +419,7 @@ func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ReplServiceClient) (pb
 		Node:   &pb.Node{RunId: sp.RunId, Address: rf.inputAddress},
 		Offset: sp.Offset,
 	})
-	if err = rf.handleResp(err, nil); err != nil {
+	if err = rf.handleResp(err, nil, sp.RunId); err != nil {
 		return nil, nil, err
 	}
 	resp, err := stream.Recv()
@@ -487,7 +497,7 @@ func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ReplService_
 	}
 
 	left := resp.GetOffset()
-	if left > sp.Offset {
+	if left > sp.Offset && !sp.IsInitial() {
 		if err = rf.channel.DelRunId(followerSp.RunId); err != nil {
 			return errors.Join(ErrRestart, err)
 		}

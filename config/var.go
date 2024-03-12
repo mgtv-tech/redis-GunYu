@@ -168,8 +168,8 @@ func (ft *FakeTime) Duration() time.Duration {
 type InputMode int
 
 const (
-	InputModeStatic  InputMode = 0
-	InputModeDynamic InputMode = 1
+	InputModeDynamic InputMode = 0
+	InputModeStatic  InputMode = 1
 	InputModeAuto    InputMode = 3
 )
 

@@ -17,6 +17,7 @@ import (
 )
 
 type RdbWriter struct {
+	id       string
 	mux      sync.RWMutex
 	reader   io.Reader
 	writer   *os.File
@@ -73,8 +74,9 @@ func ParseRdbFile(name string, includeTmpRdb bool) *RdbFile {
 }
 
 // rdb name : sourceDir/$runId/$rdbDir/$offset_size.rdb
-func NewRdbWriter(r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
+func NewRdbWriter(id int, r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
 	s := &RdbWriter{
+		id:      strconv.Itoa(id),
 		rdbSize: rdbSize,
 		reader:  r,
 		dir:     rdbDir,
@@ -146,6 +148,7 @@ func (s *RdbWriter) ingest() (err error) {
 		}
 		s.pumped.Store(s.rdbSize - rdbSize)
 	}
+
 	return err
 }
 
@@ -154,10 +157,11 @@ func (s *RdbWriter) Offset() int64 {
 }
 
 var (
-	rdbWriteDataCounter = metric.NewCounter(metric.CounterOpts{
+	rdbWriteDataCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "rdb",
 		Name:      "write",
+		Labels:    []string{"id"},
 	})
 )
 
@@ -172,7 +176,7 @@ func (s *RdbWriter) write(buf []byte) error {
 	n, err := s.writer.Write(buf)
 	if n > 0 {
 		s.offset += int64(n)
-		rdbWriteDataCounter.Add(float64(n))
+		rdbWriteDataCounter.Add(float64(n), s.id)
 	}
 
 	if err != nil {

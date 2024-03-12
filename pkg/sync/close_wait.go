@@ -140,10 +140,10 @@ func (w *waitCloser) Error() (err error) {
 func (w *waitCloser) Close(err error) bool {
 	if w.closed.CompareAndSwap(false, true) {
 		w.err = err
-		w.cancel()
 		if w.stopFun != nil {
 			w.stopFun(err)
 		}
+		w.cancel()
 		return true
 	}
 

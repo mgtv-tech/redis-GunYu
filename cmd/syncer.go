@@ -477,7 +477,9 @@ func (sc *SyncerCmd) run() error {
 
 	runWait.WgWait()
 
-	cli.Close()
+	if cli != nil {
+		cli.Close()
+	}
 
 	return runWait.Error()
 }
@@ -1097,9 +1099,9 @@ func (sc *SyncerCmd) startHttpServer() {
 		for key, val := range sc.syncers {
 			st := syncerStatus{
 				Input:       key,
-				Role:        "follower",
+				Role:        val.sync.Role().String(),
 				Transaction: val.sync.TransactionMode(),
-				State:       val.sync.State(),
+				State:       val.sync.State().String(),
 			}
 			if val.sync.IsLeader() {
 				st.Role = "leader"
@@ -1176,9 +1178,7 @@ func (sc *SyncerCmd) startHttpServer() {
 }
 
 func (sc *SyncerCmd) allSyncers(ctx context.Context) ([]string, error) {
-	sc.mutex.Lock()
 	ips, err := sc.clusterCli.Discovery(sc.getRunWait().Context(), sc.registerKey)
-	sc.mutex.Unlock()
 	return ips, err
 }
 
@@ -1490,20 +1490,9 @@ func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
 		return group.Wait()
 	}
 
-	takeoverForce := func() error {
-		for {
-			err := takeover()
-			if err == nil {
-				return nil
-			}
-			sc.logger.Errorf("takeover error : %v", err)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-		}
-	}
-
-	err := takeoverForce()
+	err := util.RetryLinearJitter(ctx, func() error {
+		return takeover()
+	}, 10, time.Second, 0.3)
 	if err != nil {
 		return err
 	}
@@ -1516,7 +1505,9 @@ func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
 			sleepC++
 			if sleepC > 5 {
 				sleepC = 0
-				err = takeoverForce()
+				err = util.RetryLinearJitter(ctx, func() error {
+					return takeover()
+				}, 3, time.Second, 0.3)
 				if err != nil {
 					return err
 				}

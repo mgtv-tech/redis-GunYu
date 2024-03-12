@@ -9,6 +9,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,9 @@ type RedisOutput struct {
 	logger          log.Logger
 	filterCounterRt atomic.Int64
 	sendCounterRt   atomic.Int64
+
+	cpGuard         sync.RWMutex
+	checkpointInMem checkpoint.CheckpointInfo
 }
 
 var (
@@ -356,6 +360,14 @@ func (ro *RedisOutput) setCheckpoint(ctx context.Context, runId string, offset i
 		Offset:  offset,
 		Version: version,
 	}
+
+	if !ro.cfg.EnableResumeFromBreakPoint {
+		ro.cpGuard.Lock()
+		ro.checkpointInMem = *checkpointKv
+		ro.cpGuard.Unlock()
+		return nil
+	}
+
 	err := util.RetryLinearJitter(ctx, func() error {
 		cli, err := ro.NewRedisConn(ctx)
 		if err != nil {
@@ -572,10 +584,14 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 	return nil
 }
 
-func (ro *RedisOutput) StartPoint(ctx context.Context, runIds []string) (StartPoint, error) {
+func (ro *RedisOutput) StartPoint(ctx context.Context, runIds []string) (sp StartPoint, err error) {
 	cpi, dbid, err := ro.checkpoint(ctx, runIds)
 	if err != nil {
-		return StartPoint{}, err
+		return sp, err
+	}
+	if cpi == nil {
+		sp.Initialize()
+		return sp, nil
 	}
 	ro.startDbId = dbid
 	return StartPoint{
@@ -587,7 +603,9 @@ func (ro *RedisOutput) StartPoint(ctx context.Context, runIds []string) (StartPo
 
 func (ro *RedisOutput) checkpoint(ctx context.Context, runIds []string) (cpi *checkpoint.CheckpointInfo, dbid int, err error) {
 	if !ro.cfg.EnableResumeFromBreakPoint {
-		return
+		ro.cpGuard.RLock()
+		defer ro.cpGuard.RUnlock()
+		return &ro.checkpointInMem, 0, nil
 	}
 
 	cli, err := ro.NewRedisConn(ctx)
@@ -972,14 +990,20 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		}
 
 		if shouldUpdateCP {
-			if len(cmdQueue) > 0 {
-				lastCmd := cmdQueue[len(cmdQueue)-1]
-				if _, ok := cpInDbs[lastCmd.Db]; !ok {
-					cpInDbs[lastCmd.Db] = struct{}{}
-					batcher.Put("hset", checkpointKv.Key, checkpointKv.RunIdKey(), runId, checkpointKv.VersionKey(), config.Version)
+			if ro.cfg.EnableResumeFromBreakPoint {
+				if len(cmdQueue) > 0 {
+					lastCmd := cmdQueue[len(cmdQueue)-1]
+					if _, ok := cpInDbs[lastCmd.Db]; !ok {
+						cpInDbs[lastCmd.Db] = struct{}{}
+						batcher.Put("hset", checkpointKv.Key, checkpointKv.RunIdKey(), runId, checkpointKv.VersionKey(), config.Version)
+					}
 				}
+				batcher.Put("hset", checkpointKv.Key, checkpointKv.OffsetKey(), lastOffset)
+			} else {
+				ro.cpGuard.Lock()
+				ro.checkpointInMem.Offset = lastOffset
+				ro.cpGuard.Unlock()
 			}
-			batcher.Put("hset", checkpointKv.Key, checkpointKv.OffsetKey(), lastOffset)
 		}
 
 		if shouldInTransaction {

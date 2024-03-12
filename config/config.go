@@ -158,7 +158,7 @@ type InputConfig struct {
 	Redis              *RedisConfig
 	RdbParallel        int `yaml:"rdbParallel"`
 	rdbParallelLimiter chan struct{}
-	Mode               InputMode
+	Mode               InputMode       `yaml:"mode"`
 	SyncFrom           SelNodeStrategy `yaml:"syncFrom"`
 	SyncDelayTestKey   string          `yaml:"syncDelayTestKey"`
 }
@@ -281,7 +281,8 @@ func (of *OutputConfig) fix() error {
 		of.TargetDb = *of.TargetDbCfg
 	}
 	if of.ResumeFromBreakPoint == nil {
-		*of.ResumeFromBreakPoint = true
+		resume := true
+		of.ResumeFromBreakPoint = &resume
 		of.TargetDb = -1
 	}
 	if of.ReplayRdbEnableRestore == nil {
