@@ -16,11 +16,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	pb "github.com/ikenchina/redis-GunYu/pkg/api/golang"
 	"github.com/ikenchina/redis-GunYu/pkg/cluster"
 	"github.com/ikenchina/redis-GunYu/pkg/io/pipe"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/metric"
-	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 )
 
@@ -69,7 +69,7 @@ func (rl *ReplicaLeader) Stop() {
 	rl.start.Store(false)
 }
 
-func (rl *ReplicaLeader) handleError(stream pb.ReplService_SyncServer, err error, code pb.SyncResponse_Code, msg string, runId string) error {
+func (rl *ReplicaLeader) handleError(stream pb.ApiService_SyncServer, err error, code pb.SyncResponse_Code, msg string, runId string) error {
 	if err != nil {
 		if code >= pb.SyncResponse_ERROR {
 			rl.logger.Errorf("%s", err.Error())
@@ -83,7 +83,7 @@ func (rl *ReplicaLeader) handleError(stream pb.ReplService_SyncServer, err error
 	return err
 }
 
-func (rl *ReplicaLeader) selfInspection(stream pb.ReplService_SyncServer) error {
+func (rl *ReplicaLeader) selfInspection(stream pb.ApiService_SyncServer) error {
 	if !rl.start.Load() {
 		return fmt.Errorf("replica is not running")
 	}
@@ -106,7 +106,7 @@ func (rl *ReplicaLeader) selfInspection(stream pb.ReplService_SyncServer) error 
 	return nil
 }
 
-func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ReplService_SyncServer) error {
+func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ApiService_SyncServer) error {
 	err := rl.selfInspection(stream)
 	if err != nil {
 		return err
@@ -155,7 +155,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 	return rl.sendData(wait, req, stream, StartPoint{RunId: followerRunId, Offset: followerOffset}, sp)
 }
 
-func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ReplService_SyncServer, reqSp StartPoint, channelSp StartPoint) error {
+func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint) error {
 
 	// the offset of follower is invalid
 	if !rl.channel.IsValidOffset(Offset{RunId: reqSp.RunId, Offset: reqSp.Offset}) {
@@ -260,11 +260,11 @@ func (rf *ReplicaFollower) Run() error {
 	rf.conn = conn
 	rf.mux.Unlock()
 
-	cli := pb.NewReplServiceClient(conn)
+	cli := pb.NewApiServiceClient(conn)
 
 	state := 1
 	var leaderSp, followerSp StartPoint
-	var stream pb.ReplService_SyncClient
+	var stream pb.ApiService_SyncClient
 	var resp *pb.SyncResponse
 	rf.wait.WgAdd(1)
 	defer rf.wait.WgDone()
@@ -353,9 +353,9 @@ func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse, args ...
 	return err
 }
 
-func (rf *ReplicaFollower) protoHandShake(cli pb.ReplServiceClient) (sp StartPoint, err error) {
+func (rf *ReplicaFollower) protoHandShake(cli pb.ApiServiceClient) (sp StartPoint, err error) {
 	// 1. get run id and offset
-	var stream pb.ReplService_SyncClient
+	var stream pb.ApiService_SyncClient
 	stream, err = cli.Sync(rf.wait.Context(), &pb.SyncRequest{
 		Node: &pb.Node{
 			Address: rf.inputAddress,
@@ -414,7 +414,7 @@ func (rf *ReplicaFollower) preSync(leaderSp StartPoint) (sp StartPoint, err erro
 	return
 }
 
-func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ReplServiceClient) (pb.ReplService_SyncClient, *pb.SyncResponse, error) {
+func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ApiServiceClient) (pb.ApiService_SyncClient, *pb.SyncResponse, error) {
 	stream, err := cli.Sync(rf.wait.Context(), &pb.SyncRequest{
 		Node:   &pb.Node{RunId: sp.RunId, Address: rf.inputAddress},
 		Offset: sp.Offset,
@@ -429,7 +429,7 @@ func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ReplServiceClient) (pb
 	return stream, resp, nil
 }
 
-func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ReplService_SyncClient, resp *pb.SyncResponse) error {
+func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ApiService_SyncClient, resp *pb.SyncResponse) error {
 	isAof := resp.GetMeta().GetAof()
 	if isAof {
 		return nil
@@ -490,7 +490,7 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ReplService_
 	return rdbWait.Error()
 }
 
-func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ReplService_SyncClient, resp *pb.SyncResponse) error {
+func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ApiService_SyncClient, resp *pb.SyncResponse) error {
 	sp, err := rf.channel.StartPoint([]string{followerSp.RunId})
 	if err != nil {
 		return errors.Join(ErrRestart, fmt.Errorf("channel.StartPoint error : startPoint(%v), error(%v)", followerSp, err))

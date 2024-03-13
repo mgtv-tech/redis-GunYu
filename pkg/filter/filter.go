@@ -1,7 +1,7 @@
 package filter
 
 import (
-	"strconv"
+	"slices"
 	"strings"
 
 	"github.com/ikenchina/redis-GunYu/config"
@@ -44,28 +44,16 @@ func FilterCommandNoRoute(cmd string) bool {
 }
 
 // filter out
-func FilterCommands(cmd string) bool {
-	if len(config.Get().Filter.CommandWhitelist) != 0 {
-		return matchOne(cmd, config.Get().Filter.CommandWhitelist)
-	}
-
-	if len(config.Get().Filter.CommandBlacklist) != 0 {
-		if matchOne(cmd, config.Get().Filter.CommandBlacklist) {
+func FilterCmd(cmd string) bool {
+	if len(config.Get().Filter.CmdBlacklist) != 0 {
+		if slices.Contains(config.Get().Filter.CmdBlacklist, cmd) {
 			return true
 		}
 	}
-
-	// besides the blacklist, do the other filterings.
-
-	if config.Get().Filter.Lua && (strings.EqualFold(cmd, "eval") || strings.EqualFold(cmd, "script") ||
-		strings.EqualFold(cmd, "evalsha")) {
-		return true
-	}
-
 	return false
 }
 
-// return true means filter out
+// filter out
 func FilterKey(key string) bool {
 	if _, ok := innerFilterKeys[key]; ok {
 		return true
@@ -74,80 +62,91 @@ func FilterKey(key string) bool {
 		return true
 	}
 
-	if len(config.Get().Filter.KeyBlacklist) != 0 {
-		return hasAtLeastOnePrefix(key, config.Get().Filter.KeyBlacklist)
-	} else if len(config.Get().Filter.KeyWhitelist) != 0 {
-		return !hasAtLeastOnePrefix(key, config.Get().Filter.KeyWhitelist)
+	keyFilter := config.Get().Filter.KeyFilter
+	if keyFilter != nil {
+		if len(keyFilter.PrefixKeyBlacklist) > 0 && prefixMatch(key, keyFilter.PrefixKeyBlacklist) {
+			return true
+		}
+		if len(keyFilter.PrefixKeyWhitelist) > 0 && !prefixMatch(key, keyFilter.PrefixKeyWhitelist) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func prefixMatch(key string, list []string) bool {
+	for _, ee := range list {
+		if strings.HasPrefix(key, ee) {
+			return true
+		}
 	}
 	return false
 }
 
-// return true means not pass
-func Slot(slot int) bool {
-	if len(config.Get().Filter.Slot) == 0 {
-		return false
-	}
-
-	// the slot in Slot need to be passed
-	for _, ele := range config.Get().Filter.Slot {
-		slotInt, _ := strconv.Atoi(ele)
-		if slot == slotInt {
-			return false
-		}
-	}
-	return true
-}
-
-// return true means filter out
+// filter out
 func FilterDB(db int) bool {
 	if db == -1 {
 		return false
 	}
-	dbString := strconv.FormatInt(int64(db), 10)
 	if len(config.Get().Filter.DbBlacklist) != 0 {
-		return matchOne(dbString, config.Get().Filter.DbBlacklist)
-	} else if len(config.Get().Filter.DbWhitelist) != 0 {
-		return !matchOne(dbString, config.Get().Filter.DbWhitelist)
+		return slices.Contains(config.Get().Filter.DbBlacklist, db)
 	}
 	return false
 }
 
-/*
- * judge whether the input command with key should be filter,
- * @return:
- *     [][]byte: the new argv which may be modified after filter.
- *     bool: true means pass
- */
-func HandleFilterKeyWithCommand(scmd string, commandArgv [][]byte) ([][]byte, bool) {
-	if len(config.Get().Filter.KeyWhitelist) == 0 && len(config.Get().Filter.KeyBlacklist) == 0 {
-		return commandArgv, false
+func FilterCmdKeys(cmd string, args [][]byte) ([][]byte, bool) {
+
+	keyFilter := config.Get().Filter.KeyFilter
+	if keyFilter == nil {
+		return args, false
 	}
 
-	cmdNode, ok := RedisCommands[scmd]
-	if !ok || len(commandArgv) == 0 {
-		// pass when command not found or length of argv == 0
-		return commandArgv, false
+	cmdPos, ok := commandKeyPositions[cmd]
+	if !ok || len(args) == 0 {
+		return args, false
 	}
 
-	newArgs, pass := getMatchKeys(cmdNode, commandArgv)
+	lastkey := cmdPos.last - 1
+	keystep := cmdPos.step
+
+	if lastkey < 0 {
+		lastkey = lastkey + len(args)
+	}
+
+	array := make([]int, len(args))
+	number := 0
+	foutKey := false
+	for firstkey := cmdPos.first - 1; firstkey <= lastkey; firstkey += keystep {
+		key := string(args[firstkey])
+		if !FilterKey(key) {
+			array[number] = firstkey
+			number++
+		} else {
+			foutKey = true
+		}
+	}
+	if !foutKey {
+		return args, false
+	}
+	if number == 0 {
+		return args, true
+	}
+
+	pass := false
+	newArgs := make([][]byte, number*cmdPos.step+len(args)-lastkey-cmdPos.step)
+	pass = true
+	for i := 0; i < number; i++ {
+		for j := 0; j < cmdPos.step; j++ {
+			newArgs[i*cmdPos.step+j] = args[array[i]+j]
+		}
+	}
+
+	j := 0
+	for i := lastkey + cmdPos.step; i < len(args); i++ {
+		newArgs[number*cmdPos.step+j] = args[i]
+		j = j + 1
+	}
+
 	return newArgs, !pass
-}
-
-// hasAtLeastOnePrefix checks whether the key begins with at least one of prefixes.
-func hasAtLeastOnePrefix(key string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchOne(input string, list []string) bool {
-	for _, ele := range list {
-		if ele == input {
-			return true
-		}
-	}
-	return false
 }

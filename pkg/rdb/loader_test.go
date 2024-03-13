@@ -44,6 +44,10 @@ func TestFlagsSuite(t *testing.T) {
 	suite.Run(t, new(flagTestSuite))
 }
 
+func TestFunctionSuite(t *testing.T) {
+	suite.Run(t, new(functionTestSuite))
+}
+
 type baseSuite struct {
 	suite.Suite
 	rdbDumpData  string
@@ -133,7 +137,7 @@ func (bs *baseSuite) SetupSuite() {
 	}{
 		"4.0": {"127.0.0.1", 6400, "/home/ken/redis/redis4"},
 		"5.0": {"127.0.0.1", 6500, "/home/ken/redis/redis5"},
-		"7.2": {"127.0.0.1", 6720, "/home/ken/redis/redis72"},
+		"7.2": {"127.0.0.1", 6700, "/home/ken/redis/data4/r1"},
 	}
 
 	for k, v := range bs.redisCfg {
@@ -786,4 +790,30 @@ func (ts *flagTestSuite) TestSelectFlag() {
 	entry1 := entries[key1]
 	ts.Equal(1, entry1.DB)
 
+}
+
+type functionTestSuite struct {
+	baseSuite
+}
+
+func (ts *functionTestSuite) TestRdb11() {
+	//redis7.2(rdb 11) :
+	// if (sdslen(field)>64 || sdslen(value) > 64), RdbTypeHash; else RdbTypeHashListpack
+	ts.redisVersion = "7.2"
+
+	// if len(ts.redisClis) > 0 {
+	// 	for ver := range ts.redisClis {
+	// 		ts.redisVersion = ver
+	// 		res := ts.cli().FunctionLoad(context.Background(), "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)")
+	// 		ts.Nil(res.Err())
+	// 		ts.cli().Save(context.Background())
+	// 		ts.rdbDumpData = ts.fileRdbToHex()
+	// 	}
+	// } else {
+	ts.rdbDumpData = "524544495330303130fa0972656469732d76657206372e302e3132fa0a72656469732d62697473c040fa056374696d65c2d32ff065fa08757365642d6d656dc2d8182300fa0e7265706c2d73747265616d2d6462c000fa077265706c2d69642862613961656237363133306561613833623731323466333731386362373837663232323937643362fa0b7265706c2d6f6666736574c17878fa08616f662d62617365c000f5c3405a405f1f23216c7561206e616d653d6d796c696232200a2072656469732e7265676973740e65725f66756e6374696f6e28276d79400b0332272c20400760130a6b6579732c2061726773292037037475726e600c075b315d20656e6429f5c34058405d1f23216c7561206e616d653d6d796c6962200a2072656469732e726567697374650d725f66756e6374696f6e28276d79400b02272c20400660120a6b6579732c2061726773292036037475726e600c075b315d20656e6429ff9194e57b14a192e8"
+	//}
+	entries := ts.decodeHexRdb(ts.rdbDumpData, 1)
+	for k, v := range entries {
+		fmt.Println(k, v)
+	}
 }

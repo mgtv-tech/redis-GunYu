@@ -1,8 +1,6 @@
-id: 2
 server:
-  http:
-    listen: 127.0.0.1:19000
-    listenPeer: 127.0.0.1:19000
+  listen: 127.0.0.1:19000
+  listenPeer: 127.0.0.1:19000
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 10s
 input:
@@ -41,6 +39,3 @@ cluster:
   metaEtcd: 
     endpoints:
       - 127.0.0.1:2379
-  replica:
-    listen: 0.0.0.0:19002
-    listenPeer: 127.0.0.1:19002

@@ -1,10 +1,12 @@
 syntax = "proto3";
 
-package replica;
+
+
+package apiservice;
 
 option go_package = "./golang";
 
-service ReplService {
+service ApiService {
     rpc Sync (SyncRequest) returns (stream SyncResponse) {}
 }
 

@@ -3,12 +3,12 @@ package syncer
 import (
 	"errors"
 
-	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
+	pb "github.com/ikenchina/redis-GunYu/pkg/api/golang"
 )
 
 var ErrReplicaNoRunning = errors.New("replica leader is not running")
 
-func (s *syncer) ServiceReplica(req *pb.SyncRequest, stream pb.ReplService_SyncServer) error {
+func (s *syncer) ServiceReplica(req *pb.SyncRequest, stream pb.ApiService_SyncServer) error {
 	s.guard.RLock()
 	leader := s.leader
 	wait := s.wait

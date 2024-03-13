@@ -286,21 +286,6 @@ func (ec *EtcdConfig) fix() error {
 	return nil
 }
 
-type ReplicaConfig struct {
-	Listen     string
-	ListenPeer string `yaml:"listenPeer"` // Used to communicate with peers. if it's empty, use Listen field
-}
-
-func (rc *ReplicaConfig) fix() error {
-	if rc.Listen == "" {
-		rc.Listen = "127.0.0.1:18002"
-	}
-	if rc.ListenPeer == "" {
-		rc.ListenPeer = rc.Listen
-	}
-	return nil
-}
-
 func newConfigError(format string, args ...interface{}) error {
 	return errors.Join(ErrInvalidConfig, fmt.Errorf(format, args...))
 }

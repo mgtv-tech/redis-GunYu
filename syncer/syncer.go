@@ -10,12 +10,12 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/ikenchina/redis-GunYu/config"
+	pb "github.com/ikenchina/redis-GunYu/pkg/api/golang"
 	"github.com/ikenchina/redis-GunYu/pkg/cluster"
 	"github.com/ikenchina/redis-GunYu/pkg/log"
 	"github.com/ikenchina/redis-GunYu/pkg/redis"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	pb "github.com/ikenchina/redis-GunYu/pkg/replica/golang"
 	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
 	"github.com/ikenchina/redis-GunYu/pkg/util"
 )
@@ -61,7 +61,7 @@ type Syncer interface {
 	RunLeader() error
 	RunFollower(leader *cluster.RoleInfo) error
 	Stop()
-	ServiceReplica(req *pb.SyncRequest, stream pb.ReplService_SyncServer) error
+	ServiceReplica(req *pb.SyncRequest, stream pb.ApiService_SyncServer) error
 	RunIds() []string
 	IsLeader() bool
 	Pause()

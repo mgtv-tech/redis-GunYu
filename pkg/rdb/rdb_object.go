@@ -976,6 +976,8 @@ func (sp *StreamParser) ExecCmd(cb RdbObjExecutor) {
 // module
 type ModuleParser struct {
 	BaseParser
+	id   uint64
+	name string
 }
 
 func (mp *ModuleParser) ReadBuffer(lr *Loader) {
@@ -993,6 +995,8 @@ func (mp *ModuleParser) ReadBuffer(lr *Loader) {
 
 	moduleName := moduleTypeNameByID(moduleId)
 
+	mp.id = moduleId
+	mp.name = moduleName
 	//
 	// parse modules
 	log.Errorf("module parser error : %s", moduleName)
@@ -1000,7 +1004,7 @@ func (mp *ModuleParser) ReadBuffer(lr *Loader) {
 }
 
 func (mp *ModuleParser) ExecCmd(cb RdbObjExecutor) {
-	panicIfErr(errors.New("unimplemented"))
+	log.Warnf("unsupported module : id(%d), name(%s)", mp.id, mp.name)
 }
 
 // function
@@ -1009,7 +1013,10 @@ type FunctionParser struct {
 }
 
 func (fp *FunctionParser) ReadBuffer(lr *Loader) {
-	fp.readBufferBegin(lr)
+	fp.totalEntries = lr.totalEntries
+	fp.readEntries = lr.readEntries
+	fp.historyEntries = lr.readEntries
+
 	r := NewRdbReader(io.TeeReader(lr, &fp.buf))
 
 	r.ReadStringP()
@@ -1018,12 +1025,13 @@ func (fp *FunctionParser) ReadBuffer(lr *Loader) {
 
 func (fp *FunctionParser) ExecCmd(cb RdbObjExecutor) {
 	val := fp.CreateValueDump()
+
 	if config.Get().Output.FunctionExists == "flush" {
 		panicIfErr(cb("FUNCTION", "RESTORE", val, "FLUSH"))
-	} else if config.Get().Output.FunctionExists == "replace" {
-		panicIfErr(cb("FUNCTION", "RESTORE", val, "REPLACE"))
+	} else if config.Get().Output.FunctionExists == "append" {
+		panicIfErr(cb("FUNCTION", "RESTORE", val))
 	} else {
-		panicIfErr(cb("FUNCTION", "RESTORE", val)) // defualt : append
+		panicIfErr(cb("FUNCTION", "RESTORE", val, "REPLACE"))
 	}
 }
 

@@ -551,7 +551,7 @@ func (ri *RedisInput) newRedisConn(ctx context.Context) (cli *redis.StandaloneRe
 func (ri *RedisInput) pSync(cli *redis.StandaloneRedis, offset Offset) (
 	off Offset, fullSync bool, rdbSize int64, err error) {
 
-	err = cli.SendPSyncListeningPort(config.Get().Server.Http.ListenPort)
+	err = cli.SendPSyncListeningPort(config.Get().Server.ListenPort)
 	if err != nil {
 		ri.logger.Errorf("psync error : offset(%v), err(%v)", offset, err)
 		return

@@ -68,8 +68,7 @@ func (c *Config) fix() error {
 
 	if c.Output.Redis.Type == RedisTypeCluster {
 		if c.Output.TargetDb == -1 || c.Output.TargetDb == 0 {
-			c.Filter.DbWhitelist = append(c.Filter.DbWhitelist, "0")
-			c.Filter.DbBlacklist = []string{}
+			c.Filter.DbBlacklist = []int{}
 		} else {
 			return newConfigError("redis is cluster, but targetdb is not 0")
 		}
@@ -94,7 +93,11 @@ func (c *Config) fix() error {
 }
 
 type ServerConfig struct {
-	Http                     *HttpServer
+	Listen          string
+	ListenPort      int    `yaml:"-"`
+	ListenPeer      string `yaml:"listenPeer"` // Used to communicate with peers. if it's empty, use Listen field
+	MetricRoutePath string `yaml:"metricRoutePath"`
+
 	CheckRedisTypologyTicker time.Duration `yaml:"checkRedisTypologyTicker"` // seconds
 	GracefullStopTimeout     time.Duration `yaml:"gracefullStopTimeout"`
 }
@@ -110,31 +113,14 @@ func (sc *ServerConfig) fix() error {
 		sc.GracefullStopTimeout = 5 * time.Second
 	}
 
-	if sc.Http == nil {
-		sc.Http = &HttpServer{}
+	if sc.Listen == "" {
+		sc.Listen = "127.0.0.1:18001"
 	}
-	if err := sc.Http.fix(); err != nil {
-		return err
+	if sc.ListenPeer == "" {
+		sc.ListenPeer = sc.Listen
 	}
 
-	return nil
-}
-
-type HttpServer struct {
-	Listen          string
-	ListenPort      int    `yaml:"-"`
-	ListenPeer      string `yaml:"listenPeer"` // Used to communicate with peers. if it's empty, use Listen field
-	MetricRoutePath string `yaml:"metricRoutePath"`
-}
-
-func (hs *HttpServer) fix() error {
-	if hs.Listen == "" {
-		hs.Listen = "127.0.0.1:18001"
-	}
-	if hs.ListenPeer == "" {
-		hs.ListenPeer = hs.Listen
-	}
-	ls := strings.Split(hs.Listen, ":")
+	ls := strings.Split(sc.Listen, ":")
 	if len(ls) != 2 {
 		return newConfigError("invalid http.listen")
 	}
@@ -142,13 +128,14 @@ func (hs *HttpServer) fix() error {
 	if err != nil {
 		return newConfigError("invalid http.listen")
 	}
-	hs.ListenPort = port
+	sc.ListenPort = port
 
-	if hs.MetricRoutePath == "" {
-		hs.MetricRoutePath = "/prometheus"
-	} else if hs.MetricRoutePath[0] != '/' {
-		hs.MetricRoutePath = "/" + hs.MetricRoutePath
+	if sc.MetricRoutePath == "" {
+		sc.MetricRoutePath = "/prometheus"
+	} else if sc.MetricRoutePath[0] != '/' {
+		sc.MetricRoutePath = "/" + sc.MetricRoutePath
 	}
+
 	return nil
 }
 
@@ -332,14 +319,14 @@ func (of *OutputConfig) fix() error {
 }
 
 type FilterConfig struct {
-	DbWhitelist      []string `yaml:"dbWhitelist"`
-	DbBlacklist      []string `yaml:"dbBlacklist"`
-	KeyWhitelist     []string `yaml:"keyWhitelist"`
-	KeyBlacklist     []string `yaml:"keyBlacklist"`
-	Slot             []string `yaml:"slot"`
-	CommandWhitelist []string `yaml:"commandWhitelist"`
-	CommandBlacklist []string `yaml:"commandBlacklist"`
-	Lua              bool     `yaml:"lua"`
+	DbBlacklist  []int            `yaml:"dbBlacklist"`
+	CmdBlacklist []string         `yaml:"commandBlacklist"`
+	KeyFilter    *FilterKeyConfig `yaml:"keyFilter"`
+}
+
+type FilterKeyConfig struct {
+	PrefixKeyWhitelist []string `yaml:"prefixKeyWhitelist"`
+	PrefixKeyBlacklist []string `yaml:"prefixKeyBlacklist"`
 }
 
 type LogHandlerFileConfig struct {
@@ -859,7 +846,6 @@ type ClusterConfig struct {
 	MetaEtcd           *EtcdConfig   `yaml:"metaEtcd"`
 	LeaseTimeout       time.Duration `yaml:"leaseTimeout"`
 	LeaseRenewInterval time.Duration `yaml:"leaseRenewInterval"`
-	Replica            *ReplicaConfig
 }
 
 func (cc *ClusterConfig) fix() error {
@@ -896,13 +882,6 @@ func (cc *ClusterConfig) fix() error {
 	}
 
 	cc.MetaEtcd.Ttl = int(cc.LeaseTimeout / time.Second)
-
-	if cc.Replica == nil {
-		return newConfigError("cluster.replica is nil")
-	}
-	if err := cc.Replica.fix(); err != nil {
-		return err
-	}
 
 	return nil
 }

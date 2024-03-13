@@ -306,9 +306,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 					}
 				}
 
-				// filter key and slot
-				if filter.FilterKey(util.BytesToString(e.Key)) ||
-					filter.Slot(int(redis.KeyToSlot(util.BytesToString(e.Key)))) {
+				if filter.FilterKey(util.BytesToString(e.Key)) {
 					filterOut = true
 				}
 			}
@@ -515,7 +513,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 				bypass = filter.FilterDB(n) // filter following commands
 				selectDB = n
-			} else if filter.FilterCommands(sCmd) {
+			} else if filter.FilterCmd(sCmd) {
 				ignoreCmd = true
 			} else if strings.EqualFold(sCmd, "publish") && strings.EqualFold(string(argv[0]), "__sentinel__:hello") {
 				ignoresentinel = true
@@ -530,7 +528,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			}
 		}
 
-		newArgv, reject = filter.HandleFilterKeyWithCommand(sCmd, argv)
+		newArgv, reject = filter.FilterCmdKeys(sCmd, argv)
 		if bypass || reject {
 			ro.filterCounterAdd(1)
 			continue

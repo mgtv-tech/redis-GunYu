@@ -1,6 +1,4 @@
-server:
-  http:
-    listen: 127.0.0.1:28000
+
 input:
   redis:
     addresses: [127.0.0.1:16300,127.0.0.1:16310]
@@ -12,17 +10,13 @@ channel:
     logSize: 20971520
 output:
   resumeFromBreakPoint: false
+  keepaliveTicker: 600s
   redis:
     addresses: [127.0.0.1:6707]
     type: standalone
-log:
-  level: info
-  handler:
-    stdout: true
-    file:
-      fileName: /tmp/redisGunYuLog/clusterB
-      maxSize: 10
-      maxBackups: 2
-      maxAge: 2
-  withCaller: false
-  withFunc: false
+# log:
+#   level: info
+#   handler:
+#     stdout: true
+#   withCaller: false
+#   withFunc: false

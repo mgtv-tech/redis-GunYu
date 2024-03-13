@@ -1,8 +1,6 @@
-id: 2
 server:
-  http:
-    listen: 127.0.0.1:18000
-    listenPeer: 127.0.0.1:18000
+  listen: 127.0.0.1:18000
+  listenPeer: 127.0.0.1:18000
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 10s
 input:
@@ -13,7 +11,6 @@ input:
   mode: dynamic
   syncDelayTestKey: redis-GunYu-syncDelay-testKey
   syncFrom: prefer_slave
-  rdbParallel: 3
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster
@@ -42,6 +39,3 @@ cluster:
   metaEtcd: 
     endpoints:
       - 127.0.0.1:2379
-  replica:
-    listen: 0.0.0.0:18003
-    listenPeer: 127.0.0.1:18003

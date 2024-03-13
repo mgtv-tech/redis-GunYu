@@ -121,9 +121,6 @@ output配置如下：
   - password ： 密码
 - leaseTimeout ： leader租期时间，如果在leaseTimeout时间内，leader没有续租，则表示leader过期了，会重新发起选举；默认10秒，值范围为[3s, 600s]
 - leaseRenewInterval ： leader发起租期时间间隔，默认3.33秒，一般选为leaseTimeout的1/3，值范围为[1s, 200s]
-- replica ： 主从相关配置
-  - listen ： 监听的地址，如 "127.0.0.1:18082"
-  - listenPeer ： redisGunYu节点的通信地址，从库根据此地址和主库同步数据，默认和listen一样。如"172.27.83.13:18082"
 
 
 
@@ -147,10 +144,9 @@ output配置如下：
 ### 服务器
 
 服务器配置
-- http : http server相关配置
-  - listen : 监听地址，默认"127.0.0.1:18001"
-  - metricRoutePath : prometheus的http路径，默认是 "/prometheus"
-  - listenPeer: 和其他进程通信用途，IP:Port，默认和listen一样。
+- listen : 监听地址，默认"127.0.0.1:18001"
+- listenPeer: 和其他进程通信用途，IP:Port，默认和listen一样。注意不要写成127.0.0.1
+- metricRoutePath : prometheus的http路径，默认是 "/prometheus"
 - checkRedisTypologyTicker ： 检查redis cluster拓扑的时间周期，默认30秒，可以用1s, 1h，1ms等字符串
 - gracefullStopTimeout ： 优雅退出超时时间，默认5秒
 
@@ -177,9 +173,8 @@ output:
 ### 较完善配置
 ```
 server:
-  http:
-    listen: 0.0.0.0:18001 
-    listenPeer: 10.220.14.15:18001  
+  listen: 0.0.0.0:18001 
+  listenPeer: 10.220.14.15:18001  
 input:
   redis:
     addresses: [127.0.0.1:6300]
@@ -211,9 +206,6 @@ cluster:
   metaEtcd: 
     endpoints:
       - 127.0.0.1:2379
-  replica:
-    listen: 0.0.0.0:18002
-    listenPeer: 10.220.14.15:18002
 ```
 
 
