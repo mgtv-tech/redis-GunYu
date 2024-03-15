@@ -301,7 +301,7 @@ func (of *OutputConfig) fix() error {
 	if of.KeepaliveTicker <= time.Second {
 		of.KeepaliveTicker = time.Second * 3
 	}
-	if of.UpdateCheckpointTicker <= time.Millisecond || of.UpdateCheckpointTicker > 5*time.Second {
+	if of.UpdateCheckpointTicker <= time.Millisecond || of.UpdateCheckpointTicker > 10*time.Second {
 		of.UpdateCheckpointTicker = time.Second // 1 second
 	}
 
@@ -707,12 +707,14 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 	addr := rc.Addresses[i]
 	slots := rc.GetSlots(addr)
 	sre := RedisConfig{
-		Addresses: []string{rc.Addresses[i]},
-		UserName:  rc.UserName,
-		Password:  rc.Password,
-		TlsEnable: rc.TlsEnable,
-		Type:      rc.Type,
-		Otype:     rc.Type,
+		Addresses:   []string{rc.Addresses[i]},
+		UserName:    rc.UserName,
+		Password:    rc.Password,
+		TlsEnable:   rc.TlsEnable,
+		Type:        rc.Type,
+		Otype:       rc.Type,
+		Version:     rc.Version,
+		isMigrating: rc.isMigrating,
 	}
 	if slots != nil {
 		sre.slots = *slots
@@ -766,6 +768,7 @@ func (rc *RedisConfig) SelNodeByAddress(addr string) *RedisConfig {
 		Otype:          rc.Type,
 		ClusterOptions: rc.ClusterOptions.Clone(),
 		isMigrating:    rc.isMigrating,
+		Version:        rc.Version,
 	}
 	sre.SetClusterShards([]*RedisClusterShard{selShard})
 
@@ -834,6 +837,7 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 			Otype:          rc.Type,
 			ClusterOptions: rc.ClusterOptions.Clone(),
 			isMigrating:    rc.isMigrating,
+			Version:        rc.Version,
 		}
 		sre.SetClusterShards([]*RedisClusterShard{allShards[i]})
 		ret = append(ret, sre)

@@ -1,8 +1,26 @@
 # redis GunYu
 
+
+- [redis GunYu](#redis-gunyu)
+  - [简介](#简介)
+  - [特性](#特性)
+    - [数据实时同步](#数据实时同步)
+    - [其他](#其他)
+  - [快速开始](#快速开始)
+    - [安装](#安装)
+    - [使用](#使用)
+  - [文档](#文档)
+  - [贡献](#贡献)
+  - [许可](#许可)
+  - [联系](#联系)
+
+
+
 ## 简介
 
 `redis-GunYu`是一款redis数据治理工具，可以进行数据实时同步，数据迁移，备份、校验恢复，数据分析等等。
+
+
 
 
 ## 特性
@@ -78,7 +96,9 @@ make
 - [配置](docs/configuration_zh.md)
 - [部署](docs/deployment_zh.md)
 - [API](docs/API_zh.md)
+- [测试结果](docs/test_zh.md)
 - [注意事项](docs/attentions_zh.md)
+
 
 
 
@@ -88,7 +108,7 @@ make
 
 请按照以下步骤来提交PR：
 - 克隆仓库
-- 创建一个新分支：如果是新功能分支，则命名为feature-xxx；如果是修复bug，则命名为bugfix-xxx
+- 创建一个新分支：如果是新功能分支，则命名为feature-xxx；如果是修复bug，则命名为bug-xxx
 - 在PR中详细描述更改的内容
 
 

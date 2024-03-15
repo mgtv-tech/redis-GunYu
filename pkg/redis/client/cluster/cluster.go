@@ -267,7 +267,7 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 			}
 		}
 	case "MULTI":
-		cluster.transactionEnable = true
+		cluster.transactionEnable = true // @TODO move to node
 	case "EXEC":
 		cluster.transactionEnable = false
 		cluster.transactionNode = nil

@@ -77,6 +77,13 @@ type BinEntry struct {
 	Done         bool
 }
 
+func (be *BinEntry) CanRestore() bool {
+	if be.ObjectParser != nil {
+		return be.ObjectParser.CanRestore()
+	}
+	return true
+}
+
 func (be *BinEntry) FirstBin() bool {
 	if be.ObjectParser != nil {
 		return be.ObjectParser.FirstBin()

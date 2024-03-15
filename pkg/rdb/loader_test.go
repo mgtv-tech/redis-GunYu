@@ -3,6 +3,7 @@ package rdb
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ikenchina/redis-GunYu/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
@@ -797,23 +799,23 @@ type functionTestSuite struct {
 }
 
 func (ts *functionTestSuite) TestRdb11() {
+	config.Get().Output = &config.OutputConfig{}
 	//redis7.2(rdb 11) :
 	// if (sdslen(field)>64 || sdslen(value) > 64), RdbTypeHash; else RdbTypeHashListpack
 	ts.redisVersion = "7.2"
-
-	// if len(ts.redisClis) > 0 {
-	// 	for ver := range ts.redisClis {
-	// 		ts.redisVersion = ver
-	// 		res := ts.cli().FunctionLoad(context.Background(), "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)")
-	// 		ts.Nil(res.Err())
-	// 		ts.cli().Save(context.Background())
-	// 		ts.rdbDumpData = ts.fileRdbToHex()
-	// 	}
-	// } else {
-	ts.rdbDumpData = "524544495330303130fa0972656469732d76657206372e302e3132fa0a72656469732d62697473c040fa056374696d65c2d32ff065fa08757365642d6d656dc2d8182300fa0e7265706c2d73747265616d2d6462c000fa077265706c2d69642862613961656237363133306561613833623731323466333731386362373837663232323937643362fa0b7265706c2d6f6666736574c17878fa08616f662d62617365c000f5c3405a405f1f23216c7561206e616d653d6d796c696232200a2072656469732e7265676973740e65725f66756e6374696f6e28276d79400b0332272c20400760130a6b6579732c2061726773292037037475726e600c075b315d20656e6429f5c34058405d1f23216c7561206e616d653d6d796c6962200a2072656469732e726567697374650d725f66756e6374696f6e28276d79400b02272c20400660120a6b6579732c2061726773292036037475726e600c075b315d20656e6429ff9194e57b14a192e8"
-	//}
+	expectedMD5 := string("cbdcfcdecce621f25d5d3f4489193633")
+	ts.rdbDumpData = "524544495330303130fa0972656469732d76657206372e302e3132fa0a72656469732d62697473c040fa056374696d65c2a25af165fa08757365642d6d656dc2c0512d00fa0e7265706c2d73747265616d2d6462c000fa077265706c2d69642836323931316233356438366532613034643265323838366237623337343632323166363832626134fa0b7265706c2d6f6666736574c253e56d18fa08616f662d62617365c000f5c34058405d1f23216c7561206e616d653d6d796c6962200a2072656469732e726567697374650d725f66756e6374696f6e28276d79400b02272c20400660120a6b6579732c2061726773292036037475726e600c075b315d20656e6429ff39752e3719063960"
 	entries := ts.decodeHexRdb(ts.rdbDumpData, 1)
-	for k, v := range entries {
-		fmt.Println(k, v)
+	for _, v := range entries {
+		if v.ObjectParser.RdbType() == RdbTypeFunction2 {
+			v.ObjectParser.ExecCmd(func(cmd string, args ...interface{}) error {
+				odata := args[1].([]byte)
+
+				value := md5.Sum(odata[:len(odata)-10])
+				md5 := hex.EncodeToString(value[:])
+				ts.Equal(expectedMD5, md5)
+				return nil
+			})
+		}
 	}
 }

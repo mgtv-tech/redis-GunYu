@@ -44,6 +44,7 @@ type Parser interface {
 	FirstBin() bool
 	IsSplited() bool
 	DB() uint32
+	CanRestore() bool
 }
 
 func NewParser(t byte, targetRedisVersion string, rdbVersion int64) (Parser, error) {
@@ -137,6 +138,7 @@ type BaseParser struct {
 	totalEntries       uint32
 	readEntries        uint32
 	historyEntries     uint32
+	forceExecCmd       bool
 }
 
 func (bp *BaseParser) Type() int {
@@ -164,6 +166,10 @@ func (bp *BaseParser) IsSplited() bool {
 		return true
 	}
 	return bp.totalEntries-bp.readEntries > 0
+}
+
+func (bp *BaseParser) CanRestore() bool {
+	return !bp.forceExecCmd
 }
 
 func (bp *BaseParser) DB() uint32 {
@@ -1016,6 +1022,7 @@ func (fp *FunctionParser) ReadBuffer(lr *Loader) {
 	fp.totalEntries = lr.totalEntries
 	fp.readEntries = lr.readEntries
 	fp.historyEntries = lr.readEntries
+	fp.forceExecCmd = true
 
 	r := NewRdbReader(io.TeeReader(lr, &fp.buf))
 
@@ -1024,14 +1031,18 @@ func (fp *FunctionParser) ReadBuffer(lr *Loader) {
 }
 
 func (fp *FunctionParser) ExecCmd(cb RdbObjExecutor) {
-	val := fp.CreateValueDump()
+	if util.VersionGE(fp.targetRedisVersion, "7", util.VersionMajor) {
+		val := fp.CreateValueDump()
 
-	if config.Get().Output.FunctionExists == "flush" {
-		panicIfErr(cb("FUNCTION", "RESTORE", val, "FLUSH"))
-	} else if config.Get().Output.FunctionExists == "append" {
-		panicIfErr(cb("FUNCTION", "RESTORE", val))
+		if config.Get().Output.FunctionExists == "flush" {
+			panicIfErr(cb("FUNCTION", "RESTORE", val, "FLUSH"))
+		} else if config.Get().Output.FunctionExists == "append" {
+			panicIfErr(cb("FUNCTION", "RESTORE", val))
+		} else {
+			panicIfErr(cb("FUNCTION", "RESTORE", val, "REPLACE"))
+		}
 	} else {
-		panicIfErr(cb("FUNCTION", "RESTORE", val, "REPLACE"))
+		log.Warnf("redis(%s) does not support function command", fp.targetRedisVersion)
 	}
 }
 

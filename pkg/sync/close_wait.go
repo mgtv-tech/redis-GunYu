@@ -139,7 +139,9 @@ func (w *waitCloser) Error() (err error) {
 
 func (w *waitCloser) Close(err error) bool {
 	if w.closed.CompareAndSwap(false, true) {
+		w.Lock()
 		w.err = err
+		w.Unlock()
 		if w.stopFun != nil {
 			w.stopFun(err)
 		}

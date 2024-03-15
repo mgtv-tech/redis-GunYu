@@ -125,7 +125,7 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 	}
 
 	for i := range bat.batches {
-		go doBatch(&bat.batches[i])
+		go bat.doBatch(&bat.batches[i])
 	}
 
 	for i := range bat.batches {
@@ -150,7 +150,7 @@ func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
 	return bat.Exec()
 }
 
-func doBatch(batch *nodeBatch) {
+func (bat *Batch) doBatch(batch *nodeBatch) {
 	conn, err := batch.node.getConn()
 	if err != nil {
 		batch.err = err
@@ -180,7 +180,9 @@ func doBatch(batch *nodeBatch) {
 			batch.done <- 1
 			return
 		}
-		reply, err = common.HandleReply(reply)
+		reply, err = bat.cluster.handleReply(batch.node, reply, batch.cmds[i].cmd, batch.cmds[i].args...)
+		// @TODO
+		// 这个cmd没有执行成功，那么后面的可能已经成功了。如果直接断开，则会造成上层以为都失败了。
 		if err != nil {
 			batch.err = err
 			conn.shutdown()

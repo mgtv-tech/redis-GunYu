@@ -243,7 +243,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		//ro.logger.Infof("sync rdb done")
 	}
 
-	pipe := redis.ParseRdb(ioReader, &readBytes, config.RDBPipeSize, ro.cfg.Redis.Version) // @TODO change name to parseRdbToCmds
+	pipe := redis.ParseRdb(ioReader, &readBytes, config.RDBPipeSize, ro.cfg.Redis.Version)
 	errChan := make(chan error, ro.cfg.Parallel)
 
 	replayFn := func() error {

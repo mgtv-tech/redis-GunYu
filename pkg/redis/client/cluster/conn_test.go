@@ -1,6 +1,30 @@
 package redis
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestBatchError(t *testing.T) {
+	node := newRedisNode()
+	conn, err := node.getConn()
+	if err != nil {
+		t.Errorf("getConn error: %s\n", err.Error())
+	}
+
+	conn.send("del", "test_28973")
+	conn.send("del", "str_85701")
+	conn.send("del", "str_67499")
+	conn.send("del", "str_4352")
+
+	conn.flush()
+
+	fmt.Println(conn.receive())
+	fmt.Println(conn.receive())
+	fmt.Println(conn.receive())
+	fmt.Println(conn.receive())
+
+}
 
 func TestRedisConn(t *testing.T) {
 	node := newRedisNode()

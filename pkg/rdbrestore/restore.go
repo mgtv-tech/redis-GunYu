@@ -42,7 +42,9 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 	}
 
 	restoreCmd := *config.Get().Output.ReplayRdbEnableRestore
-	if restoreCmd && e.ObjectParser.ValueDumpSize() > config.Get().Output.MaxProtoBulkLen || e.ObjectParser.IsSplited() {
+	if restoreCmd &&
+		(!e.CanRestore() || e.ObjectParser.ValueDumpSize() > config.Get().Output.MaxProtoBulkLen ||
+			e.ObjectParser.IsSplited()) {
 		restoreCmd = false
 	}
 
@@ -168,9 +170,6 @@ func restoreBigRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 }
 
 func flushAndCheckReply(cli client.Redis, count int) error {
-	// for redis-go-cluster driver, "Receive" function returns all the replies once flushed.
-	// However, this action is different with redigo driver that "Receive" only returns 1
-	// reply each time.
 	// @TODO
 	cli.Flush()
 	for j := 0; j < count; j++ {
