@@ -2,8 +2,34 @@
 
 
 - [部署](#部署)
+  - [部署redis-GunYu](#部署redis-gunyu)
+    - [单节点部署](#单节点部署)
+    - [集群部署](#集群部署)
   - [可观测性](#可观测性)
     - [监控](#监控)
+
+
+
+## 部署redis-GunYu
+
+### 单节点部署
+
+单节点部署，配置文件不用配置`cluster`相关的配置。直接启动即可
+```
+redisGunYu -conf config.yaml
+```
+
+
+### 集群部署
+
+
+由于现阶段的集群部署依赖etcd，所以集群部署需要先部署etcd集群。
+
+再修改配置文件，增加`cluster`相关配置，参考[集群配置](configuration_zh.md#集群)，或其[demo配置](configuration_zh.md#较完善配置)
+
+
+> 线上部署建议使用集群部署方式
+
 
 
 

@@ -116,7 +116,7 @@ output配置如下：
 ### 集群
 
 集群模式配置
-- groupName ： 组名，同一个组的redis-GunYu会进行选举一个leader作为同步的主库
+- groupName ： 组名，同一个组的redis-GunYu实例会组成一个集群
 - metaEtcd ： etcd配置
   - endpoints ： etcd节点地址
   - username ： 用户名
@@ -147,7 +147,7 @@ output配置如下：
 
 服务器配置
 - listen : 监听地址，默认"127.0.0.1:18001"
-- listenPeer: 和其他进程通信用途，IP:Port，默认和listen一样。注意不要写成127.0.0.1
+- listenPeer: 和其他`redis-GunYu`进程通信用途，IP:Port，默认和listen一样。注意不要写成127.0.0.1
 - metricRoutePath : prometheus的http路径，默认是 "/prometheus"
 - checkRedisTypologyTicker ： 检查redis cluster拓扑的时间周期，默认30秒，可以用1s, 1h，1ms等字符串
 - gracefullStopTimeout ： 优雅退出超时时间，默认5秒
@@ -176,7 +176,7 @@ output:
 ```
 server:
   listen: 0.0.0.0:18001 
-  listenPeer: 10.220.14.15:18001  
+  listenPeer: 10.220.14.15:18001  # 局域网地址
 input:
   redis:
     addresses: [127.0.0.1:6300]
