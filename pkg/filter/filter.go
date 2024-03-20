@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
@@ -46,8 +45,10 @@ func FilterCommandNoRoute(cmd string) bool {
 // filter out
 func FilterCmd(cmd string) bool {
 	if len(config.Get().Filter.CmdBlacklist) != 0 {
-		if slices.Contains(config.Get().Filter.CmdBlacklist, cmd) {
-			return true
+		for _, cm := range config.Get().Filter.CmdBlacklist {
+			if cm == cmd {
+				return true
+			}
 		}
 	}
 	return false
@@ -90,7 +91,11 @@ func FilterDB(db int) bool {
 		return false
 	}
 	if len(config.Get().Filter.DbBlacklist) != 0 {
-		return slices.Contains(config.Get().Filter.DbBlacklist, db)
+		for _, e := range config.Get().Filter.DbBlacklist {
+			if e == db {
+				return true
+			}
+		}
 	}
 	return false
 }
