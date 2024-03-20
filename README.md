@@ -95,6 +95,10 @@
 ```
 git clone https://github.com/mgtv-tech/redis-gunyu.git
 cd redis-GunYu
+
+## 如果需要，添加代理
+export GOPROXY=https://goproxy.cn,direct
+
 make
 ```
 在本地生成`redisGunYu`二进制文件。
