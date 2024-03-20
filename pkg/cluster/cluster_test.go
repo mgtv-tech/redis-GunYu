@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/config"
 
 	"github.com/stretchr/testify/suite"
 )

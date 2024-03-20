@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/config"
 )
 
 func TestNilErr(t *testing.T) {

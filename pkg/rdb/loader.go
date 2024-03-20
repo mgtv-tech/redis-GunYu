@@ -7,10 +7,10 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/digest"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type Loader struct {

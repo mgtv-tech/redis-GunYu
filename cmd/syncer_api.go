@@ -19,15 +19,15 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	pb "github.com/ikenchina/redis-GunYu/pkg/api/golang"
-	"github.com/ikenchina/redis-GunYu/pkg/redis"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/checkpoint"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
-	"github.com/ikenchina/redis-GunYu/pkg/util"
-	"github.com/ikenchina/redis-GunYu/syncer"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/syncer"
 )
 
 func (sc *SyncerCmd) startServer() {

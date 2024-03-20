@@ -6,7 +6,7 @@ package pipe
 import (
 	"io"
 
-	"github.com/ikenchina/redis-GunYu/pkg/errors"
+	"github.com/mgtv-tech/redis-GunYu/pkg/errors"
 )
 
 const (

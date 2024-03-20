@@ -17,7 +17,7 @@ package redis
 import (
 	"fmt"
 
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
 
 type multiTask struct {

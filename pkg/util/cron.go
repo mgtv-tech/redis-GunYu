@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 func CronWithCtx(ctx context.Context, duration time.Duration, fn func(context.Context)) {

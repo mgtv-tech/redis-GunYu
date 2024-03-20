@@ -1,4 +1,4 @@
-module github.com/ikenchina/redis-GunYu
+module github.com/mgtv-tech/redis-GunYu
 
 go 1.20
 

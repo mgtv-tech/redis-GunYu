@@ -11,9 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/metric"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 type RdbWriter struct {

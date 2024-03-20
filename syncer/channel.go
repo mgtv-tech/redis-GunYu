@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/store"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/store"
 )
 
 var _ Channel = &StoreChannel{}

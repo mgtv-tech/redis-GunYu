@@ -1,6 +1,6 @@
 package redis
 
-import "github.com/ikenchina/redis-GunYu/pkg/digest"
+import "github.com/mgtv-tech/redis-GunYu/pkg/digest"
 
 type SlotOwner struct {
 	Master            string

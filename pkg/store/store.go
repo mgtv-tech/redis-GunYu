@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/io/pipe"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/io/pipe"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 type Storer struct {

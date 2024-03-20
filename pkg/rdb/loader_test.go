@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )

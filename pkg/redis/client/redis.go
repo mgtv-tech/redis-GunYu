@@ -3,9 +3,9 @@ package client
 import (
 	"bufio"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/conn"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/conn"
 )
 
 // Redis interface

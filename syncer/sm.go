@@ -3,7 +3,7 @@ package syncer
 import (
 	"sync"
 
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 type SyncState int

@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )

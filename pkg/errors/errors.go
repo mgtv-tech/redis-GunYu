@@ -3,7 +3,7 @@ package errors
 import (
 	"fmt"
 
-	"github.com/ikenchina/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type TracedError struct {

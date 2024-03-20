@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/redis"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
 
 func SetCheckpointHash(cli client.Redis, runId string, cpName string) error {

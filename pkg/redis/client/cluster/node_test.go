@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
 
 func TestRedisNil(t *testing.T) {

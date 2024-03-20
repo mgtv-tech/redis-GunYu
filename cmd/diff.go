@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/config"
 )
 
 type DiffCmd struct {

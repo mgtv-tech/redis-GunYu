@@ -9,12 +9,12 @@ import (
 
 	"go.uber.org/automaxprocs/maxprocs"
 
-	"github.com/ikenchina/redis-GunYu/cmd"
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/sync"
-	"github.com/ikenchina/redis-GunYu/pkg/util"
-	"github.com/ikenchina/redis-GunYu/pkg/version"
+	"github.com/mgtv-tech/redis-GunYu/cmd"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/pkg/version"
 )
 
 func main() {

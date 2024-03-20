@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 // Scan parses bytes `b` to `v` with appropriate type.

@@ -12,11 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/digest"
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	"github.com/ikenchina/redis-GunYu/pkg/metric"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 type Observer interface {

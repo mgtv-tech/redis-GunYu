@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"fmt"
 
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 type Reader struct {

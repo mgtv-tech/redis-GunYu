@@ -18,8 +18,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
-	"github.com/ikenchina/redis-GunYu/pkg/util"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 // Batch pack multiple commands, which should be supported by Do method.

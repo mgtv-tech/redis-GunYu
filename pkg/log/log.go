@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	"github.com/ikenchina/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/config"
 )
 
 var (

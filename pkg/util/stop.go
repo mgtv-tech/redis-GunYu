@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 func StopWithTimeout(stopFn func(), timeout time.Duration) {

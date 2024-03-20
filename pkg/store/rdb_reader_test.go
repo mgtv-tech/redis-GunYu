@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/common"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/common"
 	"github.com/stretchr/testify/suite"
 )
 

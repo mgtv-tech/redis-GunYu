@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/errors"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/errors"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
 
 // @TODO it's deprecated

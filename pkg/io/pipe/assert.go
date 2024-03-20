@@ -3,7 +3,7 @@
 
 package pipe
 
-import "github.com/ikenchina/redis-GunYu/pkg/log"
+import "github.com/mgtv-tech/redis-GunYu/pkg/log"
 
 func Must(b bool) {
 	if b {

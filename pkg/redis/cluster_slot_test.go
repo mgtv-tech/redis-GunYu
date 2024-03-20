@@ -4,8 +4,8 @@ import (
 	"log"
 	"testing"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 
 	"github.com/stretchr/testify/assert"
 )

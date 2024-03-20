@@ -3,9 +3,9 @@ package redis
 import (
 	"errors"
 
-	"github.com/ikenchina/redis-GunYu/config"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client"
-	"github.com/ikenchina/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
 
 var (

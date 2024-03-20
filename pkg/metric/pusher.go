@@ -7,8 +7,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/push"
 
-	"github.com/ikenchina/redis-GunYu/pkg/log"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 func StartPusher(ctx context.Context, pushGateway string, jobName string, group map[string]string, interval time.Duration) {

@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/ikenchina/redis-GunYu/pkg/errors"
+	"github.com/mgtv-tech/redis-GunYu/pkg/errors"
 )
 
 const (

@@ -3,7 +3,7 @@ package syncer
 import (
 	"errors"
 
-	pb "github.com/ikenchina/redis-GunYu/pkg/api/golang"
+	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
 )
 
 var ErrReplicaNoRunning = errors.New("replica leader is not running")

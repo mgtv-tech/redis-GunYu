@@ -37,7 +37,7 @@ ifeq (true, $(DEBUG))
         REMOVESYMBOL =
         GCFLAGS=-gcflags=all="-N -l "
 endif
-LDFLAGSPREFIX := "github.com/ikenchina/redis-GunYu/pkg"
+LDFLAGSPREFIX := "github.com/mgtv-tech/redis-GunYu/pkg"
 LDFLAGS += -X $(LDFLAGSPREFIX)/version.version=$(VERSION) -X $(LDFLAGSPREFIX)/version.date=$(DATE) -X $(LDFLAGSPREFIX)/version.commit=$(COMMIT) -X $(LDFLAGSPREFIX)/version.branch=$(BRANCH) $(REMOVESYMBOL)
 
 

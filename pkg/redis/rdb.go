@@ -6,9 +6,9 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/ikenchina/redis-GunYu/pkg/common"
-	"github.com/ikenchina/redis-GunYu/pkg/rdb"
-	usync "github.com/ikenchina/redis-GunYu/pkg/sync"
+	"github.com/mgtv-tech/redis-GunYu/pkg/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/rdb"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersion string) chan *rdb.BinEntry {

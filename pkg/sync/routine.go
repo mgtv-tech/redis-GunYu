@@ -1,7 +1,7 @@
 package sync
 
 import (
-	"github.com/ikenchina/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 )
 
 func SafeGo(f func(), panicCallBack func(interface{})) {
