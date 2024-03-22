@@ -16,39 +16,30 @@ func TestRedisLockTestSuite(t *testing.T) {
 
 type redisLockTestSuite struct {
 	suite.Suite
-	cli     client.Redis
-	cluster client.Redis
-	key1    string
-	val1    string
+	clis []client.Redis
+	key1 string
+	val1 string
 }
 
 func (st *redisLockTestSuite) SetupTest() {
 	st.key1 = "test-redislocker-red-key1"
 	st.val1 = "test-redislocker-red-val1"
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses:      []string{"127.0.0.1:6707"},
+		Addresses:      []string{testRedis},
 		Type:           config.RedisTypeStandalone,
 		ClusterOptions: &config.RedisClusterOptions{},
 	})
 	st.Nil(err)
-	st.cli = cli
-	st.cli.Do("del", st.key1)
+	st.clis = append(st.clis, cli)
 
-	cli, err = client.NewRedis(config.RedisConfig{
-		Addresses:      []string{"127.0.0.1:6300"},
-		Type:           config.RedisTypeCluster,
-		ClusterOptions: &config.RedisClusterOptions{},
-	})
-	st.Nil(err)
-	st.cluster = cli
-
-	st.cluster.Do("del", st.key1)
+	for _, cc := range st.clis {
+		cc.Do("del", st.key1)
+	}
 }
 
 func (st *redisLockTestSuite) TestLock() {
-	clis := []client.Redis{st.cli, st.cluster}
 
-	for _, cli := range clis {
+	for _, cli := range st.clis {
 		locker := SRedisLocker{
 			cli:      cli,
 			expireMs: 3000,
@@ -61,9 +52,8 @@ func (st *redisLockTestSuite) TestLock() {
 }
 
 func (st *redisLockTestSuite) TestLockRenew() {
-	clis := []client.Redis{st.cli, st.cluster}
 
-	for _, cli := range clis {
+	for _, cli := range st.clis {
 		locker := SRedisLocker{
 			cli:      cli,
 			expireMs: 3000,

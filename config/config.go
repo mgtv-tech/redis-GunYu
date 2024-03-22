@@ -597,7 +597,7 @@ func (rcs *RedisClusterShard) Get(sel SelNodeStrategy) *RedisNode {
 		return &rcs.Master
 	} else if sel == SelNodeStrategyPreferSlave {
 		for i := 0; i < len(rcs.Slaves); i++ {
-			if rcs.Slaves[i].Health == "online" {
+			if rcs.Slaves[i].Health == healthOnline {
 				return &rcs.Slaves[i]
 			}
 		}
@@ -623,8 +623,13 @@ type RedisNode struct {
 	Health     string
 }
 
+const (
+	healthOnline  = "online"
+	healthOffline = "offline"
+)
+
 func (rn *RedisNode) IsHealth() bool {
-	return rn.Health == "online"
+	return rn.Health == healthOnline
 }
 
 func (rn *RedisNode) AddressEqual(b *RedisNode) bool {
@@ -781,13 +786,15 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 	var allShards []*RedisClusterShard
 	if rc.IsStanalone() {
 		addrs = rc.Addresses
-		allShards = append(allShards, rc.shards...)
+		for _, sd := range rc.shards {
+			allShards = append(allShards, sd.Clone())
+		}
 	} else {
 		if selAllShards {
 			for _, shard := range rc.shards {
 				if node := shard.Get(sel); node != nil {
 					addrs = append(addrs, node.Address)
-					allShards = append(allShards, shard)
+					allShards = append(allShards, shard.Clone())
 				}
 			}
 		} else {
@@ -820,7 +827,7 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 					node := mshard.Get(sel)
 					if node != nil {
 						addrs = append(addrs, node.Address)
-						allShards = append(allShards, mshard)
+						allShards = append(allShards, mshard.Clone())
 					}
 				}
 			}

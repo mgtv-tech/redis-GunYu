@@ -47,7 +47,7 @@ func (ts *aofReaderTestSuite) TestCorrupted() {
 	filePath := aofFilePath(ts.tempDir, 0)
 
 	newAof := func() {
-		ts.storer.dataSet = &dataSet{}
+		ts.storer.dataSet = newDataSet(nil, nil)
 		writer, err := NewAofRotater(ts.tempDir, 0, 100000000, config.FlushPolicy{})
 		ts.Nil(err)
 		ts.Nil(writer.write(data))

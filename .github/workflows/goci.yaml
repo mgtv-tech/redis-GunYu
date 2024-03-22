@@ -1,0 +1,59 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: goci
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Module cache
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go    
+
+    - name: Build 
+      run: go build -v ./...
+
+    - name: Test redis cluster
+      uses: vishnudxb/redis-cluster@1.0.9
+      with:
+        master1-port: 16300
+        master2-port: 5001
+        master3-port: 5002
+        slave1-port: 5003
+        slave2-port: 5004
+        slave3-port: 5005
+        sleep-duration: 5
+
+    - name: Test 
+      run: go test -v ./...

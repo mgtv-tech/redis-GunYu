@@ -6,7 +6,7 @@ import (
 )
 
 func TestBatchError(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
 	conn, err := node.getConn()
 	if err != nil {
 		t.Errorf("getConn error: %s\n", err.Error())
@@ -27,7 +27,7 @@ func TestBatchError(t *testing.T) {
 }
 
 func TestRedisConn(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
 	conn, err := node.getConn()
 	if err != nil {
 		t.Errorf("getConn error: %s\n", err.Error())

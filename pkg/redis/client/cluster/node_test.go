@@ -20,141 +20,90 @@ import (
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRedisNil(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
+	node.do("del", "xxmdfsdfsdfd")
 	reply, err := node.do("get", "xxmdfsdfsdfd")
 	fmt.Println(reply, err)
 }
 
 func TestRedisDo(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
 
 	_, err := node.do("FLUSHALL")
+	assert.Nil(t, err)
 
 	reply, err := node.do("SET", "foo", "bar")
 	if err != nil {
 		t.Errorf("SET error: %s\n", err.Error())
 	}
-	if value, ok := reply.(string); !ok || value != "OK" {
-		t.Errorf("unexpected value %v\n", reply)
-	}
+	assert.Nil(t, common.StringIsOk(reply, nil))
+	reply, err = common.String(node.do("GET", "foo"))
+	assert.Nil(t, err)
+	assert.True(t, reply == "bar")
 
-	reply, err = node.do("GET", "foo")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
-	if value, ok := reply.(string); !ok || string(value) != "bar" {
-		t.Errorf("unexpected value %v\n", reply)
-	}
+	_, err = node.do("GET", "notexist")
+	assert.Equal(t, common.ErrNil, err)
 
-	reply, err = node.do("GET", "notexist")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	} else if reply != nil {
-		t.Errorf("unexpected value %v\n", reply)
-	}
-
-	reply, err = node.do("SETEX", "hello", 10, "world")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
-	if value, ok := reply.(string); !ok || value != "OK" {
-		t.Errorf("unexpected value %v\n", reply)
-	}
+	assert.Nil(t, common.StringIsOk(node.do("SETEX", "hello", 10, "world")))
 
 	reply, err = node.do("INVALIDCOMMAND", "foo", "bar")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 	if _, ok := reply.(common.RedisError); !ok {
 		t.Errorf("unexpected value %v\n", reply)
 	}
 
 	reply, err = node.do("HGETALL", "foo")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 	if _, ok := reply.(common.RedisError); !ok {
 		t.Errorf("unexpected value %v\n", reply)
 	}
 
 	reply, err = node.do("HMSET", "myhash", "field1", "hello", "field2", "world")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
-	if value, ok := reply.(string); !ok || value != "OK" {
-		t.Errorf("unexpected value %v\n", reply)
-	}
+	assert.Nil(t, common.StringIsOk(reply, err))
 
-	reply, err = node.do("HSET", "myhash", "field3", "nice")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
-	if value, ok := reply.(int64); !ok || value != 1 {
-		t.Errorf("unexpected value %v\n", reply)
-	}
+	reply, err = common.Int(node.do("HSET", "myhash", "field3", "nice"))
+	assert.Nil(t, err)
+	assert.Equal(t, 1, reply)
 
 	reply, err = node.do("HGETALL", "myhash")
-	if err != nil {
-		t.Errorf("GET error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 	if value, ok := reply.([]interface{}); !ok || len(value) != 6 {
 		t.Errorf("unexpected value %v\n", reply)
 	}
 }
 
 func TestRedisPipeline(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
 	conn, err := node.getConn()
-	if err != nil {
-		t.Errorf("getConn error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 
 	err = conn.send("PING")
-	if err != nil {
-		t.Errorf("send error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 	err = conn.send("PING")
-	if err != nil {
-		t.Errorf("send error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 	err = conn.send("PING")
-	if err != nil {
-		t.Errorf("send error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 
 	err = conn.flush()
-	if err != nil {
-		t.Errorf("flush error: %s\n", err.Error())
-	}
+	assert.Nil(t, err)
 
 	reply, err := common.String(conn.receive())
-	if err != nil {
-		t.Errorf("flush error: %s\n", err.Error())
-	}
-	if reply != "PONG" {
-		t.Errorf("receive error: %s", reply)
-	}
+	assert.Nil(t, err)
+	assert.Equal(t, "PONG", reply)
+
 	reply, err = common.String(conn.receive())
-	if err != nil {
-		t.Errorf("receive error: %s\n", err.Error())
-	}
-	if reply != "PONG" {
-		t.Errorf("receive error: %s", reply)
-	}
+	assert.Nil(t, err)
+	assert.Equal(t, "PONG", reply)
+
 	reply, err = common.String(conn.receive())
-	if err != nil {
-		t.Errorf("receive error: %s\n", err.Error())
-	}
-	if reply != "PONG" {
-		t.Errorf("receive error: %s", reply)
-	}
-	reply, err = common.String(conn.receive())
-	if err == nil {
-		t.Errorf("expect an error here")
-	}
+	assert.Nil(t, err)
+	assert.Equal(t, "PONG", reply)
+
+	_, err = common.String(conn.receive())
 	if err.Error() != "no more pending reply" {
 		t.Errorf("unexpected error: %s\n", err.Error())
 	}
@@ -170,14 +119,25 @@ func TestRedisPipeline(t *testing.T) {
 	conn.receive()
 	conn.receive()
 	value, err := common.Int(conn.receive())
-	if value != 141 {
-		t.Errorf("unexpected error: %v\n", reply)
-	}
+	assert.Nil(t, err)
+	assert.Equal(t, 141, value)
 }
 
-func newRedisNode() *redisNode {
+func newRedisNodeCluster(t *testing.T) *Cluster {
+	cc, ee := NewCluster(
+		&Options{
+			StartNodes:  []string{testRedisCluster},
+			ConnTimeout: 5 * time.Second,
+			KeepAlive:   32,
+			AliveTime:   10 * time.Second,
+		})
+	assert.Nil(t, ee)
+	return cc
+}
+
+func newRedisNodeStandalone() *redisNode {
 	return &redisNode{
-		address:      "127.0.0.1:16302",
+		address:      testRedis,
 		keepAlive:    3,
 		aliveTime:    60 * time.Second,
 		connTimeout:  5 * time.Second,
@@ -187,7 +147,7 @@ func newRedisNode() *redisNode {
 }
 
 func TestMulti(t *testing.T) {
-	node := newRedisNode()
+	node := newRedisNodeStandalone()
 	// fmt.Println(node.do("multi"))
 	// fmt.Println(node.do("set", "e", 1))
 	// fmt.Println(node.do("set", "e", 1))
