@@ -9,11 +9,19 @@ on:
   pull_request:
     branches: [ "master" ]
 
+
 jobs:
 
   build:
     runs-on: ubuntu-latest
+    
     services:
+      etcd:
+        image: bitnami/etcd:latest
+        ports:
+          - 2379:2379 
+        env:
+          ALLOW_NONE_AUTHENTICATION: yes
       redis:
         image: redis
         options: >-
@@ -56,4 +64,5 @@ jobs:
         sleep-duration: 5
 
     - name: Test 
-      run: go test -v ./...
+      run: |
+        go test -v ./...
