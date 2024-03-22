@@ -17,9 +17,7 @@ type rdbAofTestSuite struct {
 }
 
 func (ts *rdbAofTestSuite) createdGap(gaps []int) *dataSet {
-	ds := &dataSet{
-		rdb: &dataSetRdb{},
-	}
+	ds := newDataSet(&dataSetRdb{}, nil)
 	left := int64(0)
 	for _, g := range gaps {
 		aof := &dataSetAof{left: left}
@@ -66,64 +64,10 @@ func (ts *rdbAofTestSuite) TestTruncateGap() {
 	}
 }
 
-/*
-func (ts *rdbAofTestSuite) TestSplitRdbAof() {
-
-	cases := []struct {
-		gaps []int
-		exp  []int
-	}{
-		{
-			gaps: []int{0, 0, 0, 0, 2, 0},
-			exp:  []int{498, 600},
-		},
-		{
-			gaps: []int{0, 0, 2, 0, 2, 0},
-			exp:  []int{298, 498, 600},
-		},
-		{
-			gaps: []int{2, 0, 0, 0, 2, 2},
-			exp:  []int{98, 498, 598},
-		},
-		{
-			gaps: []int{2, 2, 2, 2, 2, 2},
-			exp:  []int{98, 198, 298, 398, 498, 598},
-		},
-		{
-			gaps: []int{0, 0, 0, 0, 0, 0},
-			exp:  []int{600},
-		},
-		{
-			gaps: []int{0},
-			exp:  []int{100},
-		},
-		{
-			gaps: []int{2},
-			exp:  []int{98},
-		},
-	}
-
-	for _, ca := range cases {
-		rdb := ts.createdGap(ca.gaps)
-		res := splitRdbAof(rdb)
-		ts.Equal(len(ca.exp), len(res))
-		//fmt.Println("-----")
-		for i, re := range res {
-			ts.Equal(i == 0, re.rdb != nil)
-			//fmt.Println(re.rdb, re.dir, re.Left(), re.Right())
-			ts.Equal(int64(ca.exp[i]), res[i].Right())
-		}
-	}
-
-}
-*/
-
 func TestGcLog(t *testing.T) {
 
 	makeRdb := func(left int64, size int64) *dataSet {
-		ds := &dataSet{
-			rdb: &dataSetRdb{rdbSize: 2, left: left},
-		}
+		ds := newDataSet(&dataSetRdb{rdbSize: 2, left: left}, nil)
 		for i := int64(0); i < size-2; i++ {
 			aof := &dataSetAof{
 				left: left + 2 + i,

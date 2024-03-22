@@ -1,22 +1,19 @@
 package redis
 
 import (
-	"fmt"
 	"testing"
-	"time"
 
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testRedis        = "127.0.0.1:6379"
+	testRedisCluster = "127.0.0.1:16300"
+)
+
 func TestBatcher(t *testing.T) {
-	cluster, err := NewCluster(
-		&Options{
-			StartNodes:  []string{"127.0.0.1:16310"},
-			ConnTimeout: 5 * time.Second,
-			KeepAlive:   32,
-			AliveTime:   10 * time.Second,
-		})
-	assert.Nil(t, err)
+	cluster := newRedisNodeCluster(t)
 
 	t.Run("", func(t *testing.T) {
 		bb := cluster.NewBatcher()
@@ -29,8 +26,13 @@ func TestBatcher(t *testing.T) {
 		//bb.Put("PING")
 		rets, err := bb.Exec()
 		assert.Nil(t, err)
-		assert.True(t, len(rets) == 6)
-		fmt.Println(rets)
+		assert.True(t, len(rets) == 4)
+		assert.Nil(t, common.StringIsOk(rets[0], nil))
+		assert.Nil(t, common.StringIsOk(rets[1], nil))
+		intv, _ := common.Int(rets[2], nil)
+		assert.Equal(t, 1, intv)
+		intv, _ = common.Int(rets[3], nil)
+		assert.Equal(t, 1, intv)
 	})
 
 	t.Run("", func(t *testing.T) {
@@ -42,6 +44,8 @@ func TestBatcher(t *testing.T) {
 		rets, err := bb.Exec()
 		assert.Nil(t, err)
 		assert.True(t, len(rets) == 4)
-		fmt.Println(rets)
+		for _, val := range rets {
+			assert.Nil(t, common.StringIsOk(val, nil))
+		}
 	})
 }

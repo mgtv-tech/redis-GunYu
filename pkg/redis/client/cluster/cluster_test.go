@@ -9,19 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-const (
-	addr = "127.0.0.1:6300"
-)
-
 func TestNilError(t *testing.T) {
-	cluster, err := NewCluster(
-		&Options{
-			StartNodes:  strings.Split(addr, ";"),
-			ConnTimeout: 5 * time.Second,
-			KeepAlive:   32,
-			AliveTime:   10 * time.Second,
-		})
-	assert.Equal(t, nil, err, "should be equal")
+	cluster := newRedisNodeCluster(t)
 	ret, err := cluster.Do("hget", "hset1", "xxx")
 	fmt.Println(ret, err)
 }
@@ -38,7 +27,7 @@ func TestChooseNodeWithCmd(t *testing.T) {
 
 		cluster, err := NewCluster(
 			&Options{
-				StartNodes:  strings.Split(addr, ";"),
+				StartNodes:  strings.Split(testRedisCluster, ";"),
 				ConnTimeout: 5 * time.Second,
 				KeepAlive:   32,
 				AliveTime:   10 * time.Second,
@@ -59,7 +48,7 @@ func TestChooseNodeWithCmd(t *testing.T) {
 
 		cluster, err := NewCluster(
 			&Options{
-				StartNodes:  strings.Split(addr, ";"),
+				StartNodes:  strings.Split(testRedisCluster, ";"),
 				ConnTimeout: 5 * time.Second,
 				KeepAlive:   32,
 				AliveTime:   10 * time.Second,
@@ -78,19 +67,5 @@ func TestChooseNodeWithCmd(t *testing.T) {
 		node, err = cluster.ChooseNodeWithCmd("mset", "a", 1, "d", 2)
 		assert.Equal(t, nil, err, "should be equal")
 		assert.Equal(t, node, expect, "should be equal")
-	}
-}
-func TestSlots(t *testing.T) {
-
-	baseKey := "a"
-	hashA := hash(baseKey)
-	fmt.Println(hashA)
-
-	for i := 1; i < 1000; i++ {
-		key := fmt.Sprintf("%s%d", baseKey, i)
-		//key := string([]byte{byte(i + 'a')})
-		if hash(key) > 10923 {
-			fmt.Println(key)
-		}
 	}
 }

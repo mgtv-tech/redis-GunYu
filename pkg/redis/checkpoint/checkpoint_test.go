@@ -12,7 +12,7 @@ import (
 
 func TestGetCheckpointSet(t *testing.T) {
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{"127.0.0.1:6717"},
+		Addresses: []string{"127.0.0.1:6379"},
 		Type:      config.RedisTypeStandalone,
 	})
 

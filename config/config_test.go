@@ -8,7 +8,7 @@ import (
 )
 
 func TestInitConfig(t *testing.T) {
-	err := InitConfig("./cfg.yaml")
+	err := InitConfig("./cluster.yaml")
 	assert.Nil(t, err)
 }
 
@@ -22,24 +22,24 @@ func TestSelNodes(t *testing.T) {
 			{ // normal
 				id:     0,
 				Slots:  RedisSlots{},
-				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6400), Role: RedisRoleMaster},
+				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6400), Role: RedisRoleMaster, Health: healthOnline},
 				Slaves: []RedisNode{
-					{Address: fmt.Sprintf("%s:%d", localhost, 6401), Role: RedisRoleSlave},
-					{Address: fmt.Sprintf("%s:%d", localhost, 6402), Role: RedisRoleSlave},
+					{Address: fmt.Sprintf("%s:%d", localhost, 6401), Role: RedisRoleSlave, Health: healthOnline},
+					{Address: fmt.Sprintf("%s:%d", localhost, 6402), Role: RedisRoleSlave, Health: healthOnline},
 				},
 			},
 			{ // one slave
 				id:     1,
 				Slots:  RedisSlots{},
-				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6410), Role: RedisRoleMaster},
+				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6410), Role: RedisRoleMaster, Health: healthOnline},
 				Slaves: []RedisNode{
-					{Address: fmt.Sprintf("%s:%d", localhost, 6411), Role: RedisRoleSlave},
+					{Address: fmt.Sprintf("%s:%d", localhost, 6411), Role: RedisRoleSlave, Health: healthOnline},
 				},
 			},
 			{ // no slave
 				id:     2,
 				Slots:  RedisSlots{},
-				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6510), Role: RedisRoleMaster},
+				Master: RedisNode{Address: fmt.Sprintf("%s:%d", localhost, 6510), Role: RedisRoleMaster, Health: healthOnline},
 				Slaves: []RedisNode{},
 			},
 		},
@@ -94,6 +94,19 @@ func TestSelNodes(t *testing.T) {
 		assert.Len(t, act, 2)
 		assert.Equal(t, cfg.shards[1].Slaves[0].Address, act[0].Addresses[0])
 		assert.Equal(t, cfg.shards[2].Master.Address, act[1].Addresses[0])
+
+		for i := 0; i < len(cfg.shards[1].Slaves); i++ {
+			cfg.shards[1].Slaves[i].Health = healthOffline
+		}
+
+		act = cfg.SelNodes(false, SelNodeStrategyPreferSlave)
+		assert.Len(t, act, 2)
+		assert.Equal(t, cfg.shards[1].Master.Address, act[0].Addresses[0])
+		assert.Equal(t, cfg.shards[2].Master.Address, act[1].Addresses[0])
+
+		for i := 0; i < len(cfg.shards[1].Slaves); i++ {
+			cfg.shards[1].Slaves[i].Health = healthOnline
+		}
 	})
 
 }

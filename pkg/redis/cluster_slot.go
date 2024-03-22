@@ -16,6 +16,10 @@ func GetSlotDistribution(cli client.Redis) ([]SlotOwner, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseSlotDistribution(content)
+}
+
+func parseSlotDistribution(content interface{}) ([]SlotOwner, error) {
 
 	shards, ok := content.([]interface{})
 	if !ok {

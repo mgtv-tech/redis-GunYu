@@ -13,6 +13,9 @@ import (
 )
 
 // @TODO mock redis client
+const (
+	testRedis = "127.0.0.1:6379"
+)
 
 func TestUtilTestSuite(t *testing.T) {
 	suite.Run(t, new(utilTestSuite))
@@ -20,7 +23,7 @@ func TestUtilTestSuite(t *testing.T) {
 
 func TestSelectDB(t *testing.T) {
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{"127.0.0.1:6717"},
+		Addresses: []string{testRedis},
 		Type:      config.RedisTypeStandalone,
 	})
 	assert.Nil(t, err)
@@ -43,25 +46,16 @@ func TestSelectDB(t *testing.T) {
 
 type utilTestSuite struct {
 	suite.Suite
-	cli     client.Redis
-	cluster client.Redis
+	cli client.Redis
 }
 
 func (uts *utilTestSuite) SetupTest() {
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{"127.0.0.1:16303"},
+		Addresses: []string{testRedis},
 		Type:      config.RedisTypeStandalone,
 	})
 	uts.Nil(err)
 	uts.cli = cli
-
-	cli, err = client.NewRedis(config.RedisConfig{
-		Addresses:      []string{"127.0.0.1:36302"},
-		Type:           config.RedisTypeCluster,
-		ClusterOptions: &config.RedisClusterOptions{},
-	})
-	uts.Nil(err)
-	uts.cluster = cli
 }
 
 func (uts *utilTestSuite) TestMigrating() {
@@ -99,10 +93,86 @@ func (uts *utilTestSuite) TestGetAllClusterShard4() {
 	}
 }
 
+func redisClusterShardToReply(shard *config.RedisClusterShard) []interface{} {
+	// master
+	rShard := []interface{}{}
+
+	rShard = append(rShard, "slots")
+	rShard = append(rShard, []interface{}{int64(shard.Slots.Ranges[0].Left), int64(shard.Slots.Ranges[0].Right)})
+
+	rShard = append(rShard, "nodes")
+	nodes := []interface{}{}
+	nodes = append(nodes, []interface{}{
+		"id", shard.Master.Id,
+		"port", int64(shard.Master.Port),
+		"ip", shard.Master.Ip,
+		"endpoint", shard.Master.Endpoint,
+		"role", shard.Master.Role.String(),
+		"replication-offset", int64(shard.Master.ReplOffset),
+		"health", shard.Master.Health,
+	})
+
+	for _, slave := range shard.Slaves {
+		nodes = append(nodes, []interface{}{
+			"id", slave.Id,
+			"port", int64(slave.Port),
+			"ip", slave.Ip,
+			"endpoint", slave.Endpoint,
+			"role", slave.Role.String(),
+			"replication-offset", int64(slave.ReplOffset),
+			"health", slave.Health,
+		})
+	}
+
+	rShard = append(rShard, nodes)
+	return rShard
+}
+
 func (uts *utilTestSuite) TestGetAllClusterShard() {
-	s, err := GetAllClusterShard(uts.cli, "7.0")
+	shards := []*config.RedisClusterShard{
+		&config.RedisClusterShard{
+			Slots: config.RedisSlots{
+				Ranges: []config.RedisSlotRange{
+					{Left: 0, Right: 10000},
+				},
+			},
+			Master: config.RedisNode{
+				Id:         "s1id1",
+				Port:       1001,
+				Ip:         "127.0.0.1",
+				Endpoint:   "localhost",
+				Address:    "127.0.0.1:1001",
+				Role:       config.RedisRoleMaster,
+				ReplOffset: 11,
+				Health:     "online",
+			},
+			Slaves: []config.RedisNode{
+				{
+					Id:         "s1id2",
+					Port:       1002,
+					Ip:         "127.0.0.1",
+					Endpoint:   "localhost",
+					Address:    "127.0.0.1:1002",
+					Role:       config.RedisRoleSlave,
+					ReplOffset: 11,
+					Health:     "offline",
+				},
+			},
+		},
+	}
+
+	// 7.0
+	var reply []interface{}
+	for _, ss := range shards {
+		reply = append(reply, redisClusterShardToReply(ss))
+	}
+
+	rshards, err := parseClusterShards(reply)
 	uts.Nil(err)
-	log.Printf("%v\n", s)
+	uts.Len(rshards, len(reply))
+	for i, exp := range shards {
+		uts.Equal(*exp, *rshards[i])
+	}
 }
 
 func (uts *utilTestSuite) TestGetRunIds() {
