@@ -78,6 +78,8 @@
 
 ## 产品比较
 
+从产品需求上，对redis-GunYu和几个主流工具进行比较
+
 功能点 | redis-shake/v2 |  DTS | xpipe | redis-GunYu
 -- | -- | -- | -- | -- 
 断点续传 | Y(无本地缓存)  | Y | Y | Y
