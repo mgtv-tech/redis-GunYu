@@ -574,11 +574,13 @@ func (ri *RedisInput) sendPsync(cli *redis.StandaloneRedis, offset Offset) (Offs
 		return Offset{RunId: pRunId, Offset: pOff}, false, rdbSize, nil
 	}
 
-	for rdbSize == 0 {
-		select {
-		case x := <-wait:
-			rdbSize = x.Size
-		case <-time.After(time.Second):
+	if wait != nil {
+		for rdbSize == 0 {
+			select {
+			case x := <-wait:
+				rdbSize = x.Size
+			case <-time.After(time.Second):
+			}
 		}
 	}
 
