@@ -619,7 +619,9 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 
 		changed, err := func() (bool, error) {
 			if role == cluster.RoleLeader {
-				err := sc.clusterRenew(wait.Context(), elect)
+				err := util.Retry(func() error {
+					return sc.clusterRenew(wait.Context(), elect)
+				}, 2)
 				sc.logger.Debugf("renew : %v", err)
 				if err != nil {
 					return false, err
