@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 1,
+  "id": 8,
   "links": [],
   "liveNow": false,
   "panels": [
@@ -244,6 +244,7 @@
         "type": "prometheus",
         "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
       },
+      "description": "max replication lag between source redis and destination redis",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -304,7 +305,7 @@
           "refId": "A"
         }
       ],
-      "title": "max lag",
+      "title": "max lag(bytes)",
       "type": "stat"
     },
     {
@@ -312,6 +313,7 @@
         "type": "prometheus",
         "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
       },
+      "description": "max lag between source and destination redis",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -337,7 +339,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 15,
         "y": 1
       },
@@ -372,7 +374,7 @@
           "refId": "A"
         }
       ],
-      "title": "max sync delay",
+      "title": "max lag(time)",
       "type": "stat"
     },
     {
@@ -872,7 +874,7 @@
               "refId": "A"
             }
           ],
-          "title": "sender",
+          "title": "sender(batch)",
           "type": "timeseries"
         }
       ],
@@ -936,8 +938,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1035,8 +1036,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1134,8 +1134,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1233,8 +1232,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1347,8 +1345,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1446,8 +1443,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1559,8 +1555,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1657,8 +1652,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1755,8 +1749,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1867,8 +1860,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1966,8 +1958,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2065,8 +2056,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2164,8 +2154,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2263,8 +2252,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2362,8 +2350,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2461,8 +2448,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2560,8 +2546,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2659,8 +2644,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2723,13 +2707,9 @@
     "list": [
       {
         "current": {
-          "selected": true,
-          "text": [
-            "clusterB"
-          ],
-          "value": [
-            "clusterB"
-          ]
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
@@ -2763,6 +2743,6 @@
   "timezone": "",
   "title": "redis-GunYu",
   "uid": "f2efafc7-f9b6-4fce-b8b9-61a66ca0704f",
-  "version": 50,
+  "version": 4,
   "weekStart": ""
 }

@@ -94,14 +94,19 @@ curl http://http_server:port/syncer/status
 
 ### 强制全量同步
 ```
-curl -XPOST 'http://http_server:port/syncer/fullsync?inputs=inputIP&flushdb=yes' 
+curl -XPOST 'http://http_server:port/syncer/fullsync?inputs=inputs&flushdb=yes' 
 ```
 URL，查询参数：
-- inputs : 需要全量同步的源端redis IPs，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP，则用逗号分隔
+- inputs : 需要全量同步的源端redis IP和端口，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP+端口，则用逗号分隔。具体IP+端口可以通过`http://http_server:port/syncer/status`接口获取，或者从redis-cli上查看
 - flushdb ： 全量同步前，是否执行flushdb
 
 flushdb=yes时，如果是部分源端进行全量同步，则要保证源和目的redis的slots能够一一对应，否则请全量同步所有的源端(inputs=all)
 
+
+```
+# 强制全量同步127.0.0.1:16302和127.0.0.1:16310两个源redis节点；且清空相对应的目的redis节点的数据(执行flushdb)
+curl -XPOST 'http://http_server:port/syncer/fullsync?inputs=127.0.0.1:16302,127.0.0.1:16310&flushdb=yes'
+```
 
 
 
