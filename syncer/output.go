@@ -47,6 +47,8 @@ type RedisOutput struct {
 
 	cpGuard         sync.RWMutex
 	checkpointInMem checkpoint.CheckpointInfo
+
+	outFilter *filter.RedisCmdFilter
 }
 
 var (
@@ -126,6 +128,17 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
 		ro.cfg.Redis.GetClusterOptions().HandleAskErr = false
 	}
+	ro.outFilter = &filter.RedisCmdFilter{}
+	ro.outFilter.InsertCmdBlackList(filter.NoRouteCmds, true)
+	ro.outFilter.InsertCmdBlackList(config.Get().Filter.CmdBlacklist, true)
+
+	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey})
+	keyFilter := config.Get().Filter.KeyFilter
+	if keyFilter != nil {
+		ro.outFilter.InsertPrefixKeyBlackList(keyFilter.PrefixKeyBlacklist)
+		ro.outFilter.InsertPrefixKeyWhiteList(keyFilter.PrefixKeyWhitelist)
+	}
+
 	return ro
 }
 
@@ -306,7 +319,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 					}
 				}
 
-				if filter.FilterKey(util.BytesToString(e.Key)) {
+				if ro.outFilter.FilterKey(util.BytesToString(e.Key)) {
 					filterOut = true
 				}
 			}
@@ -513,13 +526,10 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 				bypass = filter.FilterDB(n) // filter following commands
 				selectDB = n
-			} else if filter.FilterCmd(sCmd) {
+			} else if ro.outFilter.FilterCmd(sCmd) {
 				ignoreCmd = true
 			} else if strings.EqualFold(sCmd, "publish") && strings.EqualFold(string(argv[0]), "__sentinel__:hello") {
 				ignoresentinel = true
-			}
-			if !ignoreCmd && filter.FilterCommandNoRoute(sCmd) {
-				ignoreCmd = true
 			}
 
 			if bypass || ignoreCmd || ignoresentinel {
@@ -528,7 +538,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			}
 		}
 
-		newArgv, reject = filter.FilterCmdKeys(sCmd, argv)
+		newArgv, reject = ro.outFilter.FilterCmdKey(sCmd, argv)
 		if bypass || reject {
 			ro.filterCounterAdd(1)
 			continue

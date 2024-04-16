@@ -7,18 +7,7 @@ import (
 )
 
 var (
-	innerFilterKeys = map[string]struct{}{
-		config.CheckpointKey: {},
-	}
-)
-
-var (
-	noRouteCmd = map[string]struct{}{}
-)
-
-func init() {
-	// @TODO
-	cmds := []string{
+	NoRouteCmds = []string{
 		// cluster
 		"CLUSTER", "ASKING", "READONLY", "READWRITE",
 		// connection management, without PING
@@ -32,55 +21,89 @@ func init() {
 		"OPINFO", "LASTSAVE", "MONITOR", "ROLE", "DEBUG",
 		"RESTORE-ASKING", "MIGRATE", "ASKING", "WAIT",
 		"PFSELFTEST", "PFDEBUG"}
+)
+
+type RedisCmdFilter struct {
+	cmdWhiteTrie       *Trie
+	cmdBlackTrie       *Trie
+	prefixKeyWhiteTrie *Trie
+	prefixKeyBlackTrie *Trie
+}
+
+func (f *RedisCmdFilter) InsertCmdWhiteList(cmds []string, caseInsensitivity bool) {
+	if len(cmds) == 0 {
+		return
+	}
+	if f.cmdWhiteTrie == nil {
+		f.cmdWhiteTrie = NewTrie()
+	}
 	for _, cmd := range cmds {
-		noRouteCmd[cmd] = struct{}{}
+		if caseInsensitivity {
+			f.cmdWhiteTrie.Insert(strings.ToLower(cmd))
+			f.cmdWhiteTrie.Insert(strings.ToUpper(cmd))
+		} else {
+			f.cmdWhiteTrie.Insert(cmd)
+		}
 	}
 }
 
-func FilterCommandNoRoute(cmd string) bool {
-	_, ok := noRouteCmd[strings.ToUpper(cmd)]
-	return ok
+func (f *RedisCmdFilter) InsertCmdBlackList(cmds []string, caseInsensitivity bool) {
+	if len(cmds) == 0 {
+		return
+	}
+	if f.cmdBlackTrie == nil {
+		f.cmdBlackTrie = NewTrie()
+	}
+	for _, cmd := range cmds {
+		if caseInsensitivity {
+			f.cmdBlackTrie.Insert(strings.ToLower(cmd))
+			f.cmdBlackTrie.Insert(strings.ToUpper(cmd))
+		} else {
+			f.cmdBlackTrie.Insert(cmd)
+		}
+	}
 }
 
-// filter out
-func FilterCmd(cmd string) bool {
-	if len(config.Get().Filter.CmdBlacklist) != 0 {
-		for _, cm := range config.Get().Filter.CmdBlacklist {
-			if cm == cmd {
-				return true
-			}
-		}
+func (f *RedisCmdFilter) InsertPrefixKeyWhiteList(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	if f.prefixKeyWhiteTrie == nil {
+		f.prefixKeyWhiteTrie = NewTrie()
+	}
+	for _, key := range keys {
+		f.prefixKeyWhiteTrie.Insert(key)
+	}
+}
+
+func (f *RedisCmdFilter) InsertPrefixKeyBlackList(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	if f.prefixKeyBlackTrie == nil {
+		f.prefixKeyBlackTrie = NewTrie()
+	}
+	for _, key := range keys {
+		f.prefixKeyBlackTrie.Insert(key)
+	}
+}
+
+func (f *RedisCmdFilter) FilterCmd(cmd string) bool {
+	if f.cmdBlackTrie != nil && f.cmdBlackTrie.Search(cmd) {
+		return true
+	}
+	if f.cmdWhiteTrie != nil && !f.cmdWhiteTrie.Search(cmd) {
+		return true
 	}
 	return false
 }
 
-// filter out
-func FilterKey(key string) bool {
-	if _, ok := innerFilterKeys[key]; ok {
+func (f *RedisCmdFilter) FilterKey(key string) bool {
+	if f.prefixKeyBlackTrie != nil && f.prefixKeyBlackTrie.IsPrefixMatch(key) {
 		return true
 	}
-	if strings.HasPrefix(key, config.CheckpointKey) {
+	if f.prefixKeyWhiteTrie != nil && !f.prefixKeyWhiteTrie.IsPrefixMatch(key) {
 		return true
-	}
-
-	keyFilter := config.Get().Filter.KeyFilter
-	if keyFilter != nil {
-		if len(keyFilter.PrefixKeyBlacklist) > 0 && prefixMatch(key, keyFilter.PrefixKeyBlacklist) {
-			return true
-		}
-		if len(keyFilter.PrefixKeyWhitelist) > 0 && !prefixMatch(key, keyFilter.PrefixKeyWhitelist) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func prefixMatch(key string, list []string) bool {
-	for _, ee := range list {
-		if strings.HasPrefix(key, ee) {
-			return true
-		}
 	}
 	return false
 }
@@ -100,18 +123,14 @@ func FilterDB(db int) bool {
 	return false
 }
 
-func FilterCmdKeys(cmd string, args [][]byte) ([][]byte, bool) {
-
-	keyFilter := config.Get().Filter.KeyFilter
-	if keyFilter == nil {
+func (f *RedisCmdFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool) {
+	if f.prefixKeyBlackTrie == nil && f.prefixKeyWhiteTrie == nil {
 		return args, false
 	}
-
 	cmdPos, ok := commandKeyPositions[cmd]
 	if !ok || len(args) == 0 {
 		return args, false
 	}
-
 	lastkey := cmdPos.last - 1
 	keystep := cmdPos.step
 
@@ -124,7 +143,7 @@ func FilterCmdKeys(cmd string, args [][]byte) ([][]byte, bool) {
 	foutKey := false
 	for firstkey := cmdPos.first - 1; firstkey <= lastkey; firstkey += keystep {
 		key := string(args[firstkey])
-		if !FilterKey(key) {
+		if !f.FilterKey(key) {
 			array[number] = firstkey
 			number++
 		} else {
@@ -138,9 +157,8 @@ func FilterCmdKeys(cmd string, args [][]byte) ([][]byte, bool) {
 		return args, true
 	}
 
-	pass := false
+	pass := true
 	newArgs := make([][]byte, number*cmdPos.step+len(args)-lastkey-cmdPos.step)
-	pass = true
 	for i := 0; i < number; i++ {
 		for j := 0; j < cmdPos.step; j++ {
 			newArgs[i*cmdPos.step+j] = args[array[i]+j]
