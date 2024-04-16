@@ -110,13 +110,26 @@ output配置如下：
 ### 过滤
 
 - commandBlacklist :  命令黑名单，数组结构，忽略掉这些命令
+- keyFilter: 对key进行过滤
+  - prefixKeyBlacklist : 前缀key黑名单
+  - prefixKeyWhitelist : 前缀key白名单
 
+
+如下配置，不同步del命令，也不同步redisGunYu开头的key
+```
+filter:
+  commandBlacklist:
+    - del
+  keyFilter:
+    prefixKeyBlacklist: 
+      - redisGunYu
+```
 
 
 ### 集群
 
 集群模式配置
-- groupName ： 组名，同一个组的redis-GunYu实例会组成一个集群
+- groupName ： 集群名，此名字在etcd集群中作为集群名使用，所以请确保唯一性
 - metaEtcd ： etcd配置
   - endpoints ： etcd节点地址
   - username ： 用户名
@@ -124,6 +137,16 @@ output配置如下：
 - leaseTimeout ： leader租期时间，如果在leaseTimeout时间内，leader没有续租，则表示leader过期了，会重新发起选举；默认10秒，值范围为[3s, 600s]
 - leaseRenewInterval ： leader发起租期时间间隔，默认3.33秒，一般选为leaseTimeout的1/3，值范围为[1s, 200s]
 
+
+如下配置：
+```
+cluster:
+  groupName: redisA
+  leaseTimeout: 9s
+  metaEtcd: 
+    endpoints:
+      - 127.0.0.1:2379
+```
 
 
 ### 日志
@@ -201,7 +224,7 @@ log:
     stdout: true
   withModuleName: false
 
-# redis-GunYu高可用相关配置，如果不需要支持高可用，则可以忽略
+# 集群模式需要配置下面cluster配置，如果没有此配置，则是单实例模式
 cluster:
   groupName: redis1
   leaseTimeout: 3s

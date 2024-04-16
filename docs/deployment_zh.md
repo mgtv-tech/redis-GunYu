@@ -57,7 +57,7 @@ scrape_configs:
         labels:
           cluster: 'clusterB'
 ```
-- 将deploy目录下的[`grafana-10.2.3_zh.json`](../deploy/grafana-10.2.3_zh.json)导入到grafana。(grafana页面右上角加号，选择`import dashboard`)
+- 将deploy目录下的[`grafana_zh.json`](../deploy/grafana_zh.json)导入到grafana。(grafana页面右上角加号，选择`import dashboard`)
 
 
 **注意**
