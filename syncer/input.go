@@ -107,6 +107,12 @@ var (
 		Name:      "offset",
 		Labels:    []string{"id", "input"},
 	})
+	metricSyncType = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "sync_type",
+		Labels:    []string{"id", "input", "sync_type"},
+	})
 )
 
 func (ri *RedisInput) Id() string {
@@ -308,6 +314,9 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	if isFullSync {
 		locSp.Offset = sOffset.Offset
 		outSp.Offset = sOffset.Offset - rdbSize // less than rdb offset,
+		metricSyncType.Inc(ri.id, ri.inputAddr, "full")
+	} else {
+		metricSyncType.Inc(ri.id, ri.inputAddr, "incr")
 	}
 
 	if outSp.Offset <= 0 {
