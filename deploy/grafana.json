@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 8,
+  "id": 9,
   "links": [],
   "liveNow": false,
   "panels": [
@@ -101,7 +101,7 @@
           "refId": "A"
         }
       ],
-      "title": "input offset",
+      "title": "input redis offset",
       "type": "stat"
     },
     {
@@ -168,7 +168,7 @@
           "refId": "A"
         }
       ],
-      "title": "send cmds",
+      "title": "QPS(send to output)",
       "type": "stat"
     },
     {
@@ -201,7 +201,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 8,
         "y": 1
       },
@@ -236,7 +236,7 @@
           "refId": "A"
         }
       ],
-      "title": "storage ratio(max)",
+      "title": "storage usage",
       "type": "gauge"
     },
     {
@@ -244,7 +244,6 @@
         "type": "prometheus",
         "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
       },
-      "description": "max replication lag between source redis and destination redis",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -271,7 +270,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 12,
+        "x": 11,
         "y": 1
       },
       "id": 19,
@@ -313,7 +312,6 @@
         "type": "prometheus",
         "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
       },
-      "description": "max lag between source and destination redis",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -340,7 +338,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 15,
+        "x": 14,
         "y": 1
       },
       "id": 22,
@@ -374,7 +372,75 @@
           "refId": "A"
         }
       ],
-      "title": "max lag(time)",
+      "title": "max lag(duration)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 17,
+        "y": 1
+      },
+      "id": 38,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(redisGunYu_input_sync_type{cluster=\"$cluster\"}[30m]))",
+          "instant": false,
+          "legendFormat": "max",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "restart count(within 30m)",
       "type": "stat"
     },
     {
@@ -482,7 +548,7 @@
               "refId": "A"
             }
           ],
-          "title": "send cmds",
+          "title": "QPS(commands)",
           "type": "timeseries"
         },
         {
@@ -580,7 +646,7 @@
               "refId": "A"
             }
           ],
-          "title": "success cmds",
+          "title": "QPS(success batched)",
           "type": "timeseries"
         },
         {
@@ -678,7 +744,7 @@
               "refId": "A"
             }
           ],
-          "title": "fail cmds",
+          "title": "QPS(failed batched)",
           "type": "timeseries"
         },
         {
@@ -776,7 +842,7 @@
               "refId": "A"
             }
           ],
-          "title": "filter cmds",
+          "title": "QPS(filteredcommands)",
           "type": "timeseries"
         },
         {
@@ -874,7 +940,7 @@
               "refId": "A"
             }
           ],
-          "title": "sender(batch)",
+          "title": "QPS(send batched)",
           "type": "timeseries"
         }
       ],
@@ -896,6 +962,7 @@
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
+          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -938,7 +1005,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -954,7 +1022,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 3
+            "y": 7
           },
           "id": 1,
           "options": {
@@ -986,7 +1054,7 @@
               "refId": "A"
             }
           ],
-          "title": "LAG(ack to input)",
+          "title": "Lag(newest input - acked by output)",
           "type": "timeseries"
         },
         {
@@ -1036,7 +1104,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1052,7 +1121,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 3
+            "y": 7
           },
           "id": 2,
           "options": {
@@ -1084,7 +1153,7 @@
               "refId": "A"
             }
           ],
-          "title": "LAG(ack to input)",
+          "title": "size(output queue)",
           "type": "timeseries"
         },
         {
@@ -1092,6 +1161,7 @@
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
+          "description": "offset of input - offset of send to output",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1134,7 +1204,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1150,7 +1221,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 8
+            "y": 12
           },
           "id": 3,
           "options": {
@@ -1182,7 +1253,7 @@
               "refId": "A"
             }
           ],
-          "title": "LAG(send to input)",
+          "title": "size(queue)",
           "type": "timeseries"
         },
         {
@@ -1190,6 +1261,7 @@
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
+          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1232,7 +1304,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1248,7 +1321,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 8
+            "y": 12
           },
           "id": 23,
           "options": {
@@ -1281,11 +1354,205 @@
               "refId": "A"
             }
           ],
-          "title": "LAG(sync delay)",
+          "title": "Lag(duration)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "right",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 17
+          },
+          "id": 36,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "redisGunYu_input_sync_type{cluster=\"$cluster\"}",
+              "instant": false,
+              "legendFormat": "{{input}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "restart counter",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "id": 37,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "redisGunYu_input_sync_type{cluster=\"$cluster\", sync_type=\"full\"} ",
+              "instant": false,
+              "legendFormat": "{{input}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "restart counter  of full sync",
           "type": "timeseries"
         }
       ],
-      "title": "Lag",
+      "title": "Sync",
       "type": "row"
     },
     {
@@ -1345,7 +1612,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1361,7 +1629,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 4
+            "y": 8
           },
           "id": 10,
           "options": {
@@ -1393,7 +1661,7 @@
               "refId": "A"
             }
           ],
-          "title": "leader send",
+          "title": "send data from leader(bytes)",
           "type": "timeseries"
         },
         {
@@ -1443,7 +1711,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1459,7 +1728,7 @@
             "h": 5,
             "w": 11,
             "x": 12,
-            "y": 4
+            "y": 8
           },
           "id": 11,
           "options": {
@@ -1491,11 +1760,11 @@
               "refId": "A"
             }
           ],
-          "title": "follower recv",
+          "title": "received data by follower(bytes)",
           "type": "timeseries"
         }
       ],
-      "title": "Replica",
+      "title": "Replication",
       "type": "row"
     },
     {
@@ -1555,7 +1824,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1571,7 +1841,7 @@
             "h": 4,
             "w": 12,
             "x": 0,
-            "y": 5
+            "y": 9
           },
           "id": 17,
           "options": {
@@ -1602,7 +1872,7 @@
               "refId": "A"
             }
           ],
-          "title": "storage size",
+          "title": "storage usage size",
           "type": "timeseries"
         },
         {
@@ -1652,7 +1922,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1666,9 +1937,9 @@
           },
           "gridPos": {
             "h": 4,
-            "w": 11,
+            "w": 12,
             "x": 12,
-            "y": 5
+            "y": 9
           },
           "id": 20,
           "options": {
@@ -1699,7 +1970,7 @@
               "refId": "A"
             }
           ],
-          "title": "AOF write",
+          "title": "AOF",
           "type": "timeseries"
         },
         {
@@ -1749,7 +2020,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1763,9 +2035,9 @@
           },
           "gridPos": {
             "h": 4,
-            "w": 11,
+            "w": 12,
             "x": 12,
-            "y": 9
+            "y": 13
           },
           "id": 21,
           "options": {
@@ -1796,7 +2068,7 @@
               "refId": "A"
             }
           ],
-          "title": "RDB write",
+          "title": "RDB",
           "type": "timeseries"
         }
       ],
@@ -1860,7 +2132,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1876,7 +2149,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 6
+            "y": 10
           },
           "id": 34,
           "options": {
@@ -1958,7 +2231,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -1974,7 +2248,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 6
+            "y": 10
           },
           "id": 26,
           "options": {
@@ -2056,7 +2330,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2072,7 +2347,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 11
+            "y": 15
           },
           "id": 28,
           "options": {
@@ -2154,7 +2429,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2170,7 +2446,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 11
+            "y": 15
           },
           "id": 27,
           "options": {
@@ -2252,7 +2528,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2268,7 +2545,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 16
+            "y": 20
           },
           "id": 30,
           "options": {
@@ -2350,7 +2627,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2366,7 +2644,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 16
+            "y": 20
           },
           "id": 29,
           "options": {
@@ -2448,7 +2726,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2464,7 +2743,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 21
+            "y": 25
           },
           "id": 32,
           "options": {
@@ -2546,7 +2825,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2562,7 +2842,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 21
+            "y": 25
           },
           "id": 31,
           "options": {
@@ -2644,7 +2924,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -2660,7 +2941,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 26
+            "y": 30
           },
           "id": 33,
           "options": {
@@ -2707,9 +2988,13 @@
     "list": [
       {
         "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
         },
         "datasource": {
           "type": "prometheus",
@@ -2736,13 +3021,13 @@
     ]
   },
   "time": {
-    "from": "now-5m",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "redis-GunYu",
-  "uid": "f2efafc7-f9b6-4fce-b8b9-61a66ca0704f",
-  "version": 4,
+  "uid": "cec2aa7f-716b-49b8-94dd-7ec011d2e034",
+  "version": 2,
   "weekStart": ""
 }
