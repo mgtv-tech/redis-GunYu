@@ -1,0 +1,19 @@
+input:
+  redis:
+    addresses: [127.0.0.1:16379]
+    type: standalone
+channel:
+  storer:
+    dirPath: /tmp/redisgunyu4
+    maxSize: 104857600
+    logSize: 10485760
+output:
+  keepaliveTicker: 10s
+  redis:
+    addresses: [127.0.0.1:26379]
+    type: standalone
+log:
+  level: info
+  handler:
+    stdout: true
+  

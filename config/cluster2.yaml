@@ -1,6 +1,6 @@
 server:
-  listen: 127.0.0.1:19000
-  listenPeer: 127.0.0.1:19000
+  listen: 127.0.0.1:18001
+  listenPeer: 127.0.0.1:18001
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 10s
 input:

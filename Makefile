@@ -44,7 +44,6 @@ LDFLAGS += -X $(LDFLAGSPREFIX)/version.version=$(VERSION) -X $(LDFLAGSPREFIX)/ve
 ### build
 
 .PHONY: build
-
 build: tidy
 	go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME) main.go
 	@echo -e "\033[32mbuild $(BINARY_NAME) successfully\033[0m"
@@ -53,3 +52,8 @@ build: tidy
 .PHONY: tidy
 tidy:
 	go mod tidy -v
+
+
+.PHONY: demo
+demo:
+	docker build -t redisgunyu-demo -f docker/demo/Dockerfile .
