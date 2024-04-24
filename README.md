@@ -15,6 +15,7 @@
   - [快速开始](#快速开始)
     - [安装](#安装)
     - [使用](#使用)
+    - [运行demo](#运行demo)
   - [文档](#文档)
   - [贡献](#贡献)
   - [许可](#许可)
@@ -128,6 +129,46 @@ make
 ```
 ./redisGunYu -conf ./config.yaml
 ```
+
+
+
+### 运行demo
+
+**启动demo服务**
+```
+docker run --rm -p 16379:16379 -p 26379:26379 -p 18001:18001 mgtvtech/redisgunyudemo:latest
+```
+- 源redis ： 端口16379
+- 目标redis ： 端口26379
+- 同步工具： 端口 18001
+
+
+
+**目的redis**
+```
+redis-cli -p 26379
+127.0.0.1:26379> monitor
+```
+在目的redis-cli中输入monitor
+
+
+**源redis**
+
+连接到源redis，写入一个key，同步工具会将命令同步到目的redis，查看redis-cli连接到的源redis输出
+```
+redis-cli -p 16300
+127.0.0.1:16379> set a 1
+```
+
+
+
+**检查状态**
+```
+curl http://localhost:18001/syncer/status
+```
+检查同步工具运行状态
+
+
 
 
 ## 文档
