@@ -50,7 +50,7 @@ type RdbInfo struct {
 
 func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64, <-chan *RdbInfo, error) {
 
-	if offset > 0 {
+	if offset >= 0 {
 		offset += 1 // redis replication.c : redis' offset will increased by 1 while new slave is connecting to it.
 	}
 
