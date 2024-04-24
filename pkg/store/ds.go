@@ -295,8 +295,11 @@ func (ds *dataSet) InRange(offset int64) bool {
 	defer ds.mux.RUnlock()
 
 	ll, rr := ds.getRange()
+	if rr < 0 {
+		return false
+	}
 	// left <= offset <= right
-	if offset > 0 && ll <= offset && rr >= offset {
+	if ll <= offset && rr >= offset {
 		return true
 	} else if ll >= offset && ds.rdb != nil { // offset <= rdb.left
 		return true

@@ -3,8 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -126,41 +124,6 @@ func (rt *RedisType) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*rt = xx
 	return nil
-}
-
-type FakeTime time.Duration
-
-func (ft *FakeTime) UnmarshalYAML(value *yaml.Node) error {
-	var vv string
-	if err := value.Decode(&vv); err != nil {
-		return err
-	}
-
-	switch vv[0] {
-	case '-', '+':
-		if d, err := time.ParseDuration(strings.ToLower(vv)); err != nil {
-			return fmt.Errorf("parse fake_time failed[%w]", err)
-		} else {
-			*ft = FakeTime(d)
-		}
-	case '@':
-		if n, err := strconv.ParseInt(vv[1:], 10, 64); err != nil {
-			return fmt.Errorf("parse fake_time failed[%w]", err)
-		} else {
-			*ft = FakeTime(time.Duration(n*int64(time.Millisecond) - time.Now().UnixNano()))
-		}
-	default:
-		if t, err := time.Parse("2006-01-02 15:04:05", vv); err != nil {
-			return fmt.Errorf("parse fake_time failed[%w]", err)
-		} else {
-			*ft = FakeTime(time.Duration(t.UnixNano() - time.Now().UnixNano()))
-		}
-	}
-	return nil
-}
-
-func (ft *FakeTime) Duration() time.Duration {
-	return time.Duration(*ft)
 }
 
 // input mode

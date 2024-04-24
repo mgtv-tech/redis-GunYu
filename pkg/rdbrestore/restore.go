@@ -27,7 +27,7 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 		e.Key = bytes.Replace(e.Key, []byte("}"), []byte(""), 1)
 	}
 	if e.ExpireAt != 0 {
-		now := uint64(time.Now().Add(config.Get().Output.FakeExpireTime.Duration()).UnixNano())
+		now := uint64(time.Now().UnixNano())
 		now /= uint64(time.Millisecond)
 		if now >= e.ExpireAt {
 			ttlms = 1

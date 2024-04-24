@@ -235,7 +235,6 @@ type OutputConfig struct {
 	Redis                  *RedisConfig
 	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint"`
 	ReplaceHashTag         bool          `yaml:"replaceHashTag"`
-	FakeExpireTime         FakeTime      `yaml:"fakeExpireTime"`
 	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
 	KeyExistsLog           bool          `yaml:"keyExistsLog"`
 	FunctionExists         string        `yaml:"functionExists"`
