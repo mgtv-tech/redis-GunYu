@@ -304,6 +304,10 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	}
 	ctx := ginCtx.Request.Context()
 	flushdb := ginCtx.Query("flushdb") == "yes"
+	flushCmd := ginCtx.Query("flushCommand") // devops may rename flushdb command
+	if flushCmd == "" {
+		flushCmd = "flushdb"
+	}
 
 	followers := []string{}
 	if config.Get().Cluster != nil {
@@ -321,6 +325,7 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 		if len(selfSyncs) != len(inputs) {
 			allSyncers, err := sc.allSyncers(sc.getRunWait().Context())
 			if err != nil {
+				sc.logger.Errorf("get all syncer processes error : %v", err)
 				ginCtx.AbortWithError(http.StatusInternalServerError, err)
 				return
 			}
@@ -337,6 +342,7 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	if len(followers) > 0 {
 		err := sc.takeover(ctx, inputs)
 		if err != nil {
+			sc.logger.Errorf("takeover error : %v", err)
 			ginCtx.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
@@ -353,9 +359,10 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 
 	// flushdb
 	if flushdb {
-		err := sc.flushdb(ctx, inputs)
+		err := sc.flushdb(ctx, inputs, flushCmd)
 		if err != nil {
 			// resume @TODO
+			sc.logger.Errorf("flushdb error : %v", err)
 			ginCtx.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
@@ -366,12 +373,14 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	err := sc.delCheckpoints(ctx, inputs)
 	if err != nil {
 		sc.resume(ctx, inputs)
+		sc.logger.Errorf("delCheckpoint error : %v", err)
 		ginCtx.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
 	err = sc.resume(ctx, inputs)
 	if err != nil {
+		sc.logger.Errorf("resume error : %v", err)
 		ginCtx.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
@@ -491,7 +500,7 @@ func (sc *SyncerCmd) filterOutput(ctx context.Context, inputs []string) ([]confi
 	return outputCfgs, nil
 }
 
-func (sc *SyncerCmd) flushdb(ctx context.Context, inputs []string) error {
+func (sc *SyncerCmd) flushdb(ctx context.Context, inputs []string, flushCmd string) error {
 	// check outputs
 	outputCfgs, err := sc.filterOutput(ctx, inputs)
 	if err != nil {
@@ -509,11 +518,11 @@ func (sc *SyncerCmd) flushdb(ctx context.Context, inputs []string) error {
 				if err != nil {
 					return err
 				}
-				err = common.StringIsOk(cli.Client().Do("flushdb"))
+				err = common.StringIsOk(cli.Client().Do(flushCmd))
 				if err == nil {
-					sc.logger.Infof("send flushdb to %s", rcfg.Address())
+					sc.logger.Infof("send %s to %s", flushCmd, rcfg.Address())
 				} else {
-					sc.logger.Errorf("send flushdb to %s : %v", rcfg.Address(), err)
+					sc.logger.Errorf("send %s to %s : %v", flushCmd, rcfg.Address(), err)
 				}
 
 				return err
