@@ -80,9 +80,13 @@ func (c *Config) fix() error {
 	}
 
 	if c.Cluster != nil {
-		err := c.Cluster.fix()
-		if err != nil {
-			return err
+		if c.Cluster.GroupName != "" {
+			err := c.Cluster.fix()
+			if err != nil {
+				return err
+			}
+		} else {
+			c.Cluster = nil
 		}
 	}
 	if err := c.Server.fix(); err != nil {
@@ -137,6 +141,13 @@ func (sc *ServerConfig) fix() error {
 	}
 
 	return nil
+}
+
+func withPrefixTag(prefix, tag string) string {
+	if len(prefix) == 0 {
+		return tag
+	}
+	return prefix + "." + tag
 }
 
 type InputConfig struct {
@@ -233,13 +244,13 @@ func (sc *StorerConfig) fix() error {
 
 type OutputConfig struct {
 	Redis                  *RedisConfig
-	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint"`
+	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint" default:"true"`
 	ReplaceHashTag         bool          `yaml:"replaceHashTag"`
 	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
 	KeyExistsLog           bool          `yaml:"keyExistsLog"`
 	FunctionExists         string        `yaml:"functionExists"`
 	MaxProtoBulkLen        int           `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
-	TargetDbCfg            *int          `yaml:"targetDb"`
+	TargetDbCfg            *int          `yaml:"targetDb" default:"-1"`
 	TargetDb               int           `yaml:"-"`
 	TargetDbMap            map[int]int   `yaml:"targetDbMap"`
 	BatchCmdCount          uint          `yaml:"batchCmdCount"`
@@ -247,9 +258,9 @@ type OutputConfig struct {
 	BatchBufferSize        uint64        `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
-	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore"`
+	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore" default:"true"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
-	ReplayTransaction      *bool         `yaml:"replayTransaction"`
+	ReplayTransaction      *bool         `yaml:"replayTransaction" default:"true"`
 }
 
 func (of *OutputConfig) fix() error {
@@ -318,14 +329,14 @@ func (of *OutputConfig) fix() error {
 }
 
 type FilterConfig struct {
-	DbBlacklist  []int            `yaml:"dbBlacklist"`
-	CmdBlacklist []string         `yaml:"commandBlacklist"`
+	DbBlacklist  SliceInt         `yaml:"dbBlacklist"`
+	CmdBlacklist SliceString      `yaml:"commandBlacklist"`
 	KeyFilter    *FilterKeyConfig `yaml:"keyFilter"`
 }
 
 type FilterKeyConfig struct {
-	PrefixKeyWhitelist []string `yaml:"prefixKeyWhitelist"`
-	PrefixKeyBlacklist []string `yaml:"prefixKeyBlacklist"`
+	PrefixKeyWhitelist SliceString `yaml:"prefixKeyWhitelist"`
+	PrefixKeyBlacklist SliceString `yaml:"prefixKeyBlacklist"`
 }
 
 type LogHandlerFileConfig struct {
@@ -340,15 +351,23 @@ type LogHandlerConfig struct {
 	StdOut bool `yaml:"stdout"`
 }
 
+func (lc *LogHandlerConfig) fix() error {
+	if (lc.File == nil || (lc.File.FileName == "")) && !lc.StdOut {
+		lc.StdOut = true
+		lc.File = nil
+	}
+	return nil
+}
+
 type LogConfig struct {
 	LevelStr           string `yaml:"level"`
 	level              zapcore.Level
 	StacktraceLevelStr string `yaml:"StacktraceLevel"`
 	stacktraceLevel    zapcore.Level
-	Hander             LogHandlerConfig `yaml:"handler"`
-	Caller             *bool            `yaml:"withCaller"`
+	Handler            LogHandlerConfig `yaml:"handler"`
+	Caller             *bool            `yaml:"withCaller" default:"true"`
 	Func               *bool            `yaml:"withFunc"`
-	ModuleName         *bool            `yaml:"withModuleName"`
+	ModuleName         *bool            `yaml:"withModuleName" default:"true"`
 }
 
 func LogModuleName(prefix string) string {
@@ -370,8 +389,8 @@ func GetLogLevel() zapcore.Level {
 }
 
 func (lc *LogConfig) fix() error {
-	if lc.Hander.File == nil && !lc.Hander.StdOut {
-		lc.Hander.StdOut = true
+	if err := lc.Handler.fix(); err != nil {
+		return err
 	}
 	if lc.Caller == nil {
 		caller := true
@@ -411,7 +430,7 @@ func GetAddressesFromRedisConfigSlice(rcfg []RedisConfig) []string {
 }
 
 type RedisConfig struct {
-	Addresses      []string
+	Addresses      SliceString
 	shards         []*RedisClusterShard
 	UserName       string    `yaml:"userName"`
 	Password       string    `yaml:"password"`
@@ -464,8 +483,8 @@ func (rc *RedisConfig) SetMigrating(m bool) {
 }
 
 type RedisClusterOptions struct {
-	HandleMoveErr bool `yaml:"handleMoveErr"`
-	HandleAskErr  bool `yaml:"handleAskErr"`
+	HandleMoveErr bool `yaml:"handleMoveErr" default:"true"`
+	HandleAskErr  bool `yaml:"handleAskErr" default:"true"`
 }
 
 func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {

@@ -18,7 +18,7 @@ import (
 )
 
 type Storer struct {
-	Id          int
+	Id          string
 	mux         sync.RWMutex // private functions aren't thread safe
 	baseDir     string       // storage directory
 	dir         string       // baseDir + runId
@@ -33,7 +33,7 @@ type Storer struct {
 	flush       config.FlushPolicy
 }
 
-func NewStorer(id int, baseDir string, maxSize, logSize int64, flush config.FlushPolicy) *Storer {
+func NewStorer(id string, baseDir string, maxSize, logSize int64, flush config.FlushPolicy) *Storer {
 	ss := &Storer{
 		Id:          id,
 		baseDir:     baseDir,
@@ -41,7 +41,7 @@ func NewStorer(id int, baseDir string, maxSize, logSize int64, flush config.Flus
 		logSize:     logSize,
 		readBufSize: 10 * 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
-		logger:      log.WithLogger(config.LogModuleName(fmt.Sprintf("[Storer(%d)] ", id))),
+		logger:      log.WithLogger(config.LogModuleName(fmt.Sprintf("[Storer(%s)] ", id))),
 		dataSet:     newDataSet(nil, nil),
 		flush:       flush,
 	}
@@ -380,7 +380,7 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 	ds := s.getDataSet()
 	ds.CloseAofWriter()
 
-	w, err := NewAofWriter(s.dir, offset, r, s.logSize, s.flush)
+	w, err := NewAofWriter(s.Id, s.dir, offset, r, s.logSize, s.flush)
 	if err != nil {
 		return nil, err
 	}

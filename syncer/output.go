@@ -56,61 +56,61 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "send_cmd",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	filterCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "filter_cmd",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	sendSizeCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "send_size",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	failCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "fail_cmd",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	succCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "success_cmd",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	batchSendCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "sender",
-		Labels:    []string{"id", "input", "transaction", "result"},
+		Labels:    []string{"input", "transaction", "result"},
 	})
 	fullSyncProgress = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "full_sync",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	sendOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "send_offset",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	ackOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "ack_offset",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 	syncDelayGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
 		Name:      "sync_delay",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
 )
 
@@ -221,12 +221,12 @@ func (ro *RedisOutput) SendAof(ctx context.Context, reader *store.Reader) error 
 }
 
 func (ro *RedisOutput) sendCounterAdd(v uint) {
-	sendCounter.Add(float64(v), ro.Id, ro.cfg.InputName)
+	sendCounter.Add(float64(v), ro.cfg.InputName)
 	ro.sendCounterRt.Add(int64(v))
 }
 
 func (ro *RedisOutput) filterCounterAdd(v uint) {
-	filterCounter.Add(float64(v), ro.Id, ro.cfg.InputName)
+	filterCounter.Add(float64(v), ro.cfg.InputName)
 	ro.filterCounterRt.Add(int64(v))
 }
 
@@ -251,7 +251,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 			rByte := readBytes.Load()
 			ro.logger.Infof("sync rdb process : total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
 				nsize, rByte, 100*rByte/nsize, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
-			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.Id, ro.cfg.InputName)
+			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.cfg.InputName)
 		}
 		//ro.logger.Infof("sync rdb done")
 	}
@@ -454,13 +454,13 @@ func (ro *RedisOutput) receiveReply(cli client.Redis) error {
 	_, err := cli.Receive()
 	if err != nil {
 		ro.logger.Errorf("output reply error : redis(%v), err(%v)", cli.Addresses(), err)
-		failCounter.Inc(ro.Id, ro.cfg.InputName)
+		failCounter.Inc(ro.cfg.InputName)
 		if net.CheckHandleNetError(err) {
 			return fmt.Errorf("network error : %w", err)
 		}
 		return fmt.Errorf("reply error : %w", err)
 	}
-	succCounter.Inc(ro.Id, ro.cfg.InputName)
+	succCounter.Inc(ro.cfg.InputName)
 	return nil
 }
 
@@ -669,7 +669,7 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, conn client.Redis, 
 					replayWait.Close(err)
 					return
 				}
-				ackOffsetGauge.Set(float64(offset), ro.Id, ro.cfg.InputName)
+				ackOffsetGauge.Set(float64(offset), ro.cfg.InputName)
 				repliedOffset.Store(offset)
 			case <-updateCpTicker.C:
 				err = updateCp()
@@ -691,23 +691,23 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, conn client.Redis, 
 			}
 			err := conn.SendAndFlush(item.Cmd, item.Args...)
 			if err != nil {
-				batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "no", "error")
+				batchSendCounter.Add(1, ro.cfg.InputName, "no", "error")
 				ro.logger.Errorf("send cmds error : cmd(%s), args(%v), offset(%d), err(%v)", item.Cmd, item.Args, item.Offset, err)
 				return err
 			}
-			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "no", "ok")
+			batchSendCounter.Add(1, ro.cfg.InputName, "no", "ok")
 
-			sendOffsetGauge.Set(float64(item.Offset), ro.Id, ro.cfg.InputName)
+			sendOffsetGauge.Set(float64(item.Offset), ro.cfg.InputName)
 			sendOffsetChan <- item.Offset
 			length := len(item.Cmd)
 			for i := range item.Args {
 				length += len(item.Args[i].([]byte))
 			}
 			ro.sendCounterAdd(1)
-			sendSizeCounter.Add(float64(length), ro.Id, ro.cfg.InputName)
+			sendSizeCounter.Add(float64(length), ro.cfg.InputName)
 			if item.syncDelayNs > 0 {
 				delay := time.Now().UnixNano() - item.syncDelayNs
-				syncDelayGauge.Set(float64(delay), ro.Id, item.syncDelayHost)
+				syncDelayGauge.Set(float64(delay), item.syncDelayHost)
 			}
 		case <-replayWait.Done():
 			return nil
@@ -779,14 +779,14 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 			if ce.syncDelayNs > 0 && delayNs == 0 {
 				delayNs = ce.syncDelayNs
 				//delay := time.Now().UnixNano() - ce.syncDelayNs
-				//syncDelayGauge.Set(float64(delay), ro.Id, ro.cfg.InputName)
+				//syncDelayGauge.Set(float64(delay), ro.cfg.InputName)
 			}
 		}
 
-		syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.Id, ro.cfg.InputName)
-		sendOffsetGauge.Set(float64(lastOffset), ro.Id, ro.cfg.InputName)
+		syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
+		sendOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 		ro.sendCounterAdd(queuedCmdCount)
-		sendSizeCounter.Add(float64(queuedByteSize), ro.Id, ro.cfg.InputName)
+		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
 
 		if needBatch {
 			if shouldUpdateCP {
@@ -811,10 +811,10 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 
 			batcher.Put("exec")
 			// if err := conn.Send("exec"); err != nil {
-			// 	batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "error")
+			// 	batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
 			// 	return handleDirectError(fmt.Errorf("send exec error : %w", err))
 			// } else {
-			// 	batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "ok")
+			// 	batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
 			// }
 		}
 
@@ -823,20 +823,20 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 		// }
 		rets, err := batcher.Exec()
 		if err != nil {
-			failCounter.Inc(ro.Id, ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "error")
+			failCounter.Inc(ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
 			return handleDirectError(err)
 		}
 		err = ro.checkReplies(rets)
 		if err != nil {
-			failCounter.Inc(ro.Id, ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "error")
+			failCounter.Inc(ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
 			return err
 		}
 
-		succCounter.Inc(ro.Id, ro.cfg.InputName)
-		batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, "yes", "ok")
-		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.Id, ro.cfg.InputName)
+		succCounter.Inc(ro.cfg.InputName)
+		batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
+		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.cfg.InputName)
 
 		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
 			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
@@ -1023,30 +1023,30 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 
 		rets, err := batcher.Exec()
 		if delayNs > 0 {
-			syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.Id, ro.cfg.InputName)
+			syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
 		}
 
 		if err != nil {
 			ro.logger.Errorf("exec error %v", err)
-			failCounter.Inc(ro.Id, ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, transactionLabel, "error")
+			failCounter.Inc(ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
 			return err
 		}
 
-		sendOffsetGauge.Set(float64(lastOffset), ro.Id, ro.cfg.InputName)
-		sendSizeCounter.Add(float64(queuedByteSize), ro.Id, ro.cfg.InputName)
+		sendOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
+		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
 		ro.sendCounterAdd(uint(cmdCounter))
-		batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, transactionLabel, "ok")
+		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 
 		err = ro.checkReplies(rets)
 		if err != nil {
-			failCounter.Inc(ro.Id, ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.Id, ro.cfg.InputName, transactionLabel, "error")
+			failCounter.Inc(ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
 			return err
 		}
 
-		succCounter.Inc(ro.Id, ro.cfg.InputName)
-		ackOffsetGauge.Set(float64(lastOffset), ro.Id, ro.cfg.InputName)
+		succCounter.Inc(ro.cfg.InputName)
+		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 
 		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
 			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)

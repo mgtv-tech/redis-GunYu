@@ -74,9 +74,9 @@ func ParseRdbFile(name string, includeTmpRdb bool) *RdbFile {
 }
 
 // rdb name : sourceDir/$runId/$rdbDir/$offset_size.rdb
-func NewRdbWriter(id int, r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
+func NewRdbWriter(id string, r io.Reader, rdbDir string, offset int64, rdbSize int64) (*RdbWriter, error) {
 	s := &RdbWriter{
-		id:      strconv.Itoa(id),
+		id:      id,
 		rdbSize: rdbSize,
 		reader:  r,
 		dir:     rdbDir,
@@ -161,7 +161,7 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "rdb",
 		Name:      "write",
-		Labels:    []string{"id"},
+		Labels:    []string{"input"},
 	})
 )
 

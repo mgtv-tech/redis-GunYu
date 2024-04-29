@@ -71,8 +71,8 @@ type AofWriter struct {
 	reader io.Reader
 }
 
-func NewAofWriter(dir string, offset int64, reader io.Reader, maxLogSize int64, flushPolicy config.FlushPolicy) (*AofWriter, error) {
-	a, e := NewAofRotater(dir, offset, maxLogSize, flushPolicy)
+func NewAofWriter(id string, dir string, offset int64, reader io.Reader, maxLogSize int64, flushPolicy config.FlushPolicy) (*AofWriter, error) {
+	a, e := NewAofRotater(id, dir, offset, maxLogSize, flushPolicy)
 	if e != nil {
 		return nil, e
 	}
@@ -141,6 +141,7 @@ func (w *AofWriter) Right() int64 {
 // AofRotater
 // it is not thread safe,
 type AofRotater struct {
+	Id            string
 	mux           sync.RWMutex
 	dir           string
 	file          *os.File
@@ -160,8 +161,9 @@ type AofRotater struct {
 	flushPolicy   config.FlushPolicy
 }
 
-func NewAofRotater(dir string, offset int64, maxLogSize int64, flush config.FlushPolicy) (*AofRotater, error) {
+func NewAofRotater(id string, dir string, offset int64, maxLogSize int64, flush config.FlushPolicy) (*AofRotater, error) {
 	w := &AofRotater{
+		Id:          id,
 		dir:         dir,
 		maxLogSize:  maxLogSize,
 		logger:      log.WithLogger(config.LogModuleName("[AofRotater] ")),
@@ -229,10 +231,11 @@ func (w *AofRotater) openFile(offset int64) error {
 }
 
 var (
-	writeDataCounter = metric.NewCounter(metric.CounterOpts{
+	writeDataCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "aof",
 		Name:      "write",
+		Labels:    []string{"input"},
 	})
 )
 
@@ -249,7 +252,7 @@ func (w *AofRotater) write(buf []byte) error {
 		w.crc.Write(buf[:n]) // error is always nil
 		w.filesize += int64(n)
 		w.right.Add(int64(n))
-		writeDataCounter.Add(float64(n))
+		writeDataCounter.Add(float64(n), w.Id)
 		w.getObserver().Write(w.left, int64(n))
 	}
 	if err != nil {

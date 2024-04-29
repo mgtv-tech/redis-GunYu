@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -113,17 +115,22 @@ func (rt RedisType) String() string {
 	return redisTypeMapT[rt]
 }
 
+func (rt *RedisType) Set(val string) error {
+	xx, ok := redisTypeMap[val]
+	if !ok {
+		//return newConfigError("invalid redis type : %s", val)
+		xx = RedisTypeStandalone
+	}
+	*rt = xx
+	return nil
+}
+
 func (rt *RedisType) UnmarshalYAML(value *yaml.Node) error {
 	var vv string
 	if err := value.Decode(&vv); err != nil {
 		return err
 	}
-	xx, ok := redisTypeMap[vv]
-	if !ok {
-		return newConfigError("invalid redis type : %s", vv)
-	}
-	*rt = xx
-	return nil
+	return rt.Set(vv)
 }
 
 // input mode
@@ -148,12 +155,8 @@ func (rt InputMode) String() string {
 	return "unknown"
 }
 
-func (rt *InputMode) UnmarshalYAML(value *yaml.Node) error {
-	var vv string
-	if err := value.Decode(&vv); err != nil {
-		return err
-	}
-	switch vv {
+func (rt *InputMode) Set(val string) error {
+	switch val {
 	case "static":
 		*rt = InputModeStatic
 	case "auto":
@@ -162,6 +165,14 @@ func (rt *InputMode) UnmarshalYAML(value *yaml.Node) error {
 		*rt = InputModeDynamic
 	}
 	return nil
+}
+
+func (rt *InputMode) UnmarshalYAML(value *yaml.Node) error {
+	var vv string
+	if err := value.Decode(&vv); err != nil {
+		return err
+	}
+	return rt.Set(vv)
 }
 
 // sync from
@@ -186,12 +197,8 @@ func (rt SelNodeStrategy) String() string {
 	return "unknown"
 }
 
-func (rt *SelNodeStrategy) UnmarshalYAML(value *yaml.Node) error {
-	var vv string
-	if err := value.Decode(&vv); err != nil {
-		return err
-	}
-	switch vv {
+func (rt *SelNodeStrategy) Set(val string) error {
+	switch val {
 	case "prefer_slave":
 		*rt = SelNodeStrategyPreferSlave
 	case "master":
@@ -200,14 +207,21 @@ func (rt *SelNodeStrategy) UnmarshalYAML(value *yaml.Node) error {
 		*rt = SelNodeStrategySlave
 	default:
 		*rt = SelNodeStrategyPreferSlave
-		return nil
 	}
 	return nil
 }
 
+func (rt *SelNodeStrategy) UnmarshalYAML(value *yaml.Node) error {
+	var vv string
+	if err := value.Decode(&vv); err != nil {
+		return err
+	}
+	return rt.Set(vv)
+}
+
 type EtcdConfig struct {
 	// Endpoints is a list of URLs.
-	Endpoints []string `yaml:"endpoints"`
+	Endpoints SliceString `yaml:"endpoints"`
 
 	// AutoSyncInterval is the interval to update endpoints with its latest members.
 	// 0 disables auto-sync. By default auto-sync is disabled.
@@ -258,4 +272,56 @@ type FlushPolicy struct {
 	EveryWrite bool
 	DirtySize  int64
 	Auto       bool
+}
+
+type SliceString []string
+
+func (ss *SliceString) UnmarshalYAML(value *yaml.Node) error {
+	var vv []string
+	if err := value.Decode(&vv); err != nil {
+		return err
+	}
+	*ss = vv
+	return nil
+}
+
+// for flag
+func (ss *SliceString) String() string {
+	return "slicestring" // tag
+}
+
+// for flag
+func (ss *SliceString) Set(val string) error {
+	vv := strings.Split(val, ",")
+	*ss = vv
+	return nil
+}
+
+type SliceInt []int
+
+func (ss *SliceInt) UnmarshalYAML(value *yaml.Node) error {
+	var vv []int
+	if err := value.Decode(&vv); err != nil {
+		return err
+	}
+	*ss = vv
+	return nil
+}
+
+// for flag
+func (ss *SliceInt) String() string {
+	return "sliceint" // tag
+}
+
+// for flag
+func (ss *SliceInt) Set(val string) error {
+	vv := strings.Split(val, ",")
+	for _, v := range vv {
+		ii, err := strconv.Atoi(v)
+		if err != nil {
+			return err
+		}
+		*ss = append(*ss, ii)
+	}
+	return nil
 }

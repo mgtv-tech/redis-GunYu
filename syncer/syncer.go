@@ -78,7 +78,7 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%d)] ", cfg.Id))),
 	}
 	sy.channel = NewStoreChannel(StorerConf{
-		Id:      cfg.Id,
+		InputId: cfg.Input.Address(),
 		Dir:     cfg.Channel.Storer.DirPath,
 		MaxSize: cfg.Channel.Storer.MaxSize,
 		LogSize: cfg.Channel.Storer.LogSize,

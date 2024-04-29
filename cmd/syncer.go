@@ -27,6 +27,15 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/syncer"
 )
 
+var (
+	roleChangeCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "syncer",
+		Name:      "role_change",
+		Labels:    []string{"input"},
+	})
+)
+
 type syncerInfo struct {
 	sync syncer.Syncer
 	wait usync.WaitCloser
@@ -543,7 +552,7 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 				}, func(i interface{}) { syncerWait.Close(fmt.Errorf("panic : %v", i)) })
 
 				// ticker
-				sc.clusterTicker(syncerWait, role, elect)
+				sc.clusterTicker(syncerWait, role, elect, cfg.Input.Address())
 
 				// wait
 				sy.Stop()
@@ -604,7 +613,7 @@ func (sc *SyncerCmd) clusterRenew(ctx context.Context, elect *cluster.Election) 
 	return err
 }
 
-func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect *cluster.Election) {
+func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect *cluster.Election, input string) {
 	if wait.IsClosed() {
 		return
 	}
@@ -633,6 +642,7 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 					return false, err
 				}
 				if role == cluster.RoleLeader {
+					roleChangeCounter.Inc(input)
 					return true, nil
 				}
 			}

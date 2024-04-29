@@ -82,7 +82,7 @@ type RedisInput struct {
 }
 
 type StorerConf struct {
-	Id      int
+	InputId string
 	Dir     string
 	MaxSize int64
 	LogSize int64
@@ -105,13 +105,13 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "input",
 		Name:      "offset",
-		Labels:    []string{"id", "input"},
+		Labels:    []string{"input"},
 	})
-	metricSyncType = metric.NewGaugeVec(metric.GaugeVecOpts{
+	metricSyncType = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "input",
 		Name:      "sync_type",
-		Labels:    []string{"id", "input", "sync_type"},
+		Labels:    []string{"input", "sync_type"},
 	})
 )
 
@@ -314,9 +314,9 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	if isFullSync {
 		locSp.Offset = sOffset.Offset
 		outSp.Offset = sOffset.Offset - rdbSize // less than rdb offset,
-		metricSyncType.Inc(ri.id, ri.inputAddr, "full")
+		metricSyncType.Inc(ri.inputAddr, "full")
 	} else {
-		metricSyncType.Inc(ri.id, ri.inputAddr, "incr")
+		metricSyncType.Inc(ri.inputAddr, "incr")
 	}
 
 	if outSp.Offset <= 0 {
@@ -427,7 +427,7 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 			select {
 			case <-ri.fsm.StateNotify(SyncStateFullSynced):
 				ackOffset = writer.Right()
-				metricOffset.Set(float64(ackOffset), ri.id, ri.inputAddr)
+				metricOffset.Set(float64(ackOffset), ri.inputAddr)
 			default:
 			}
 			if err := cli.SendPSyncAck(ackOffset); err != nil {

@@ -127,7 +127,11 @@ make
 ### 使用
 
 ```
+# 配置文件启动
 ./redisGunYu -conf ./config.yaml
+
+# 或者 
+./redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
 
 

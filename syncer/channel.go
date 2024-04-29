@@ -32,10 +32,10 @@ type StoreChannel struct {
 }
 
 func NewStoreChannel(cfg StorerConf) *StoreChannel {
-	storer := store.NewStorer(cfg.Id, cfg.Dir, cfg.MaxSize, cfg.LogSize, cfg.flush)
+	storer := store.NewStorer(cfg.InputId, cfg.Dir, cfg.MaxSize, cfg.LogSize, cfg.flush)
 	return &StoreChannel{
 		storer: storer,
-		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[StoreChannel(%d)] ", cfg.Id))),
+		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[StoreChannel(%s)] ", cfg.InputId))),
 	}
 }
 
