@@ -1,6 +1,6 @@
 FROM golang:latest AS builder
 
-#ENV GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=https://goproxy.cn,direct
 ENV GO111MODULE=on
 
 WORKDIR /app/redisgunyu/
