@@ -54,7 +54,7 @@ type ReplicaLeader struct {
 
 func NewReplicaLeader(input Input, channel Channel) *ReplicaLeader {
 	replica := &ReplicaLeader{
-		logger:  log.WithLogger(config.LogModuleName("[ReplicaLeader] ")),
+		logger:  log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaLeader(%s)] ", input.Id()))),
 		input:   input,
 		channel: channel,
 	}

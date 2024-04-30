@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -68,7 +67,6 @@ type Input interface {
 }
 
 type RedisInput struct {
-	id        string
 	inputAddr string
 	cfg       config.RedisConfig
 	wait      usync.WaitCloser
@@ -89,14 +87,13 @@ type StorerConf struct {
 	flush   config.FlushPolicy
 }
 
-func NewRedisInput(id int, redisCfg config.RedisConfig) *RedisInput {
+func NewRedisInput(redisCfg config.RedisConfig) *RedisInput {
 	return &RedisInput{
-		id:        strconv.Itoa(id),
 		inputAddr: redisCfg.Address(),
 		wait:      usync.NewWaitCloser(nil),
 		fsm:       NewSyncFiniteStateMachine(),
 		cfg:       redisCfg,
-		logger:    log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisInput(%d)] ", id))),
+		logger:    log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisInput(%s)] ", redisCfg.Address()))),
 	}
 }
 

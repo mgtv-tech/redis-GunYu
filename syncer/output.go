@@ -38,7 +38,6 @@ type Output interface {
 }
 
 type RedisOutput struct {
-	Id              string
 	cfg             RedisOutputConfig
 	startDbId       int
 	logger          log.Logger
@@ -120,9 +119,8 @@ func (ro *RedisOutput) Close() {
 func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	//labels := map[string]string{"id": strconv.Itoa(cfg.Id), "input": cfg.InputName}
 	ro := &RedisOutput{
-		Id:     strconv.Itoa(cfg.Id),
 		cfg:    cfg,
-		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisOutput(%d)] ", cfg.Id))),
+		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisOutput(%s)] ", cfg.InputName))),
 	}
 	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
@@ -143,7 +141,6 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 }
 
 type RedisOutputConfig struct {
-	Id                         int
 	InputName                  string
 	Redis                      config.RedisConfig
 	Parallel                   int
@@ -505,7 +502,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 
 		sCmd, argv, err := client.ParseArgs(resp) // lower case
 		if err != nil {
-			err = fmt.Errorf("parse error : id(%d), err(%w)", ro.cfg.Id, err)
+			err = fmt.Errorf("parse error : input(%s), err(%w)", ro.cfg.InputName, err)
 			ro.logger.Errorf("%s", err.Error())
 			return errors.Join(ErrCorrupted, err)
 		}
@@ -514,13 +511,13 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		if sCmd != "ping" {
 			if strings.EqualFold(sCmd, "select") {
 				if len(argv) != 1 {
-					err = fmt.Errorf("syncer(%d) : select command len(args) is %d", ro.cfg.Id, len(argv))
+					err = fmt.Errorf("syncer(%s) : select command len(args) is %d", ro.cfg.InputName, len(argv))
 					ro.logger.Errorf("%s", err.Error())
 					return err
 				}
 				n, err := strconv.Atoi(util.BytesToString(argv[0]))
 				if err != nil {
-					err = fmt.Errorf("syncer(%d) parse db error : db(%s), err(%w)", ro.cfg.Id, argv[0], err)
+					err = fmt.Errorf("syncer(%s) parse db error : db(%s), err(%w)", ro.cfg.InputName, argv[0], err)
 					ro.logger.Errorf("%s", err.Error())
 					return err
 				}
