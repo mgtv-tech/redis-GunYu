@@ -1,0 +1,50 @@
+name: Build and Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+      tags:
+        description: 'test'
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.20'
+
+      - name: Build
+        run: make allos
+
+      - name: Get the version
+        id: get_version
+        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+
+      - name: Create Zip Archive
+        run: |
+          zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip redisGunYu.darwin-amd64
+
+      - name: Upload macOS Asset
+        id: upload_mac_asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
+          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
+          asset_content_type: application/zip
+

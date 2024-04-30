@@ -13,7 +13,7 @@ input:
   syncFrom: prefer_slave
 channel:
   storer:
-    dirPath: /tmp/redisgunyu-cluster
+    dirPath: /tmp/redisgunyu-cluster1
     maxSize: 209715200
     logSize: 20971520
   staleCheckpointDuration: 10m
@@ -31,7 +31,7 @@ log:
   level: info
   handler:
     stdout: true
-  withCaller: false
+  withCaller: true
   withFunc: false
 cluster:
   groupName: redis1
