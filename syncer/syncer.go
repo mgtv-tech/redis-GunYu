@@ -75,10 +75,10 @@ type Syncer interface {
 func NewSyncer(cfg SyncerConfig) Syncer {
 	sy := &syncer{
 		cfg:    cfg,
-		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%d)] ", cfg.Id))),
+		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%s)] ", cfg.Input.Address()))),
 	}
 	sy.channel = NewStoreChannel(StorerConf{
-		Id:      cfg.Id,
+		InputId: cfg.Input.Address(),
 		Dir:     cfg.Channel.Storer.DirPath,
 		MaxSize: cfg.Channel.Storer.MaxSize,
 		LogSize: cfg.Channel.Storer.LogSize,
@@ -309,7 +309,7 @@ func (s *syncer) runLeader() error {
 	}
 
 	s.guard.Lock()
-	input := NewRedisInput(s.cfg.Id, s.cfg.Input)
+	input := NewRedisInput(s.cfg.Input)
 	input.SetOutput(output)
 	input.SetChannel(s.channel)
 	leader := NewReplicaLeader(input, s.channel)
@@ -384,7 +384,6 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	}
 
 	outputCfg := RedisOutputConfig{
-		Id:                         s.cfg.Id,
 		InputName:                  s.cfg.Input.Address(),
 		Redis:                      s.cfg.Output,
 		Parallel:                   config.Get().Output.ReplayRdbParallel,

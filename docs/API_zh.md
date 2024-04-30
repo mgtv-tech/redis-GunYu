@@ -8,6 +8,7 @@
     - [暂停同步](#暂停同步)
     - [恢复同步](#恢复同步)
     - [同步状态信息](#同步状态信息)
+    - [同步配置信息](#同步配置信息)
     - [强制全量同步](#强制全量同步)
   - [回收本地缓存](#回收本地缓存)
   - [可观测性](#可观测性)
@@ -91,6 +92,21 @@ curl http://http_server:port/syncer/status
     }
 ]
 ```
+
+
+### 同步配置信息
+
+默认是yaml格式
+```
+GET http://http_server:port/syncer/config
+```
+或者json格式
+```
+GET http://http_server:port/syncer/config?format=json
+```
+
+
+
 
 ### 强制全量同步
 ```

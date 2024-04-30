@@ -28,7 +28,9 @@ func runCmd() error {
 	var cmder cmd.Cmd
 	switch config.GetFlag().Cmd {
 	case "sync":
-		panicIfError(config.InitConfig(config.GetFlag().ConfigPath))
+		if config.GetFlag().ConfigPath != "" {
+			panicIfError(config.InitConfig(config.GetFlag().ConfigPath))
+		}
 		panicIfError(log.InitLog(*config.Get().Log))
 		cmder = cmd.NewSyncerCmd()
 	case "rdb":

@@ -194,6 +194,16 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		ctx.JSON(http.StatusOK, sys)
 	})
 
+	syncerGroup.GET("config", func(ctx *gin.Context) {
+		cfg := config.Get()
+		format := ctx.Query("format")
+		if format == "json" {
+			ctx.JSON(http.StatusOK, cfg)
+		} else {
+			ctx.YAML(http.StatusOK, cfg)
+		}
+	})
+
 	syncerGroup.POST("restart", func(ctx *gin.Context) {
 		sc.getRunWait().Close(errors.Join(context.Canceled, syncer.ErrRestart))
 	})

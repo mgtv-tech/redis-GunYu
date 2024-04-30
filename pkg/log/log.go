@@ -29,15 +29,15 @@ func InitLog(cfg config.LogConfig) error {
 	//return nil
 	var err error
 	syncers := []zapcore.WriteSyncer{}
-	if cfg.Hander.File != nil {
+	if cfg.Handler.File != nil {
 		syncers = append(syncers, zapcore.AddSync(&lumberjack.Logger{
-			Filename:   cfg.Hander.File.FileName,
-			MaxSize:    cfg.Hander.File.MaxSize,
-			MaxBackups: cfg.Hander.File.MaxBackups,
-			MaxAge:     cfg.Hander.File.MaxAge,
+			Filename:   cfg.Handler.File.FileName,
+			MaxSize:    cfg.Handler.File.MaxSize,
+			MaxBackups: cfg.Handler.File.MaxBackups,
+			MaxAge:     cfg.Handler.File.MaxAge,
 		}))
 	}
-	if cfg.Hander.StdOut {
+	if cfg.Handler.StdOut {
 		syncers = append(syncers, zapcore.AddSync(zapcore.Lock(os.Stdout)))
 	}
 	if len(syncers) == 0 {
