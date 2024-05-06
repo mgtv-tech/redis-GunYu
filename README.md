@@ -126,13 +126,25 @@ make
 
 ### 使用
 
+配置文件的方式启动
 ```
-# 配置文件启动
 ./redisGunYu -conf ./config.yaml
+```
 
-# 或者 
+命令行传递参数的方式启动
+``` 
 ./redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
+
+以容器方式运行
+```
+docker run redisgunyu --sync.input.redis.addresses=172.10.10.10:6379 --sync.output.redis.addresses=172.10.10.11:6379
+
+
+# 如果本机测试，则可以以host网络模式启动容器`--network=host`，使redisGunYu能够和redis进行网络通信
+docker run --network=host redisgunyu --sync.input.redis.addresses=127.0.0.1:6700 --sync.output.redis.addresses=127.0.0.1:6710
+```
+
 
 
 
