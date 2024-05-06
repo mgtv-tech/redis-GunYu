@@ -12,6 +12,7 @@ on:
       tags:
         description: 'test'
 
+permissions: write-all
 
 jobs:
   build:
