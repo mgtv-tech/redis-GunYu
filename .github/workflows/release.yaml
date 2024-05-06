@@ -1,0 +1,85 @@
+name: Build and Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+      tags:
+        description: 'test'
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.20'
+
+      - name: Build
+        run: make allos
+
+      - name: Get the version
+        id: get_version
+        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+
+      - name: Create Zip Archive
+        run: |
+          zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip redisGunYu.darwin-amd64
+          zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-arm64.zip redisGunYu.darwin-arm64
+          zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip redisGunYu.win-amd64
+          zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip redisGunYu.linux-amd64
+
+      - name: Upload MacOS amd64 Asset
+        id: upload_macOS_amd64_asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
+          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
+          asset_content_type: application/zip
+
+      - name: Upload MacOS arm64 Asset
+        id: upload_macOS_arm64_asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-arm64.zip
+          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-arm64.zip
+          asset_content_type: application/zip
+
+      - name: Upload windows amd64 Asset
+        id: upload_win_amd64_asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip
+          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip
+          asset_content_type: application/zip
+
+      - name: Upload linux amd64 Asset
+        id: upload_linux_amd64_asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip
+          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip
+          asset_content_type: application/zip
