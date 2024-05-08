@@ -13,6 +13,7 @@ import (
 	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
 	"github.com/mgtv-tech/redis-GunYu/pkg/cluster"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
@@ -71,6 +72,15 @@ type Syncer interface {
 	Role() SyncerRole
 	TransactionMode() bool
 }
+
+var (
+	syncerStateGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "sync_state",
+		Labels:    []string{"input", "state"},
+	})
+)
 
 func NewSyncer(cfg SyncerConfig) Syncer {
 	sy := &syncer{
@@ -260,9 +270,21 @@ func (s *syncer) DelRunId() {
 	}
 }
 
+func (s *syncer) updateStateMetric() {
+	state := s.getState()
+	for i := SyncerStateReadyRun; i <= SyncerStateStop; i++ {
+		if state == i {
+			syncerStateGauge.Set(1, s.cfg.Input.Address(), i.String())
+		} else {
+			syncerStateGauge.Set(0, s.cfg.Input.Address(), i.String())
+		}
+	}
+}
+
 func (s *syncer) run() error {
 	for {
 		state := s.getState()
+		s.updateStateMetric()
 		switch state {
 		case SyncerStateReadyRun, SyncerStateRun:
 			role := s.getRole()
@@ -319,6 +341,8 @@ func (s *syncer) runLeader() error {
 	wait := s.wait
 	s.guard.Unlock()
 
+	s.updateStateMetric()
+
 	leader.Start()
 
 	wait.WgAdd(1)
@@ -348,6 +372,8 @@ func (s *syncer) runFollower() error {
 	s.state = SyncerStateRun
 	wait := s.wait
 	s.guard.RUnlock()
+
+	s.updateStateMetric()
 
 	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
 

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mgtv-tech/redis-GunYu/pkg/version"
 )
 
 var (
@@ -70,6 +72,8 @@ func LoadFlags() error {
 	FlagsParseToStruct("sync", &tmpCfg)
 
 	flag.Parse()
+
+	version.Init()
 
 	if flagVar.Cmd == "sync" && len(flagVar.ConfigPath) == 0 {
 		cfg = &tmpCfg
