@@ -14,13 +14,11 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
-	"github.com/mgtv-tech/redis-GunYu/pkg/version"
 )
 
 func main() {
 	maxprocs.Set()
 	panicIfError(config.LoadFlags())
-	version.Init()
 	panicIfError(runCmd())
 }
 

@@ -405,7 +405,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 5,
         "x": 17,
         "y": 1
       },
@@ -1439,14 +1439,14 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "sum(redisGunYu_input_sync_type{cluster=\"$cluster\"}) by (input)",
+              "expr": "sum(increase(redisGunYu_input_sync_type{cluster=\"$cluster\"}[5m])) by (input)",
               "instant": false,
               "legendFormat": "{{input}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "restart counter",
+          "title": "restart counter(within 5m)",
           "type": "timeseries"
         },
         {
@@ -1543,7 +1543,104 @@
               "refId": "A"
             }
           ],
-          "title": "restart counter  of full sync",
+          "title": "restart counter  of full sync(accumulated)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 25
+          },
+          "id": 41,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(redisGunYu_syncer_role_change{cluster=\"$cluster\"}[5m])) by (input)",
+              "instant": false,
+              "legendFormat": "{{input}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "role change counter(within 5m)",
           "type": "timeseries"
         }
       ],
@@ -1607,8 +1704,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1706,8 +1802,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1805,8 +1900,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1903,8 +1997,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -3207,6 +3300,6 @@
   "timezone": "",
   "title": "redis-GunYu",
   "uid": "cec2aa7f-716b-49b8-94dd-7ec011d2e034",
-  "version": 7,
+  "version": 8,
   "weekStart": ""
 }
