@@ -185,14 +185,14 @@ func (a *dataSetAof) CloseWriter() {
 }
 
 func (a *dataSetAof) Right() int64 {
-	a.mux.Lock()
-	defer a.mux.Unlock()
+	a.mux.RLock()
+	defer a.mux.RUnlock()
 	return a.left + a.rtSize.Load()
 }
 
 func (a *dataSetAof) Left() int64 {
-	a.mux.Lock()
-	defer a.mux.Unlock()
+	a.mux.RLock()
+	defer a.mux.RUnlock()
 	return a.left
 }
 
@@ -332,6 +332,22 @@ func (ds *dataSet) FindAof(left int64) *dataSetAof {
 	return ds.aofMap[left]
 }
 
+func (ds *dataSet) trimLastEmptyAof() {
+	ds.mux.Lock()
+	defer ds.mux.Unlock()
+
+	if len(ds.aofSegs) == 0 {
+		return
+	}
+
+	aofLast := len(ds.aofSegs) - 1
+	lastAof := ds.aofSegs[aofLast]
+	if lastAof.rtSize.Load() == 0 {
+		delete(ds.aofMap, lastAof.Left())
+		ds.aofSegs = ds.aofSegs[:aofLast]
+	}
+}
+
 func (ds *dataSet) IndexAof(offset int64) *dataSetAof {
 	ds.mux.Lock()
 	defer ds.mux.Unlock()
@@ -464,6 +480,7 @@ func (ds *dataSet) gcLogs(dir string, maxSize int64) {
 					log.Infof("GC Logs, remove aof file : file(%s)", aoffn)
 				}
 				size -= aof.rtSize.Load()
+				delete(ds.aofMap, ds.aofSegs[z].left)
 				ds.aofSegs = ds.aofSegs[z+1:]
 				aofLast--
 				z--
