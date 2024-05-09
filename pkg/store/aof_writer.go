@@ -316,7 +316,7 @@ func (w *AofRotater) closeAof() error { // ensure close() and write() are in sam
 
 		if w.filesize == headerSize {
 			err := ret(nil)
-			w.getObserver().Close(w.left, int64(headerSize))
+			w.getObserver().Close(w.left, int64(0))
 			err = errors.Join(err, os.Remove(w.filepath))
 			if err != nil {
 				w.logger.Errorf("remove empty file : file(%s), error(%v)", w.filepath, err)

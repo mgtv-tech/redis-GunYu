@@ -443,6 +443,11 @@ func (s *Storer) newAofWCloseObserver(w *AofWriter, ds *dataSet) func(args ...in
 		offset := args[0].(int64)
 		size := args[1].(int64)
 
+		if size == 0 {
+			ds.trimLastEmptyAof()
+			return
+		}
+
 		aof := ds.FindAof(offset)
 		if aof == nil {
 			s.logger.Errorf("aofClose file does not exist : %d", offset)

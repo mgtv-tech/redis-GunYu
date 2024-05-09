@@ -64,19 +64,21 @@ func (ts *rdbAofTestSuite) TestTruncateGap() {
 	}
 }
 
+func testMakeDataSet(left int64, size int64) *dataSet {
+	ds := newDataSet(&dataSetRdb{rdbSize: 2, left: left}, nil)
+	for i := int64(0); i < size-2; i++ {
+		aof := &dataSetAof{
+			left: left + 2 + i,
+		}
+		aof.rtSize.Store(1)
+		ds.AppendAof(aof)
+	}
+	return ds
+}
+
 func TestGcLog(t *testing.T) {
 
-	makeRdb := func(left int64, size int64) *dataSet {
-		ds := newDataSet(&dataSetRdb{rdbSize: 2, left: left}, nil)
-		for i := int64(0); i < size-2; i++ {
-			aof := &dataSetAof{
-				left: left + 2 + i,
-			}
-			aof.rtSize.Store(1)
-			ds.AppendAof(aof)
-		}
-		return ds
-	}
+	makeRdb := testMakeDataSet
 
 	makeStorer := func(max int64, size int64) *Storer {
 		storer := &Storer{
