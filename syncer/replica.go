@@ -127,7 +127,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 			err = fmt.Errorf("server handshake : startPoint(%v), error(%v)", sp, err)
 			return rl.handleError(stream, err, pb.SyncResponse_FAULT, "internal error", "")
 		} else {
-			rl.logger.Infof("server handshake : startPoint(%v)", sp)
+			rl.logger.Infof("server handshake : startPoint(%v), follower(%s:%d)", sp, followerRunId, followerOffset)
 		}
 		return nil
 	}
@@ -308,6 +308,7 @@ func (rf *ReplicaFollower) Run() error {
 			state = 1 // restart sync
 			rf.logger.Errorf("RunFollower error : state(%d), error(%v)", state, err)
 			if errors.Is(err, ErrBreak) || errors.Is(err, ErrRole) {
+				rf.wait.Sleep(2 * time.Second)
 				return err
 			}
 			rf.wait.Sleep(3 * time.Second) // sleep and try again
@@ -386,7 +387,7 @@ func (rf *ReplicaFollower) preSync(leaderSp StartPoint) (sp StartPoint, err erro
 	}
 	rf.logger.Infof("gap : leader(%v), follower(%v)", leaderSp, sp)
 
-	if sp.IsInitial() {
+	if sp.IsInitial() || !sp.IsValid() || sp.RunId != leaderSp.RunId {
 		if err = rf.channel.SetRunId(leaderSp.RunId); err != nil {
 			err = errors.Join(ErrRestart, err)
 			return

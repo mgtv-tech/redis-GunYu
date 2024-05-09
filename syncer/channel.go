@@ -50,7 +50,7 @@ func (sc *StoreChannel) StartPoint(ids []string) (StartPoint, error) {
 	if err != nil {
 		return StartPoint{}, err
 	}
-	if offset < 0 {
+	if offset < 0 || len(sc.storer.RunId()) == 0 {
 		return StartPoint{
 			RunId:  "?",
 			Offset: -1,
