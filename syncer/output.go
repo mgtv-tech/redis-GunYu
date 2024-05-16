@@ -181,10 +181,39 @@ func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
 }
 
 func (ro *RedisOutput) Send(ctx context.Context, reader *store.Reader) error {
+
+	// stats log
+	ro.stats(ctx)
+
 	if reader.IsAof() {
 		return ro.SendAof(ctx, reader)
 	}
 	return ro.SendRdb(ctx, reader)
+}
+
+func (ro *RedisOutput) stats(ctx context.Context) {
+	if config.Get().Output.Stats.DisableLog {
+		return
+	}
+	interval := config.Get().Output.Stats.LogInterval
+	usync.SafeGo(func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		lFilter := ro.filterCounterRt.Load()
+		lSend := ro.sendCounterRt.Load()
+		for {
+			select {
+			case <-ticker.C:
+				filter := ro.filterCounterRt.Load()
+				send := ro.sendCounterRt.Load()
+				ro.logger.Infof("stats : filterCmd(%d), sendCmd(%d)", filter-lFilter, send-lSend)
+				lFilter = filter
+				lSend = send
+			case <-ctx.Done():
+				return
+			}
+		}
+	}, nil)
 }
 
 func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error {
@@ -236,21 +265,31 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 	nsize := reader.Size()
 	ioReader := reader.IoReader()
 	var readBytes atomic.Int64
+	var fullDone atomic.Bool
 
 	statFn := func() {
+		startTime := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
+				if fullDone.Load() {
+					rByte := readBytes.Load()
+					ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
+						time.Since(startTime), nsize, rByte, 100, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
+					fullSyncProgress.Set(100, ro.cfg.InputName)
+					ro.logger.Infof("sync rdb done")
+				} else {
+					ro.logger.Infof("sync rdb abort")
+				}
 				return
 			case <-time.After(5 * time.Second):
 			}
 
 			rByte := readBytes.Load()
-			ro.logger.Infof("sync rdb process : total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
-				nsize, rByte, 100*rByte/nsize, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
+			ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
+				time.Since(startTime), nsize, rByte, 100*rByte/nsize, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
 			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.cfg.InputName)
 		}
-		//ro.logger.Infof("sync rdb done")
 	}
 
 	pipe := redis.ParseRdb(ioReader, &readBytes, config.RDBPipeSize, ro.cfg.Redis.Version)
@@ -297,6 +336,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 					return e.Err
 				}
 				if e.Done {
+					fullDone.Store(true)
 					return nil
 				}
 			case <-ctx.Done():
