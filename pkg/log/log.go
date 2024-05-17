@@ -3,6 +3,7 @@ package log
 import (
 	"errors"
 	"os"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -69,7 +70,7 @@ func InitLog(cfg config.LogConfig) error {
 		StacktraceKey:  "stacktrace",
 		LineEnding:     zapcore.DefaultLineEnding,
 		EncodeLevel:    zapcore.LowercaseLevelEncoder,
-		EncodeTime:     zapcore.RFC3339NanoTimeEncoder,
+		EncodeTime:     zapcore.TimeEncoderOfLayout(time.DateTime),
 		EncodeDuration: zapcore.SecondsDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 		//EncodeName:     zapcore.FullNameEncoder,
