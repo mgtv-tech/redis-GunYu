@@ -45,6 +45,8 @@ redis配置
   - cluster ： 
 - clusterOptions
   - replayTransaction ： 是否尝试使用事务（伪事务，不是基于multi/exec，而是将redis命令打包一次性发送到redis端执行）进行同步，默认开启
+- keepAlive : 每个redis节点的最大连接数
+- aliveTime : 保持连接超时时间
 
 
 ### 输入端
@@ -83,7 +85,7 @@ output配置如下：
 - batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
 - batchTickerMs ： 批量同步命令的等待时间，最多等待batchTickerMs毫秒再进行打包同步，默认10ms
 - batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTickerMs、batchBufferSize三者是或关系，只要满足一个，就进行同步。
-- replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量
+- replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
 - updateCheckpointTickerMs ： 默认1秒
 - keepaliveTicker ： 默认3秒，保持心跳时间间隔
 
