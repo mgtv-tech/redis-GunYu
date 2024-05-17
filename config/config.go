@@ -55,11 +55,6 @@ func (c *Config) fix() error {
 		c.Log = &LogConfig{}
 	}
 
-	if c.Output.ReplayRdbParallel <= 0 {
-		// @TODO docker
-		c.Output.ReplayRdbParallel = runtime.NumCPU()
-	}
-
 	for _, fix := range []fixInter{c.Input, c.Output, c.Channel, c.Log} {
 		if err := fix.fix(); err != nil {
 			return err
@@ -261,6 +256,7 @@ type OutputConfig struct {
 	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore" default:"true"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 	ReplayTransaction      *bool         `yaml:"replayTransaction" default:"true"`
+	Stats                  OutputStats   `yaml:"stats"`
 }
 
 func (of *OutputConfig) fix() error {
@@ -287,6 +283,14 @@ func (of *OutputConfig) fix() error {
 
 	if *of.ResumeFromBreakPoint && of.TargetDb != -1 {
 		return newConfigError("resume from breakpoint, but targetdb is not -1 : db(%d)", of.TargetDb)
+	}
+
+	if of.ReplayRdbParallel <= 0 {
+		// @TODO docker
+		of.ReplayRdbParallel = runtime.NumCPU() * 4
+		if of.ReplayRdbParallel > 128*4 {
+			of.ReplayRdbParallel = 128 * 4
+		}
 	}
 
 	if of.ReplayTransaction == nil {
@@ -325,7 +329,17 @@ func (of *OutputConfig) fix() error {
 	}
 	of.FunctionExists = strings.ToLower(of.FunctionExists)
 
+	// [1s, inf]
+	if of.Stats.LogInterval < time.Second {
+		of.Stats.LogInterval = time.Second * 5
+	}
+
 	return nil
+}
+
+type OutputStats struct {
+	DisableLog  bool          `yaml:"disableLog"`
+	LogInterval time.Duration `yaml:"logInterval"`
 }
 
 type FilterConfig struct {
@@ -444,6 +458,8 @@ type RedisConfig struct {
 	slots          RedisSlots
 	ClusterOptions *RedisClusterOptions `yaml:"clusterOptions"`
 	isMigrating    bool
+	KeepAlive      int           `yaml:"keepAlive"` // Maximum keep alive connecion in each node
+	AliveTime      time.Duration `yaml:"aliveTime"` // Keep alive timeout
 }
 
 func (rc *RedisConfig) Clone() *RedisConfig {
@@ -462,6 +478,8 @@ func (rc *RedisConfig) Clone() *RedisConfig {
 		slots:          *rc.slots.Clone(),
 		ClusterOptions: rc.ClusterOptions.Clone(),
 		isMigrating:    rc.isMigrating,
+		KeepAlive:      rc.KeepAlive,
+		AliveTime:      rc.AliveTime,
 	}
 
 	copy(cloned.Addresses, rc.Addresses)
@@ -711,6 +729,12 @@ func (rc *RedisConfig) fix() error {
 		rc.ClusterOptions.fix()
 	}
 	rc.Otype = rc.Type
+	if rc.KeepAlive < 1 {
+		rc.KeepAlive = 32
+	}
+	if rc.AliveTime < time.Minute {
+		rc.AliveTime = time.Minute
+	}
 	return nil
 }
 
@@ -738,6 +762,8 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 		Otype:       rc.Type,
 		Version:     rc.Version,
 		isMigrating: rc.isMigrating,
+		KeepAlive:   rc.KeepAlive,
+		AliveTime:   rc.AliveTime,
 	}
 	if slots != nil {
 		sre.slots = *slots
@@ -792,6 +818,7 @@ func (rc *RedisConfig) SelNodeByAddress(addr string) *RedisConfig {
 		ClusterOptions: rc.ClusterOptions.Clone(),
 		isMigrating:    rc.isMigrating,
 		Version:        rc.Version,
+		KeepAlive:      rc.KeepAlive,
 	}
 	sre.SetClusterShards([]*RedisClusterShard{selShard})
 
@@ -863,6 +890,8 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 			ClusterOptions: rc.ClusterOptions.Clone(),
 			isMigrating:    rc.isMigrating,
 			Version:        rc.Version,
+			KeepAlive:      rc.KeepAlive,
+			AliveTime:      rc.AliveTime,
 		}
 		sre.SetClusterShards([]*RedisClusterShard{allShards[i]})
 		ret = append(ret, sre)

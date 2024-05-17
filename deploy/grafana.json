@@ -961,39 +961,14 @@
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "palette-classic"
+                "mode": "thresholds"
               },
               "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
                 },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
+                "inspect": false
               },
               "mappings": [],
               "thresholds": {
@@ -1009,9 +984,64 @@
                   }
                 ]
               },
-              "unit": "bytes"
+              "unit": "none"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Time"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "input"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "input redis"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Value"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "options": {
+                          "0": {
+                            "index": 0,
+                            "text": "abort"
+                          },
+                          "1": {
+                            "index": 1,
+                            "text": "full sync"
+                          },
+                          "2": {
+                            "index": 2,
+                            "text": "incr sync"
+                          }
+                        },
+                        "type": "value"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
           },
           "gridPos": {
             "h": 5,
@@ -1021,20 +1051,18 @@
           },
           "id": 1,
           "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "max"
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
               ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true
+              "show": false
             },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
+            "showHeader": true
           },
+          "pluginVersion": "10.2.3",
           "targets": [
             {
               "datasource": {
@@ -1042,21 +1070,24 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "abs(max(redisGunYu_input_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
-              "instant": false,
+              "exemplar": false,
+              "expr": "sum(redisGunYu_input_input_sync{cluster=\"$cluster\"}) by(input) ",
+              "format": "table",
+              "instant": true,
               "legendFormat": "{{input}}",
-              "range": true,
+              "range": false,
               "refId": "A"
             }
           ],
-          "title": "Lag(newest input - acked by output)",
-          "type": "timeseries"
+          "title": "Sync state",
+          "type": "table"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
+          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1118,7 +1149,7 @@
             "x": 12,
             "y": 7
           },
-          "id": 2,
+          "id": 42,
           "options": {
             "legend": {
               "calcs": [
@@ -1141,14 +1172,14 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "abs(max(redisGunYu_output_send_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
+              "expr": "abs(max(redisGunYu_input_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
               "instant": false,
-              "legendFormat": "__auto",
+              "legendFormat": "{{input}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "size(output queue)",
+          "title": "Lag(newest input - acked by output)",
           "type": "timeseries"
         },
         {
@@ -1256,7 +1287,6 @@
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
-          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1308,7 +1338,7 @@
                   }
                 ]
               },
-              "unit": "ns"
+              "unit": "bytes"
             },
             "overrides": []
           },
@@ -1318,13 +1348,12 @@
             "x": 12,
             "y": 12
           },
-          "id": 23,
+          "id": 2,
           "options": {
             "legend": {
               "calcs": [
                 "last",
-                "max",
-                "mean"
+                "max"
               ],
               "displayMode": "table",
               "placement": "right",
@@ -1342,14 +1371,14 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"}) by(input) ",
+              "expr": "abs(max(redisGunYu_output_send_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
               "instant": false,
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Lag(duration)",
+          "title": "size(output queue)",
           "type": "timeseries"
         },
         {
@@ -1454,6 +1483,107 @@
             "type": "prometheus",
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
+          "description": "",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "ns"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "id": 23,
+          "options": {
+            "legend": {
+              "calcs": [
+                "last",
+                "max",
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"}) by(input) ",
+              "instant": false,
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Lag(duration)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1512,7 +1642,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 17
+            "y": 22
           },
           "id": 37,
           "options": {
@@ -3262,10 +3392,10 @@
         "current": {
           "selected": true,
           "text": [
-            "clusterC"
+            "clusterA"
           ],
           "value": [
-            "clusterC"
+            "clusterA"
           ]
         },
         "datasource": {
@@ -3300,6 +3430,6 @@
   "timezone": "",
   "title": "redis-GunYu",
   "uid": "cec2aa7f-716b-49b8-94dd-7ec011d2e034",
-  "version": 8,
+  "version": 9,
   "weekStart": ""
 }

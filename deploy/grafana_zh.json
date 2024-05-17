@@ -892,8 +892,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1005,60 +1004,6 @@
               },
               {
                 "matcher": {
-                  "id": "byValue",
-                  "options": {
-                    "op": "gte",
-                    "reducer": "lastNotNull",
-                    "value": 0
-                  }
-                },
-                "properties": [
-                  {
-                    "id": "custom.hidden",
-                    "value": true
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "state"
-                },
-                "properties": [
-                  {
-                    "id": "mappings",
-                    "value": [
-                      {
-                        "options": {
-                          "pause": {
-                            "color": "red",
-                            "index": 3,
-                            "text": "暂停同步"
-                          },
-                          "ready_run": {
-                            "color": "blue",
-                            "index": 1,
-                            "text": "准备同步"
-                          },
-                          "run": {
-                            "color": "green",
-                            "index": 0,
-                            "text": "同步中"
-                          },
-                          "stop": {
-                            "color": "red",
-                            "index": 2,
-                            "text": "停止同步"
-                          }
-                        },
-                        "type": "value"
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "matcher": {
                   "id": "byName",
                   "options": "input"
                 },
@@ -1072,12 +1017,46 @@
               {
                 "matcher": {
                   "id": "byName",
-                  "options": "state"
+                  "options": "Value"
                 },
                 "properties": [
                   {
                     "id": "displayName",
-                    "value": "状态"
+                    "value": "同步状态"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byValue",
+                  "options": {
+                    "op": "gte",
+                    "reducer": "lastNotNull",
+                    "value": 0
+                  }
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "options": {
+                          "0": {
+                            "index": 0,
+                            "text": "同步停止"
+                          },
+                          "1": {
+                            "index": 1,
+                            "text": "全量同步"
+                          },
+                          "2": {
+                            "index": 2,
+                            "text": "增量同步"
+                          }
+                        },
+                        "type": "value"
+                      }
+                    ]
                   }
                 ]
               }
@@ -1089,7 +1068,7 @@
             "x": 0,
             "y": 7
           },
-          "id": 1,
+          "id": 43,
           "options": {
             "cellHeight": "sm",
             "footer": {
@@ -1111,12 +1090,13 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(redisGunYu_input_sync_state{cluster=\"$cluster\"}) by (input,state) > 0",
+              "expr": "sum(redisGunYu_input_input_sync{cluster=\"$cluster\"}) by(input) ",
               "format": "table",
+              "hide": false,
               "instant": true,
-              "legendFormat": "{{input}}  {{state}}",
+              "legendFormat": "{{input}}",
               "range": false,
-              "refId": "A"
+              "refId": "B"
             }
           ],
           "title": "同步状态",
@@ -1665,8 +1645,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1762,8 +1741,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1873,8 +1851,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1972,8 +1949,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2071,8 +2047,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2169,8 +2144,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2281,8 +2255,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2379,8 +2352,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -2477,8 +2449,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -3438,10 +3409,10 @@
         "current": {
           "selected": true,
           "text": [
-            "clusterC"
+            "clusterA"
           ],
           "value": [
-            "clusterC"
+            "clusterA"
           ]
         },
         "datasource": {
@@ -3469,13 +3440,13 @@
     ]
   },
   "time": {
-    "from": "now-30m",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "redis-GunYu中文",
   "uid": "d3680ead-d58a-425d-af0d-fae43fc100b1",
-  "version": 24,
+  "version": 27,
   "weekStart": ""
 }
