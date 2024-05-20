@@ -3,176 +3,157 @@
 [![CI](https://github.com/mgtv-tech/redis-GunYu/workflows/goci/badge.svg)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yml)
 [![LICENSE](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/mgtv-tech/redis-GunYu/blob/master/LICENSE)
 [![release](https://img.shields.io/github/release/mgtv-tech/redis-GunYu)](https://github.com/mgtv-tech/redis-GunYu/releases)
-
-
+<a href="./README_ZH.md">简体中文</a> <a href="./README.md">English</a>
 - [](#)
-  - [简介](#简介)
-  - [特性](#特性)
-    - [数据实时同步](#数据实时同步)
-    - [其他](#其他)
-  - [产品比较](#产品比较)
-  - [实现](#实现)
-  - [快速开始](#快速开始)
-    - [安装](#安装)
-    - [使用](#使用)
-    - [运行demo](#运行demo)
-  - [文档](#文档)
-  - [贡献](#贡献)
-  - [许可](#许可)
-  - [联系](#联系)
+  - [Overview](#overview)
+  - [Features](#features)
+    - [Real-time Data Synchronization](#real-time-data-synchronization)
+    - [Other Features](#other-features)
+  - [Product Comparison](#product-comparison)
+  - [Technical Implementation](#technical-implementation)
+  - [Quick Start](#quick-start)
+    - [Installation](#installation)
+    - [Usage](#usage)
+    - [Running the Demo](#running-the-demo)
+  - [Documentation](#documentation)
+  - [Contributing](#contributing)
+  - [License](#license)
+  - [Contact](#contact)
 
+## Overview
 
+`redis-GunYu` is a Redis data management tool capable of real-time data synchronization, data migration, backup, verification and recovery, data analysis, and more.
 
-## 简介
+## Features
 
-`redis-GunYu`是一款redis数据治理工具，可以进行数据实时同步，数据迁移，备份、校验恢复，数据分析等等。
+### Real-time Data Synchronization
 
+The feature matrix of `redis-GunYu` for real-time synchronization
 
-
-
-## 特性
-
-
-
-### 数据实时同步
-
-`Redis-GunYu`的实时同步功能矩阵
-
-|  功能点  |  是否支持  |
+| Feature | Supported |
 | :- | :- |
-|  断点续传  |  支持  | 
-|  源和目标集群slot不一致  |  支持  | 
-|  源或目标集群拓扑变化(扩容、迁移等)  |  支持  | 
-|  工具高可用  |  支持  | 
-|  数据过滤 |  支持  |
-|  数据一致性  |  最终/弱  | 
+| Resuming from Breakpoints | Yes | 
+| Inconsistent slots between source and target clusters | Yes | 
+| Topology changes in source or target clusters (scaling, migration, etc.) | Yes | 
+| High availability | Yes | 
+| Data filtering | Yes | 
+| Data consistency | Final/Weak | 
+
+`redis-GunYu` has additional advantages:
+- Minimal impact on stability
+  - Ingest source: Specify whether to sync data from a slave, master or prefer slave
+  - Local cache + resuming from breakpoints: Minimizes the impact on the source Redis
+  - Splits big keys of RDB and then synchronizes them
+  - Lower replication latency: Concurrent data playback while ensuring consistency, see [replication latency metrics](docs/deployment_zh.md#Monitor)
+- Data security and high availability
+  - Local cache supports data verification
+  - High availability of the tool: Supports master-slave mode, self-election based on the latest records, automatic and manual failover; the tool is P2P architecture, minimizing downtime impact
+- Fewer restrictions on Redis
+  - Supports different deployment modes of Redis on the source and target, such as cluster or standalone instances
+  - Compatible with different versions of Redis on the source and target, supports from Redis 4.0 to Redis 7.2, see [testing](docs/test_zh.md#Compatibility)
+- More flexible data consistency strategies, automatic switching
+  - When the shards distribution of the source and target is the same, batch writes in pseudo-transaction mode, and offsets are updated in real-time, maximizing consistency
+  - When the shard distribution of the source and target is different, offsets are updated periodically
+- User-friendly operations
+  - API: supports HTTP API, such as full sync, checking synchronization status, pausing synchronization, etc.
+  - Monitoring: Rich monitoring metrics, such as replication latency metrics in time and space dimensions
+  - Data filtering: Filter by certain regular keys, databases, commands, etc.
+  - Topology change monitoring: Real-time monitoring of topology changes in the source and target Redis (e.g., adding/removing nodes, master-slave switch, etc.), to change consistency strategies and adjust other functional strategies
 
 
-`redis-GunYu`还有一些其他优势，如下
-- 对稳定性影响更小
-  - 复制优先级：可用指定优先从从库进行复制或主库复制
-  - 本地缓存 + 断点续传：最大程度减少对源端redis的影响
-  - 对RDB中的大key进行拆分同步
-  - 更低的复制延迟：在保证一致性的前提下，并发地进行数据回放，参考[复制延迟指标](docs/deployment_zh.md#监控)
-- 数据安全性与高可用
-  - 本地缓存支持数据校验
-  - 工具高可用 ： 支持主从模式，以最新记录进行自主选举，自动和手动failover；工具本身P2P架构，将宕机影响降低到最小
-- 对redis限制更少
-  - 支持源和目标端不同的redis部署方式，如cluster或单实例
-  - 兼容源和目的redis不同版本，支持从redis4.0到redis7.2，参考[测试](docs/test_zh.md#版本兼容测试)
-- 数据一致性策略更加灵活，自动切换
-  - 当源端和目标端分片信息一致时，采用伪事务方式批量写入，实时更新偏移，最大可能保证一致性
-  - 当源端和目标端分片不一致时，采用定期更新偏移
-- 运维更加友好
-  - API：可以通过http API进行运维操作，如强制全量复制，同步状态，暂停同步等等
-  - 监控：监控指标更丰富，如时间与空间维度的复制延迟指标
-  - 数据过滤：可以对某些正则key，db，命令等进行过滤
-  - 拓扑变化监控 ： 实时监听源和目标端redis拓扑变更（如加减节点，主从切换等等），以更改一致性策略和调整其他功能策略
+### Other Features
 
+Additional features are currently under development.
 
+## Product Comparison
 
-### 其他
+Comparison of redis-GunYu with several top-tranking tools based on product requirements
 
-其他功能，仍在开发中。
+| Feature | redis-shake/v2 | DTS | xpipe | redis-GunYu |
+| -- | -- | -- | -- | -- |
+| Resuming from Breakpoints | Yes (no local cache) | Yes | Yes | Yes |
+| Supports different sharding between source and target | No | Yes | No | Yes |
+| Topology changes | No | No | No | Yes |
+| High availability | No | No | Yes | Yes |
+| Data consistency | Final | Weak | Weak | Final (same sharding) + Weak (different sharding) |
 
+## Technical Implementation
 
+The technical implementation of `redis-GunYu` is illustrated in the diagram below. For detailed technical principles, see [Technical Implementation](docs/tech.md)
 
-## 产品比较
+<img src="docs/imgs/sync.png" width = "400" height = "150" alt="Architecture Diagram" align=center />
 
-从产品需求上，对redis-GunYu和几个主流工具进行比较
+## Quick Start
 
-功能点 | redis-shake/v2 |  DTS | xpipe | redis-GunYu
--- | -- | -- | -- | -- 
-断点续传 | Y(无本地缓存)  | Y | Y | Y
-支持分片不对称 | N | Y | N | Y
-拓扑变化 | N |  N | N | Y
-高可用 | N |  N | Y | Y
-数据一致性 | 最终 |  弱 | 弱 | 最终(分片对称) + 弱(不对称)
+### Installation
 
+You can compile it yourself or run it directly in a container
 
+**Download Binary**
 
+**Compile Source Code**
 
-## 实现
-
-`redis-GunYu`的技术实现如图所示，具体技术原理请见[技术实现](docs/tech.md)
-
-<img src="docs/imgs/sync.png" width = "400" height = "150" alt="架构图" align=center />
-
-
-
-## 快速开始
-
-### 安装
-
-可以自行编译，也可以直接运行容器
-
-**下载二进制**
-
-
-
-**编译源码**
-
-先确保已经安装Go语言，配置好环境变量
+Make sure Go language is installed and environment variables are configured
 
 ```
 git clone https://github.com/mgtv-tech/redis-gunyu.git
 cd redis-GunYu
 
-## 如果需要，添加代理
+## Add proxy if needed
 export GOPROXY=https://goproxy.cn,direct
 
 make
 ```
-在本地生成`redisGunYu`二进制文件。
 
+This generates the `redisGunYu` binary file locally.
 
-### 使用
+### Usage
 
-**配置文件的方式启动**
+**Start with configuration file**
+
 ```
 ./redisGunYu -conf ./config.yaml
 ```
 
-**命令行传递参数的方式启动**
+**Start with command line parameters**
 ``` 
 ./redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
 
-**以容器方式运行**
+
+**Run in docker**
+
 ```
 docker run mgtvtech/redisgunyu:latest --sync.input.redis.addresses=172.10.10.10:6379 --sync.output.redis.addresses=172.10.10.11:6379
 
 
-# 如果本机测试，则可以以host网络模式启动容器`--network=host`，使redisGunYu能够和redis进行网络通信
+# For local testing, start the docker in host network mode --network=host, so redisGunYu can communicate with Redis
 docker run --network=host mgtvtech/redisgunyu:latest --sync.input.redis.addresses=127.0.0.1:6700 --sync.output.redis.addresses=127.0.0.1:6710
 ```
 
+### Running the Demo
 
-
-
-### 运行demo
-
-**启动demo服务**
+**Start demo service**
 ```
 docker run --rm -p 16379:16379 -p 26379:26379 -p 18001:18001 mgtvtech/redisgunyudemo:latest
 ```
-- 源redis ： 端口16379
-- 目标redis ： 端口26379
-- 同步工具： 端口 18001
+- Source Redis: port 16379
+- Target Redis: port 26379
+- Synchronization tool: port 18001
 
+**Target Redis**
 
-
-**目的redis**
 ```
 redis-cli -p 26379
 127.0.0.1:26379> monitor
 ```
-在目的redis-cli中输入monitor
+Input `monitor` in the target Redis CLI
 
 
-**源redis**
+**Source Redis**
 
-连接到源redis，写入一个key，同步工具会将命令同步到目的redis，查看redis-cli连接到的源redis输出
+Connect to the source Redis and set a key. The synchronization tool will synchronize the command to the target Redis. Check the output of the target Redis connected by the Redis CLI
+
 ```
 redis-cli -p 16300
 127.0.0.1:16379> set a 1
@@ -180,41 +161,34 @@ redis-cli -p 16300
 
 
 
-**检查状态**
+**Check Status**
 ```
 curl http://localhost:18001/syncer/status
 ```
-检查同步工具运行状态
+Check the status of the synchronization tool
 
+## Documentation
 
-
-
-## 文档
-
-- [配置](docs/configuration_zh.md)
-- [部署](docs/deployment_zh.md)
+- [Configuration](docs/configuration_zh.md)
+- [Deployment](docs/deployment_zh.md)
 - [API](docs/API_zh.md)
-- [测试结果](docs/test_zh.md)
-- [注意事项](docs/attentions_zh.md)
+- [Test Results](docs/test_zh.md)
+- [Notices](docs/attentions_zh.md)
 
+## Contributing
 
+Everyone is welcome to help improve redis-GunYu. If you have any questions, suggestions, or want to add other features, please submit an issue or PR directly.
 
+Please follow these steps to submit a PR:
+- Clone the repository
+- Create a new branch: name it `feature-xxx` for new features or `bug-xxx` for bug fixes
+- Describe the changes in detail in the PR
 
-## 贡献
+## License
 
-欢迎大家一起来完善redis-GunYu。如果您有任何疑问、建议或者想添加其他功能，请直接提交issue或者PR。
+`redis-GunYu` is licensed under Apache 2.0, see [LICENSE](LICENSE).
 
-请按照以下步骤来提交PR：
-- 克隆仓库
-- 创建一个新分支：如果是新功能分支，则命名为feature-xxx；如果是修复bug，则命名为bug-xxx
-- 在PR中详细描述更改的内容
+## Contact
 
+If you have any questions, please contact `ikenchina@gmail.com`.
 
-## 许可
-
-`redis-GunYu`是基于Apache2.0许可的，请见[LICENSE](LICENSE)。
-
-
-## 联系
-
-如果您有任何问题，请联系`ikenchina@gmail.com`。
