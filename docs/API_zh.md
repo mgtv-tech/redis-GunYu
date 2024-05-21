@@ -2,7 +2,8 @@
 
 
 - [接口](#接口)
-  - [进程退出](#进程退出)
+  - [进程](#进程)
+    - [进程退出](#进程退出)
   - [同步](#同步)
     - [重启同步流程](#重启同步流程)
     - [暂停同步](#暂停同步)
@@ -19,7 +20,9 @@
 支持HTTP接口来进行相关运维操作，如指标采集，停止进程，全量同步等等。
 
 
-## 进程退出
+## 进程
+
+### 进程退出
 
 DELETE http://http_server:port/ 
 
@@ -32,7 +35,7 @@ curl -XDELETE http://http_server:port/
 Kill $PID
 ```
 
-服务默认会以优雅的方式停止进程，所以会等待所有资源回收才会退出，在配置文件中配置 "server.gracefullStopTimeout" 来配置优雅等待超时时间（默认5秒）。
+服务默认会以优雅的方式停止进程，所以会等待所有资源回收才会退出，在配置文件中配置 `server.gracefullStopTimeout` 来配置优雅等待超时时间（默认5秒）。
 
 
 ## 同步
@@ -96,6 +99,8 @@ curl http://http_server:port/syncer/status
 
 ### 同步配置信息
 
+查询当前配置
+
 默认是yaml格式
 ```
 GET http://http_server:port/syncer/config
@@ -113,7 +118,7 @@ GET http://http_server:port/syncer/config?format=json
 curl -XPOST 'http://http_server:port/syncer/fullsync?inputs=inputs&flushdb=yes' 
 ```
 URL，查询参数：
-- inputs : 需要全量同步的源端redis IP和端口，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP+端口，则用逗号分隔。具体IP+端口可以通过`http://http_server:port/syncer/status`接口获取，或者从redis-cli上查看
+- inputs : 需要全量同步的源端redis IP和端口，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP+端口，则用逗号分隔。具体IP+端口可以通过`http://http_server:port/syncer/status`接口获取
 - flushdb ： 全量同步前，是否执行flushdb
 
 flushdb=yes时，如果是部分源端进行全量同步，则要保证源和目的redis的slots能够一一对应，否则请全量同步所有的源端(inputs=all)

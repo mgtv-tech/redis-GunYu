@@ -1,11 +1,11 @@
-# 
+# Redis GunYu
 
 [![CI](https://github.com/mgtv-tech/redis-GunYu/workflows/goci/badge.svg)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yml)
 [![LICENSE](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/mgtv-tech/redis-GunYu/blob/master/LICENSE)
 [![release](https://img.shields.io/github/release/mgtv-tech/redis-GunYu)](https://github.com/mgtv-tech/redis-GunYu/releases)
 
 <a href="./README_ZH.md">简体中文</a> <a href="./README.md">English</a>
-- [](#)
+- [Redis GunYu](#redis-gunyu)
   - [简介](#简介)
   - [特性](#特性)
     - [数据实时同步](#数据实时同步)
@@ -94,7 +94,7 @@
 
 ## 实现
 
-`redis-GunYu`的技术实现如图所示，具体技术原理请见[技术实现](docs/tech.md)
+`redis-GunYu`的技术实现如图所示，具体技术原理请见[技术实现](docs/tech_zh.md)
 
 <img src="docs/imgs/sync.png" width = "400" height = "150" alt="架构图" align=center />
 

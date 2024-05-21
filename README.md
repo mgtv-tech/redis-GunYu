@@ -1,10 +1,14 @@
-# 
+# Redis GunYu
 
 [![CI](https://github.com/mgtv-tech/redis-GunYu/workflows/goci/badge.svg)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yml)
 [![LICENSE](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/mgtv-tech/redis-GunYu/blob/master/LICENSE)
 [![release](https://img.shields.io/github/release/mgtv-tech/redis-GunYu)](https://github.com/mgtv-tech/redis-GunYu/releases)
-<a href="./README_ZH.md">简体中文</a> <a href="./README.md">English</a>
-- [](#)
+
+
+Translations: [English](README.md) | [简体中文](README_ZH.md)
+
+
+- [Redis GunYu](#redis-gunyu)
   - [Overview](#overview)
   - [Features](#features)
     - [Real-time Data Synchronization](#real-time-data-synchronization)
@@ -37,28 +41,28 @@ The feature matrix of `redis-GunYu` for real-time synchronization
 | Topology changes in source or target clusters (scaling, migration, etc.) | Yes | 
 | High availability | Yes | 
 | Data filtering | Yes | 
-| Data consistency | Final/Weak | 
+| Data consistency model | Eventual/Weak | 
 
 `redis-GunYu` has additional advantages:
 - Minimal impact on stability
   - Ingest source: Specify whether to sync data from a slave, master or prefer slave
   - Local cache + resuming from breakpoints: Minimizes the impact on the source Redis
-  - Splits big keys of RDB and then synchronizes them
-  - Lower replication latency: Concurrent data playback while ensuring consistency, see [replication latency metrics](docs/deployment_zh.md#Monitor)
+  - Splits big keys of RDB to synchronize them
+  - Lower replication latency: Sync data concurrently, see [sync latency metrics](docs/deployment_en.md#Monitor)
 - Data security and high availability
   - Local cache supports data verification
   - High availability of the tool: Supports master-slave mode, self-election based on the latest records, automatic and manual failover; the tool is P2P architecture, minimizing downtime impact
 - Fewer restrictions on Redis
   - Supports different deployment modes of Redis on the source and target, such as cluster or standalone instances
-  - Compatible with different versions of Redis on the source and target, supports from Redis 4.0 to Redis 7.2, see [testing](docs/test_zh.md#Compatibility)
+  - Compatible with different versions of Redis on the source and target, supports from Redis 4.0 to Redis 7.2, see [testing](docs/test_en.md#Compatibility)
 - More flexible data consistency strategies, automatic switching
-  - When the shards distribution of the source and target is the same, batch writes in pseudo-transaction mode, and offsets are updated in real-time, maximizing consistency
+  - When the shards distribution of the source and target is the same, batch writes in pseudo-transaction mode, and offsets are updated in real-time, maximizing inconsistent
   - When the shard distribution of the source and target is different, offsets are updated periodically
-- User-friendly operations
+- User-friendly for dev-ops
   - API: supports HTTP API, such as full sync, checking synchronization status, pausing synchronization, etc.
   - Monitoring: Rich monitoring metrics, such as replication latency metrics in time and space dimensions
   - Data filtering: Filter by certain regular keys, databases, commands, etc.
-  - Topology change monitoring: Real-time monitoring of topology changes in the source and target Redis (e.g., adding/removing nodes, master-slave switch, etc.), to change consistency strategies and adjust other functional strategies
+  - Redis topology: Real-time monitoring of topology changes in the source and target Redis (e.g., adding/removing nodes, master-slave switch, etc.), to change consistency strategies and adjust other functional strategies
 
 
 ### Other Features
@@ -75,13 +79,13 @@ Comparison of redis-GunYu with several top-tranking tools based on product requi
 | Supports different sharding between source and target | No | Yes | No | Yes |
 | Topology changes | No | No | No | Yes |
 | High availability | No | No | Yes | Yes |
-| Data consistency | Final | Weak | Weak | Final (same sharding) + Weak (different sharding) |
+| Data consistency | Eventual | Weak | Weak | Eventual (same sharding) + Weak (different sharding) |
 
 ## Technical Implementation
 
-The technical implementation of `redis-GunYu` is illustrated in the diagram below. For detailed technical principles, see [Technical Implementation](docs/tech.md)
+The technical implementation of `redis-GunYu` is illustrated in the diagram below. For detailed technical principles, see [Technical Implementation](docs/tech_en.md)
 
-<img src="docs/imgs/sync.png" width = "400" height = "150" alt="Architecture Diagram" align=center />
+<img src="docs/imgs/sync_en.png" width = "400" height = "150" alt="Architecture Diagram" align=center />
 
 ## Quick Start
 
@@ -100,7 +104,7 @@ git clone https://github.com/mgtv-tech/redis-gunyu.git
 cd redis-GunYu
 
 ## Add proxy if needed
-export GOPROXY=https://goproxy.cn,direct
+export GOPROXY=https://goproxy.io,direct
 
 make
 ```
@@ -115,7 +119,7 @@ This generates the `redisGunYu` binary file locally.
 ./redisGunYu -conf ./config.yaml
 ```
 
-**Start with command line parameters**
+**Start with command line arguments**
 ``` 
 ./redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
@@ -127,7 +131,7 @@ This generates the `redisGunYu` binary file locally.
 docker run mgtvtech/redisgunyu:latest --sync.input.redis.addresses=172.10.10.10:6379 --sync.output.redis.addresses=172.10.10.11:6379
 
 
-# For local testing, start the docker in host network mode --network=host, so redisGunYu can communicate with Redis
+# For local testing, start the docker in host network mode --network=host, so redisGunYu can communicate with local Redis
 docker run --network=host mgtvtech/redisgunyu:latest --sync.input.redis.addresses=127.0.0.1:6700 --sync.output.redis.addresses=127.0.0.1:6710
 ```
 
@@ -169,11 +173,11 @@ Check the status of the synchronization tool
 
 ## Documentation
 
-- [Configuration](docs/configuration_zh.md)
-- [Deployment](docs/deployment_zh.md)
-- [API](docs/API_zh.md)
-- [Test Results](docs/test_zh.md)
-- [Notices](docs/attentions_zh.md)
+- [Configuration](docs/configuration_en.md)
+- [Deployment](docs/deployment_en.md)
+- [API](docs/API_en.md)
+- [Testing](docs/test_en.md)
+- [Attentions](docs/attentions_en.md)
 
 ## Contributing
 
