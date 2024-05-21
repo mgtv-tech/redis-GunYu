@@ -51,7 +51,6 @@ redis配置
 
 ### 输入端
 
-由于现在仅支持从redis同步，所以输入端输出端都只有redis端的配置。
 
 input配置如下
 - redis ： redis配置
@@ -83,14 +82,14 @@ output配置如下：
 - maxProtoBulkLen ： 协议最大的缓存区大小，参考redis配置`proto-max-bulk-len`，默认是512MiB
 - targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步
 - batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
-- batchTickerMs ： 批量同步命令的等待时间，最多等待batchTickerMs毫秒再进行打包同步，默认10ms
-- batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTickerMs、batchBufferSize三者是或关系，只要满足一个，就进行同步。
+- batchTicker ： 批量同步命令的等待时间，最多等待batchTicker再进行打包同步，默认10ms
+- batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTicker、batchBufferSize三者是或关系，只要满足一个，就进行同步。
 - replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
-- updateCheckpointTickerMs ： 默认1秒
+- updateCheckpointTicker ： 默认1秒
 - keepaliveTicker ： 默认3秒，保持心跳时间间隔
 
 
-> 同步延迟主要取决于`batchCmdCount`和`batchTickerMs`，工具会将命令打包发送到目标端，只要两个配置中的一个满足则即可
+> 同步延迟主要取决于`batchCmdCount`和`batchTicker`，工具会将命令打包发送到目标端，只要两个配置中的一个满足则即可
 
 
 ### 缓存区
