@@ -17,7 +17,6 @@ package redis
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +27,7 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 // Options is used to initialize a new redis cluster.
@@ -79,6 +79,8 @@ type Cluster struct {
 	handleMoveError bool
 	handleAskError  bool
 	logger          log.Logger
+
+	safeRand *util.SafeRand
 }
 
 type updateMesg struct {
@@ -100,6 +102,7 @@ func NewCluster(options *Options) (*Cluster, error) {
 		handleMoveError: options.HandleMoveError,
 		handleAskError:  options.HandleAskError,
 		logger:          log.WithLogger(config.LogModuleName("[redis cluster] ")),
+		safeRand:        util.NewSafeRand(time.Now().Unix()),
 	}
 
 	errList := make([]error, 0)
@@ -638,11 +641,6 @@ func (cluster *Cluster) getNodeByKey(arg interface{}) (*redisNode, error) {
 	return node, nil
 }
 
-var (
-	// not thread safe
-	myRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-)
-
 func (cluster *Cluster) getRandomNode() (*redisNode, error) {
 	cluster.rwLock.RLock()
 	defer cluster.rwLock.RUnlock()
@@ -652,7 +650,7 @@ func (cluster *Cluster) getRandomNode() (*redisNode, error) {
 	}
 
 	// random slot
-	slot := myRand.Intn(kClusterSlots)
+	slot := cluster.safeRand.Intn(kClusterSlots)
 	node := cluster.slots[slot]
 	if node == nil {
 		return nil, fmt.Errorf("getRandomNode: slot[%d] no node found", slot)
