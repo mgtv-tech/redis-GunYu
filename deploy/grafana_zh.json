@@ -541,6 +541,104 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
+              "expr": "sum(rate(redisGunYu_output_received_cmd{cluster=\"$cluster\"}[1m])) by(input)",
+              "instant": false,
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "接收命令QPS",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 12,
+            "x": 12,
+            "y": 6
+          },
+          "id": 46,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_send_cmd{cluster=\"$cluster\"}[1m])) by(input)",
               "instant": false,
               "legendFormat": "__auto",
@@ -613,8 +711,8 @@
           "gridPos": {
             "h": 5,
             "w": 12,
-            "x": 12,
-            "y": 6
+            "x": 0,
+            "y": 11
           },
           "id": 15,
           "options": {
@@ -711,8 +809,106 @@
           "gridPos": {
             "h": 5,
             "w": 12,
-            "x": 0,
+            "x": 12,
             "y": 11
+          },
+          "id": 47,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(redisGunYu_output_success_cmd{cluster=\"$cluster\"}[1m])) by(input)",
+              "instant": false,
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "回放成功命令QPS",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 12,
+            "x": 0,
+            "y": 16
           },
           "id": 14,
           "options": {
@@ -744,7 +940,7 @@
               "refId": "A"
             }
           ],
-          "title": "失败命令(批量)",
+          "title": "回放失败命令QPS",
           "type": "timeseries"
         },
         {
@@ -810,9 +1006,9 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 11
+            "y": 16
           },
-          "id": 12,
+          "id": 35,
           "options": {
             "legend": {
               "calcs": [
@@ -835,14 +1031,14 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "sum(rate(redisGunYu_output_success_cmd{cluster=\"$cluster\"}[1m])) by(input)",
+              "expr": "sum(rate(redisGunYu_output_sender{cluster=\"$cluster\"}[2m])) by(transaction, result)",
               "instant": false,
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "成功命令QPS(批量)",
+          "title": "发送命令(批量), 结果和模式",
           "type": "timeseries"
         },
         {
@@ -892,7 +1088,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": null
                   },
                   {
                     "color": "red",
@@ -907,9 +1104,9 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 16
+            "y": 21
           },
-          "id": 35,
+          "id": 44,
           "options": {
             "legend": {
               "calcs": [
@@ -932,18 +1129,116 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "sum(rate(redisGunYu_output_sender{cluster=\"$cluster\"}[2m])) by(transaction, result)",
+              "expr": "sum(rate(redisGunYu_output_rdb_key_send{cluster=\"$cluster\"}[2m])) by(input)",
               "instant": false,
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "发送命令(批量), 结果和模式",
+          "title": "RDB key发送QPS",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 12,
+            "x": 12,
+            "y": 21
+          },
+          "id": 45,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(redisGunYu_output_rdb_key_filter{cluster=\"$cluster\"}[2m])) by(input)",
+              "instant": false,
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "RDB key过滤QPS",
           "type": "timeseries"
         }
       ],
-      "title": "命令",
+      "title": "同步数据",
       "type": "row"
     },
     {
@@ -979,8 +1274,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1150,8 +1444,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1249,8 +1542,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1348,8 +1640,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1448,8 +1739,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1548,8 +1838,7 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
+                    "color": "green"
                   },
                   {
                     "color": "red",
@@ -1791,7 +2080,7 @@
           "type": "timeseries"
         }
       ],
-      "title": "同步",
+      "title": "同步状态",
       "type": "row"
     },
     {
@@ -3447,6 +3736,6 @@
   "timezone": "",
   "title": "redis-GunYu中文",
   "uid": "d3680ead-d58a-425d-af0d-fae43fc100b1",
-  "version": 27,
+  "version": 31,
   "weekStart": ""
 }
