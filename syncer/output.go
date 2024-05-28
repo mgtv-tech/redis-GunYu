@@ -38,11 +38,13 @@ type Output interface {
 }
 
 type RedisOutput struct {
-	cfg             RedisOutputConfig
-	startDbId       int
-	logger          log.Logger
-	filterCounterRt atomic.Int64
-	sendCounterRt   atomic.Int64
+	cfg                RedisOutputConfig
+	startDbId          int
+	logger             log.Logger
+	filterCounterRt    atomic.Int64
+	sendCounterRt      atomic.Int64
+	rdbFilterCounterRt atomic.Int64
+	rdbSendCounterRt   atomic.Int64
 
 	cpGuard         sync.RWMutex
 	checkpointInMem checkpoint.CheckpointInfo
@@ -51,6 +53,25 @@ type RedisOutput struct {
 }
 
 var (
+	rdbKeySendCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "rdb_key_send",
+		Labels:    []string{"input"},
+	})
+	rdbKeyFilterCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "rdb_key_filter",
+		Labels:    []string{"input"},
+	})
+
+	aofCmdCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "received_cmd",
+		Labels:    []string{"input"},
+	})
 	sendCounter = metric.NewCounterVec(metric.CounterVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
@@ -256,6 +277,16 @@ func (ro *RedisOutput) filterCounterAdd(v uint) {
 	ro.filterCounterRt.Add(int64(v))
 }
 
+func (ro *RedisOutput) rdbSendCounterAdd(v uint) {
+	rdbKeySendCounter.Add(float64(v), ro.cfg.InputName)
+	ro.rdbSendCounterRt.Add(int64(v))
+}
+
+func (ro *RedisOutput) rdbFilterCounterAdd(v uint) {
+	rdbKeyFilterCounter.Add(float64(v), ro.cfg.InputName)
+	ro.rdbFilterCounterRt.Add(int64(v))
+}
+
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
 	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 
@@ -275,7 +306,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 				if fullDone.Load() {
 					rByte := readBytes.Load()
 					ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
-						time.Since(startTime), nsize, rByte, 100, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
+						time.Since(startTime), nsize, rByte, 100, ro.rdbSendCounterRt.Load(), ro.rdbFilterCounterRt.Load())
 					fullSyncProgress.Set(100, ro.cfg.InputName)
 					ro.logger.Infof("sync rdb done")
 				} else {
@@ -287,7 +318,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 
 			rByte := readBytes.Load()
 			ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
-				time.Since(startTime), nsize, rByte, 100*rByte/nsize, ro.sendCounterRt.Load(), ro.filterCounterRt.Load())
+				time.Since(startTime), nsize, rByte, 100*rByte/nsize, ro.rdbSendCounterRt.Load(), ro.rdbFilterCounterRt.Load())
 			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.cfg.InputName)
 		}
 	}
@@ -362,9 +393,9 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 			}
 
 			if filterOut {
-				ro.filterCounterAdd(1)
+				ro.rdbFilterCounterAdd(1)
 			} else {
-				ro.sendCounterAdd(1)
+				ro.rdbSendCounterAdd(1)
 				err := rdbrestore.RestoreRdbEntry(cli, e) // @TODO retry
 				if err != nil {
 					ro.logger.Errorf("restore rdb error : entry(%v), err(%v)", e, err)
@@ -546,6 +577,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			ro.logger.Errorf("%s", err.Error())
 			return errors.Join(ErrCorrupted, err)
 		}
+		aofCmdCounter.Inc(ro.cfg.InputName)
 
 		// filter db, filter command, filter key
 		if sCmd != "ping" {
@@ -1073,16 +1105,16 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		sendOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
 		ro.sendCounterAdd(uint(cmdCounter))
-		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 
 		err = ro.checkReplies(rets)
 		if err != nil {
-			failCounter.Inc(ro.cfg.InputName)
+			failCounter.Add(float64(cmdCounter), ro.cfg.InputName)
 			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
 			return err
 		}
 
-		succCounter.Inc(ro.cfg.InputName)
+		succCounter.Add(float64(cmdCounter), ro.cfg.InputName)
+		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 
 		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
