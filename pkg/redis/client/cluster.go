@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
@@ -28,10 +29,12 @@ type reply struct {
 
 func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 	options := &cluster.Options{
-		StartNodes: cfg.Addresses,
-		Password:   cfg.Password,
-		KeepAlive:  cfg.KeepAlive,
-		AliveTime:  cfg.AliveTime,
+		StartNodes:  cfg.Addresses,
+		Password:    cfg.Password,
+		KeepAlive:   cfg.KeepAlive,
+		AliveTime:   cfg.AliveTime,
+		ConnTimeout: 5 * time.Second,
+
 		//ConnTimeout: ,
 		//ReadTimeout: ,
 		//WriteTimeout: ,

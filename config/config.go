@@ -162,7 +162,7 @@ func (ic *InputConfig) fix() error {
 		return err
 	}
 	if ic.RdbParallel <= 0 {
-		ic.RdbParallel = len(ic.Redis.Addresses)
+		ic.RdbParallel = 100
 	}
 	ic.rdbParallelLimiter = make(chan struct{}, ic.RdbParallel)
 	if ic.SyncFrom == 0 {
