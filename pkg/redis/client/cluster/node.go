@@ -21,7 +21,10 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type redisNode struct {
@@ -42,9 +45,50 @@ type redisNode struct {
 	closed bool
 
 	password string
+
+	accessTime atomic.Int64
+}
+
+func (node *redisNode) releaseIdleConns() {
+	conns := node.getIdleConns()
+	for _, conn := range conns {
+		conn.shutdown()
+	}
+}
+
+func (node *redisNode) getIdleConns() []*redisConn {
+	conns := []*redisConn{}
+	node.mutex.Lock()
+	defer node.mutex.Unlock()
+
+	if node.closed {
+		return nil
+	}
+
+	// remove stale connections
+	if node.aliveTime > 0 {
+		for {
+			elem := node.conns.Back()
+			if elem == nil {
+				break
+			}
+
+			conn := elem.Value.(*redisConn)
+			if conn.t.Add(node.aliveTime).After(util.XTimeNow()) {
+				break
+			}
+
+			// remove expired connection
+			node.conns.Remove(elem)
+			conns = append(conns, conn)
+		}
+	}
+	return conns
 }
 
 func (node *redisNode) getConn() (*redisConn, error) {
+	node.accessTime.Store(util.XTimeNow().Unix())
+
 	node.mutex.Lock()
 
 	if node.closed {
@@ -53,7 +97,7 @@ func (node *redisNode) getConn() (*redisConn, error) {
 	}
 
 	// remove stale connections
-	if node.connTimeout > 0 {
+	if node.aliveTime > 0 {
 		for {
 			elem := node.conns.Back()
 			if elem == nil {
@@ -61,7 +105,7 @@ func (node *redisNode) getConn() (*redisConn, error) {
 			}
 
 			conn := elem.Value.(*redisConn)
-			if conn.t.Add(node.aliveTime).After(time.Now()) {
+			if conn.t.Add(node.aliveTime).After(util.XTimeNow()) {
 				break
 			}
 
@@ -120,7 +164,7 @@ func (node *redisNode) releaseConn(conn *redisConn) {
 		return
 	}
 
-	conn.t = time.Now()
+	conn.t = util.XTimeNow()
 	node.conns.PushFront(conn)
 }
 
