@@ -140,6 +140,9 @@ func NewCluster(options *Options) (*Cluster, error) {
 }
 
 func (cluster *Cluster) checkIdleConns() {
+	if cluster.aliveTime < 2*time.Second {
+		return
+	}
 	ticker := time.NewTicker(cluster.aliveTime / 2)
 	defer ticker.Stop()
 	for {
