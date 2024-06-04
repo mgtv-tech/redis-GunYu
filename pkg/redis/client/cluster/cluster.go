@@ -27,6 +27,7 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
@@ -70,7 +71,8 @@ type Cluster struct {
 
 	rwLock sync.RWMutex
 
-	closed atomic.Bool
+	closed  atomic.Bool
+	closeCh chan struct{}
 
 	// add by vinllen
 	transactionEnable bool       // marks whether transaction enable
@@ -98,6 +100,7 @@ func NewCluster(options *Options) (*Cluster, error) {
 		keepAlive:       options.KeepAlive,
 		aliveTime:       options.AliveTime,
 		updateList:      make(chan updateMesg),
+		closeCh:         make(chan struct{}),
 		password:        options.Password,
 		handleMoveError: options.HandleMoveError,
 		handleAskError:  options.HandleAskError,
@@ -122,13 +125,52 @@ func NewCluster(options *Options) (*Cluster, error) {
 			errList = append(errList, fmt.Errorf("node[%v] update failed[%w]", node.address, err))
 			continue
 		} else {
-			go cluster.handleUpdate()
+			usync.SafeGo(func() {
+				cluster.handleUpdate()
+			}, nil)
+			usync.SafeGo(func() {
+				cluster.checkIdleConns()
+			}, nil)
 			return cluster, nil
 		}
 	}
 
 	return nil, fmt.Errorf("NewCluster: no valid node in %v, error list: %v",
 		options.StartNodes, errList)
+}
+
+func (cluster *Cluster) checkIdleConns() {
+	if cluster.aliveTime < 2*time.Second {
+		return
+	}
+	ticker := time.NewTicker(cluster.aliveTime / 2)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			nodes := cluster.getExpiredNodes()
+			for _, node := range nodes {
+				node.releaseIdleConns()
+			}
+		case <-cluster.closeCh:
+			return
+		}
+	}
+}
+
+func (cluster *Cluster) getExpiredNodes() []*redisNode {
+	cluster.rwLock.Lock()
+	defer cluster.rwLock.Unlock()
+
+	expired := util.XTimeNow().Unix() - int64(cluster.aliveTime.Seconds())
+
+	nodes := []*redisNode{}
+	for _, node := range cluster.nodes {
+		if node.accessTime.Load() < expired {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
 }
 
 func (cluster *Cluster) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
@@ -226,6 +268,7 @@ func (cluster *Cluster) Close() {
 	defer cluster.rwLock.Unlock()
 
 	if cluster.closed.CompareAndSwap(false, true) {
+		close(cluster.closeCh)
 		close(cluster.updateList)
 		for addr, node := range cluster.nodes {
 			node.shutdown()
