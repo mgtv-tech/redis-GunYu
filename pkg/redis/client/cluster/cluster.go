@@ -141,6 +141,7 @@ func NewCluster(options *Options) (*Cluster, error) {
 
 func (cluster *Cluster) checkIdleConns() {
 	ticker := time.NewTicker(cluster.aliveTime / 2)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
