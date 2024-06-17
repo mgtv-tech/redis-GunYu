@@ -205,7 +205,6 @@ input:
   redis:
     addresses: [127.0.0.1:6300]
     type: cluster
-  rdbParallel: 4
   mode: dynamic
   syncFrom: prefer_slave
 channel:
@@ -213,7 +212,7 @@ channel:
     dirPath: /tmp/redisgunyu-cluster
     maxSize: 209715200
     logSize: 20971520
-  staleCheckpointDuration: 10m
+  staleCheckpointDuration: 30m
 output:
   redis:
     addresses: [127.0.0.1:6310]
