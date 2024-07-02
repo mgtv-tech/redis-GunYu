@@ -151,7 +151,7 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	ro.outFilter.InsertCmdBlackList(filter.NoRouteCmds, true)
 	ro.outFilter.InsertCmdBlackList(config.Get().Filter.CmdBlacklist, true)
 
-	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey})
+	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey, config.NamespacePrefixKey})
 	keyFilter := config.Get().Filter.KeyFilter
 	if keyFilter != nil {
 		ro.outFilter.InsertPrefixKeyBlackList(keyFilter.PrefixKeyBlacklist)

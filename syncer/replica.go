@@ -100,8 +100,9 @@ func (rl *ReplicaLeader) selfInspection(stream pb.ApiService_SyncServer) error {
 	// check channel run id
 	channelRunId := rl.channel.RunId()
 	if !slices.Contains(runIds, channelRunId) || runIds[0] != channelRunId {
-		err := errors.Join(ErrRestart, fmt.Errorf("channel run id is stale : input_run_ids(%v), channel_run_id(%s)", runIds, channelRunId))
-		return rl.handleError(stream, err, pb.SyncResponse_FAILURE, "internal error", "")
+		rl.logger.Warnf("leader has not a proper run id, wait a moment : %v, %s", runIds, channelRunId)
+		//err := errors.Join(ErrRestart, fmt.Errorf("channel run id is stale : input_run_ids(%v), channel_run_id(%s)", runIds, channelRunId))
+		return rl.handleError(stream, nil, pb.SyncResponse_CLEAR, "wait a moment", "")
 	}
 	return nil
 }
@@ -349,6 +350,7 @@ func (rf *ReplicaFollower) handleResp(err error, resp *pb.SyncResponse, args ...
 				rf.channel.DelRunId(runId)
 				err = fmt.Errorf("code is error : %s", resp.GetMeta().GetMsg())
 			}
+			rf.wait.Sleep(1 * time.Second)
 		}
 	}
 	return err

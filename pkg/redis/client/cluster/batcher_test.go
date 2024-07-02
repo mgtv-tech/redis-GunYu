@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
@@ -11,6 +12,40 @@ const (
 	testRedis        = "127.0.0.1:6379"
 	testRedisCluster = "127.0.0.1:16300"
 )
+
+func TestBatcherKeysCmd(t *testing.T) {
+	cases := map[string]string{
+		"aa1": "1", "aa2": "2", "aa3": "3",
+	}
+
+	cluster := newRedisNodeCluster(t)
+	bb := cluster.NewBatcher()
+	for k, v := range cases {
+		bb.Put("SET", k, v)
+	}
+	bb.Exec()
+
+	bb = cluster.NewBatcher()
+	bb.Put("KEYS", "aa*")
+
+	res, err := bb.Exec()
+	assert.Nil(t, err)
+
+	actKeys := map[string]struct{}{}
+	for _, re := range res {
+		keys, err2 := common.Strings(re, err)
+		assert.Nil(t, err2)
+		for _, k := range keys {
+			actKeys[k] = struct{}{}
+		}
+		fmt.Println(keys)
+	}
+
+	for exp := range cases {
+		_, ok := actKeys[exp]
+		assert.True(t, ok)
+	}
+}
 
 func TestBatcher(t *testing.T) {
 	cluster := newRedisNodeCluster(t)

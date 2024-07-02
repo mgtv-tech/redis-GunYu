@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
@@ -20,13 +22,15 @@ const (
 )
 
 type RedisConn struct {
+	guard       sync.RWMutex
 	protoReader *proto.Reader
 	protoWriter *proto.Writer
 	conn        net.Conn
 	// @TODO
 	// readTimeout  time.Duration
 	// writeTimeout time.Duration
-	cfg config.RedisConfig
+	cfg    config.RedisConfig
+	closed atomic.Bool
 }
 
 func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
@@ -35,7 +39,7 @@ func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
 	}
 	var dialer net.Dialer
 	var err error
-	dialer.Timeout = 3 * time.Second
+	dialer.Timeout = 5 * time.Second
 	if cfg.TlsEnable {
 		r.conn, err = tls.DialWithDialer(&dialer, "tcp", cfg.Address(), &tls.Config{InsecureSkipVerify: true})
 	} else {
@@ -78,12 +82,14 @@ func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
 }
 
 func (r *RedisConn) Close() error {
-	// @TODO graceful close
-	err := r.conn.Close()
-	if err != nil {
-		log.Errorf("close redis error : %v", err)
+	if r.closed.CompareAndSwap(false, true) {
+		err := r.conn.Close()
+		if err != nil {
+			log.Errorf("close redis error : %v", err)
+		}
+		return err
 	}
-	return err
+	return nil
 }
 
 func (r *RedisConn) RedisType() config.RedisType {
@@ -95,11 +101,11 @@ func (r *RedisConn) Addresses() []string {
 }
 
 func (r *RedisConn) doGetString(cmd string, args ...interface{}) (string, error) {
-	err := r.SendAndFlush(cmd, args...)
+	err := r.sendAndFlush(cmd, args...)
 	if err != nil {
 		return "", err
 	}
-	replyInterface, err := r.Receive()
+	replyInterface, err := r.receive()
 	if err != nil {
 		return "", err
 	}
@@ -108,11 +114,14 @@ func (r *RedisConn) doGetString(cmd string, args ...interface{}) (string, error)
 }
 
 func (r *RedisConn) Do(cmd string, args ...interface{}) (interface{}, error) {
-	err := r.SendAndFlush(cmd, args...)
+	r.guard.Lock()
+	defer r.guard.Unlock()
+
+	err := r.sendAndFlush(cmd, args...)
 	if err != nil {
 		return nil, err
 	}
-	return r.Receive()
+	return r.receive()
 }
 
 func (r *RedisConn) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
@@ -121,6 +130,13 @@ func (r *RedisConn) IterateNodes(result func(string, interface{}, error), cmd st
 
 // @TODO 需要调用Flush吗？cluster模式并没有调用
 func (r *RedisConn) Send(cmd string, args ...interface{}) error {
+	r.guard.Lock()
+	defer r.guard.Unlock()
+
+	return r.send(cmd, args...)
+}
+
+func (r *RedisConn) send(cmd string, args ...interface{}) error {
 	argsInterface := make([]interface{}, len(args)+1)
 	argsInterface[0] = cmd
 	copy(argsInterface[1:], args)
@@ -129,7 +145,14 @@ func (r *RedisConn) Send(cmd string, args ...interface{}) error {
 }
 
 func (r *RedisConn) SendAndFlush(cmd string, args ...interface{}) error {
-	err := r.Send(cmd, args...)
+	r.guard.Lock()
+	defer r.guard.Unlock()
+
+	return r.sendAndFlush(cmd, args...)
+}
+
+func (r *RedisConn) sendAndFlush(cmd string, args ...interface{}) error {
+	err := r.send(cmd, args...)
 	if err != nil {
 		return err
 	}
@@ -141,6 +164,13 @@ func (r *RedisConn) flush() error {
 }
 
 func (r *RedisConn) Receive() (interface{}, error) {
+	r.guard.Lock()
+	defer r.guard.Unlock()
+
+	return r.receive()
+}
+
+func (r *RedisConn) receive() (interface{}, error) {
 	return r.protoReader.ReadReply()
 }
 
@@ -152,15 +182,19 @@ func (r *RedisConn) ReceiveBool() (bool, error) {
 	return common.Bool(r.Receive())
 }
 
+// Reader is not thread safe
 func (r *RedisConn) BufioReader() *bufio.Reader {
 	return r.protoReader.BufioReader()
 }
 
+// Writer is not thread safe
 func (r *RedisConn) BufioWriter() *bufio.Writer {
 	return r.protoWriter.BufioWriter()
 }
 
 func (r *RedisConn) Flush() error {
+	r.guard.Lock()
+	defer r.guard.Unlock()
 	return r.flush()
 }
 
@@ -187,11 +221,14 @@ func (tb *batcher) Len() int {
 }
 
 func (tb *batcher) Exec() ([]interface{}, error) {
+	tb.conn.guard.Lock()
+	defer tb.conn.guard.Unlock()
 
+	replies := []interface{}{}
 	exec := util.OpenCircuitExec{}
 
 	for i := 0; i < len(tb.cmds); i++ {
-		exec.Do(func() error { return tb.conn.Send(tb.cmds[i], tb.cmdArgs[i]...) })
+		exec.Do(func() error { return tb.conn.send(tb.cmds[i], tb.cmdArgs[i]...) })
 	}
 
 	err := exec.Do(func() error { return tb.conn.flush() })
@@ -202,9 +239,8 @@ func (tb *batcher) Exec() ([]interface{}, error) {
 
 	receiveSize := len(tb.cmds)
 
-	replies := []interface{}{}
 	for i := 0; i < receiveSize; i++ {
-		rpl, err := tb.conn.Receive()
+		rpl, err := tb.conn.receive()
 		if err != nil {
 			tb.conn.Close()
 			return nil, err

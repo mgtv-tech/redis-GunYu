@@ -663,6 +663,18 @@ func (cluster *Cluster) getNodeByAddr(addr string) (*redisNode, error) {
 	return node, nil
 }
 
+func (cluster *Cluster) getAllNodes() []*redisNode {
+	nodes := []*redisNode{}
+
+	cluster.rwLock.RLock()
+	defer cluster.rwLock.RUnlock()
+
+	for _, n := range cluster.nodes {
+		nodes = append(nodes, n)
+	}
+	return nodes
+}
+
 func (cluster *Cluster) getNodeByKey(arg interface{}) (*redisNode, error) {
 	slot, err := GetSlot(arg)
 	if err != nil {

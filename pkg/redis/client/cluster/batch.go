@@ -17,6 +17,7 @@ package redis
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
@@ -62,6 +63,22 @@ func (tb *Batch) joinError(err error) error {
 // Put add a redis command to batch, DO NOT put MGET/MSET/MSETNX.
 // it ignores multi/exec transaction
 func (batch *Batch) Put(cmd string, args ...interface{}) error {
+
+	switch strings.ToUpper(cmd) {
+	case "KEYS":
+		nodes := batch.cluster.getAllNodes()
+
+		for i, node := range nodes {
+			batch.batches = append(batch.batches,
+				nodeBatch{
+					node: node,
+					cmds: []nodeCommand{{cmd: cmd, args: args}},
+					done: make(chan int)})
+			batch.index = append(batch.index, i)
+		}
+		return nil
+	}
+
 	node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
 		err = fmt.Errorf("run ChooseNodeWithCmd error : %w", err)

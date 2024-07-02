@@ -36,6 +36,8 @@ const (
 	CheckpointKey        = "redis-gunyu-checkpoint"
 	CheckpointKeyHashKey = "redis-gunyu-checkpoint-hash"
 
+	NamespacePrefixKey = "/redis-gunyu"
+
 	// stale checkpoints that have not been updated in the last 12 hours
 	staleCheckpointDuration = time.Hour * 12
 )

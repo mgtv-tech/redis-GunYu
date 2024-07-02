@@ -25,9 +25,8 @@ redisGunYu -conf config.yaml
 ### 集群部署
 
 
-由于现阶段的集群部署依赖etcd，所以集群部署需要先部署etcd集群。
 
-再修改配置文件，增加`cluster`相关配置，参考[集群配置](configuration_zh.md#集群)，或其[demo配置](configuration_zh.md#较完善配置)
+修改配置文件，增加`cluster`相关配置，参考[集群配置](configuration_zh.md#集群)，或其[demo配置](configuration_zh.md#较完善配置)
 
 
 > 线上部署建议使用集群部署方式
