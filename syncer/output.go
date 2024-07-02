@@ -542,11 +542,15 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 	defer ro.logger.Infof("command parser is stopped")
 
 	if ro.startDbId > 0 { // select db
-		sendBuf <- cmdExecution{
+		select {
+		case sendBuf <- cmdExecution{
 			Cmd:    "select",
 			Args:   []interface{}{[]byte{byte(ro.startDbId + '0')}},
 			Offset: startOffset,
 			Db:     ro.startDbId,
+		}:
+		case <-replayQuit.Context().Done():
+			return nil
 		}
 	}
 
@@ -616,11 +620,15 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		if selectDB >= 0 {
 			if sdb, ok := ro.selectDB(currentDB, selectDB); ok {
 				currentDB = sdb
-				sendBuf <- cmdExecution{
+				select {
+				case sendBuf <- cmdExecution{
 					Cmd:    "select",
 					Args:   []interface{}{[]byte{byte(currentDB + '0')}},
 					Offset: startOffset + incrOffset,
 					Db:     currentDB,
+				}:
+				case <-replayQuit.Context().Done():
+					return nil
 				}
 			} else {
 				ro.filterCounterAdd(1)
@@ -655,7 +663,11 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			}
 		}
 
-		sendBuf <- cmdExec
+		select {
+		case sendBuf <- cmdExec:
+		case <-replayQuit.Context().Done():
+			return nil
+		}
 	}
 
 	return nil

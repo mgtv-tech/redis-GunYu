@@ -173,7 +173,10 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 		return rl.handleError(stream, err, pb.SyncResponse_CLEAR, "internal error", "")
 	}
 
-	reader.Start(wait)
+	wait2 := usync.NewWaitCloserFromParent(wait, nil)
+	defer wait2.Close(nil)
+
+	reader.Start(wait2)
 	ioReader := reader.IoReader()
 	offset := reqSp.Offset
 
@@ -195,7 +198,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 	}
 
 	inputId := rl.input.Id()
-	for !wait.IsClosed() && sendSize > 0 {
+	for !wait2.IsClosed() && sendSize > 0 {
 		// @TODO @OPTIMIZE reuse, array of []byte, notice that stream.Send is async
 		buf := make([]byte, 1024*4)
 		n, err := ioReader.Read(buf)
