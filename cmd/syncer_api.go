@@ -309,6 +309,7 @@ func (sc *SyncerCmd) parseInputsFromQuery(ctx *gin.Context) []string {
 func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	inputs := sc.parseInputsFromQuery(ginCtx)
 	if len(inputs) == 0 {
+		sc.logger.Errorf("no input")
 		ginCtx.AbortWithError(http.StatusBadRequest, errors.New("no input"))
 		return
 	}
@@ -325,6 +326,7 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 		for _, in := range inputs {
 			syncer := sc.getSyncer(in)
 			if syncer.sync == nil {
+				sc.logger.Errorf("syncer does not exist : input(%s)", in)
 				ginCtx.AbortWithError(http.StatusBadRequest, fmt.Errorf("syncer does not exist : input(%s)", in))
 				return
 			}
@@ -406,6 +408,9 @@ func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
 		}
 
 		for _, vv := range syncers {
+			if vv == config.Get().Server.ListenPeer {
+				continue
+			}
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s/syncer/handover", vv), nil)
 			query := url.Values{}
 			query.Set("inputs", strings.Join(inputs, ","))
@@ -419,6 +424,7 @@ func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
 				if resp.StatusCode != 200 {
 					return fmt.Errorf("status code : %d", resp.StatusCode)
 				}
+				sc.logger.Infof("takeover leader from %s", vv)
 				return nil
 			})
 		}
@@ -636,6 +642,6 @@ func (sc *SyncerCmd) allOutputs(ctx context.Context) []config.RedisConfig {
 }
 
 func (sc *SyncerCmd) allSyncers(ctx context.Context) ([]string, error) {
-	ips, err := sc.clusterCli.Discovery(sc.getRunWait().Context(), sc.registerKey)
+	ips, err := sc.clusterCli.Discover(sc.getRunWait().Context(), sc.registerKey)
 	return ips, err
 }

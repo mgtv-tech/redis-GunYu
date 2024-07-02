@@ -7,7 +7,6 @@ input:
   redis:
     addresses: [127.0.0.1:16300,127.0.0.1:16310]
     type: cluster
-  rdbParallel: 4
   mode: dynamic
   syncDelayTestKey: redis-GunYu-syncDelay-testKey
   syncFrom: prefer_slave
@@ -25,7 +24,6 @@ output:
   keyExists: replace
   metric: true
   targetDb: -1
-  replayRdbParallel: 4
   replayTransaction: false
 log:
   level: info
@@ -35,7 +33,7 @@ log:
   withFunc: false
 cluster:
   groupName: redis1
-  leaseTimeout: 3s
-  metaEtcd: 
-    endpoints:
-      - 127.0.0.1:2379
+  leaseTimeout: 9s
+  # metaEtcd: 
+  #   endpoints:
+  #     - 127.0.0.1:2379

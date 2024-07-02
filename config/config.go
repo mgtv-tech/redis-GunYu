@@ -907,15 +907,14 @@ type ClusterConfig struct {
 }
 
 func (cc *ClusterConfig) fix() error {
-	if cc.MetaEtcd == nil {
-		return newConfigError("cluster.metaEtcd is nil")
-	}
 	if cc.GroupName == "" {
 		return newConfigError("cluster.groupName is empty")
 	}
 
-	if err := cc.MetaEtcd.fix(); err != nil {
-		return err
+	if cc.MetaEtcd != nil {
+		if err := cc.MetaEtcd.fix(); err != nil {
+			return err
+		}
 	}
 
 	if cc.LeaseTimeout == 0 {
@@ -939,7 +938,9 @@ func (cc *ClusterConfig) fix() error {
 		cc.LeaseRenewInterval = cc.LeaseTimeout / 3
 	}
 
-	cc.MetaEtcd.Ttl = int(cc.LeaseTimeout / time.Second)
+	if cc.MetaEtcd != nil {
+		cc.MetaEtcd.Ttl = int(cc.LeaseTimeout / time.Second)
+	}
 
 	return nil
 }

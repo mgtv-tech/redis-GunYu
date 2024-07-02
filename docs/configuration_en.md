@@ -133,7 +133,7 @@ filter:
 
 Cluster mode configuration:
 - groupName: Cluster name, the name must be unique.
-- metaEtcd: etcd configuration
+- metaEtcd: etcd configuration [optional]. If `metaEtcd` is empty, source redis will be used to implement locking and registry.
   - endpoints: etcd node addresses
   - username: username
   - password: password

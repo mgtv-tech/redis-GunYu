@@ -3,90 +3,22 @@ package cluster
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
-
-	"github.com/mgtv-tech/redis-GunYu/config"
 )
 
-var (
-	ErrNoLeader  = errors.New("no leader")
-	ErrNotLeader = errors.New("not a leader")
-)
-
-type ClusterRole int
-
-const (
-	RoleCandidate ClusterRole = iota
-	RoleFollower  ClusterRole = iota
-	RoleLeader    ClusterRole = iota
-)
-
-type RoleInfo struct {
-	Address string
-	Role    ClusterRole
-}
-
-type Cluster struct {
-	cli  *clientv3.Client
-	sess *concurrency.Session
-}
-
-func NewCluster(ctx context.Context, cfg config.EtcdConfig) (*Cluster, error) {
-	cli, err := clientv3.New(clientv3.Config{
-		Context:              ctx,
-		Endpoints:            cfg.Endpoints,
-		AutoSyncInterval:     cfg.AutoSyncInterval,
-		DialTimeout:          cfg.DialTimeout,
-		DialKeepAliveTime:    cfg.DialKeepAliveTime,
-		DialKeepAliveTimeout: cfg.DialKeepAliveTimeout,
-		Username:             cfg.Username,
-		Password:             cfg.Password,
-		RejectOldCluster:     cfg.RejectOldCluster,
-	})
-	if err != nil {
-		return nil, err
-	}
-	sess, err := concurrency.NewSession(cli, concurrency.WithTTL(cfg.Ttl))
-	if err != nil {
-		cli.Close()
-		return nil, err
-	}
-	return &Cluster{
-		cli:  cli,
-		sess: sess,
-	}, nil
-}
-
-func (c *Cluster) Close() error {
-	if c.sess != nil {
-		err := c.sess.Close()
-		return errors.Join(err, c.cli.Close())
-	}
-
-	return nil
-}
-
-type Election struct {
+type etcdElection struct {
 	cli       *clientv3.Client
 	key       string
 	rev       int64
 	keyPrefix string
 	sess      *concurrency.Session
+	id        string
 }
 
-func (c *Cluster) NewElection(ctx context.Context, prefix string) *Election {
-	return &Election{
-		cli:       c.cli,
-		keyPrefix: prefix,
-		sess:      c.sess,
-	}
-}
-
-func (el *Election) Renew(ctx context.Context) error {
+func (el *etcdElection) Renew(ctx context.Context) error {
 	resp, err := el.cli.Get(ctx, el.keyPrefix, clientv3.WithFirstCreate()...)
 	if err != nil {
 		return err
@@ -99,7 +31,7 @@ func (el *Election) Renew(ctx context.Context) error {
 	return ErrNotLeader
 }
 
-func (e *Election) Leader(ctx context.Context) (*RoleInfo, error) {
+func (e *etcdElection) Leader(ctx context.Context) (*RoleInfo, error) {
 	resp, err := e.cli.Get(ctx, e.keyPrefix, clientv3.WithFirstCreate()...)
 	if err != nil {
 		return nil, err
@@ -113,8 +45,8 @@ func (e *Election) Leader(ctx context.Context) (*RoleInfo, error) {
 	}, nil
 }
 
-func (e *Election) Campaign(ctx context.Context, val string) (ClusterRole, error) {
-	resp, err := e.try(ctx, val)
+func (e *etcdElection) Campaign(ctx context.Context) (ClusterRole, error) {
+	resp, err := e.try(ctx, e.id)
 	if err != nil {
 		return RoleCandidate, err
 	}
@@ -134,7 +66,7 @@ func (e *Election) Campaign(ctx context.Context, val string) (ClusterRole, error
 	return RoleFollower, nil
 }
 
-func (e *Election) try(ctx context.Context, val string) (*clientv3.TxnResponse, error) {
+func (e *etcdElection) try(ctx context.Context, val string) (*clientv3.TxnResponse, error) {
 	client := e.cli
 
 	e.key = fmt.Sprintf("%s%x", e.keyPrefix, e.sess.Lease())
@@ -156,7 +88,7 @@ func (e *Election) try(ctx context.Context, val string) (*clientv3.TxnResponse, 
 	return resp, nil
 }
 
-func (e *Election) Resign(ctx context.Context) error {
+func (e *etcdElection) Resign(ctx context.Context) error {
 	client := e.cli
 
 	cmp := clientv3.Compare(clientv3.CreateRevision(e.key), "=", e.rev)

@@ -49,7 +49,7 @@ type SyncerCmd struct {
 	httpSvr       *http.Server
 	waitCloser    usync.WaitCloser // object scope
 	runWait       usync.WaitCloser // run function scope
-	clusterCli    *cluster.Cluster
+	clusterCli    cluster.Cluster
 	registerKey   string
 	multiListener cmux.CMux
 }
@@ -61,7 +61,7 @@ func NewSyncerCmd() *SyncerCmd {
 		syncers:    make(map[string]syncerInfo),
 	}
 	if config.Get().Cluster != nil {
-		cmd.registerKey = fmt.Sprintf("/redis-gunyu/svcDS/%s/", config.Get().Cluster.GroupName)
+		cmd.registerKey = fmt.Sprintf("%s/%s/registry/", config.NamespacePrefixKey, config.Get().Cluster.GroupName)
 	}
 	return cmd
 }
@@ -455,7 +455,14 @@ func (sc *SyncerCmd) run() error {
 	}
 
 	// all syncers share one lease
-	cli, err := cluster.NewCluster(runWait.Context(), *config.Get().Cluster.MetaEtcd)
+	var cli cluster.Cluster
+	if config.Get().Cluster.MetaEtcd != nil {
+		cli, err = cluster.NewEtcdCluster(runWait.Context(), *config.Get().Cluster.MetaEtcd)
+	} else {
+		ttl := int(config.Get().Cluster.LeaseTimeout / time.Second)
+		cli, err = cluster.NewRedisCluster(runWait.Context(), *config.Get().Input.Redis, ttl)
+	}
+
 	if err != nil {
 		runWait.Close(err)
 	} else {
@@ -503,14 +510,14 @@ func (sc *SyncerCmd) runSingle(runWait usync.WaitCloser, cfgs []syncer.SyncerCon
 	}
 }
 
-func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, cfgs []syncer.SyncerConfig) {
+func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, cfgs []syncer.SyncerConfig) {
 	for _, tmp := range cfgs {
 		runWait.WgAdd(1)
 		cfg := tmp
 		usync.SafeGo(func() {
 			defer runWait.WgDone()
-			key := fmt.Sprintf("/redis-gunyu/%s/input-election/%s/", config.Get().Cluster.GroupName, cfg.Input.Address())
-			elect := cli.NewElection(runWait.Context(), key)
+			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.Get().Cluster.GroupName, cfg.Input.Address())
+			elect := cli.NewElection(runWait.Context(), key, config.Get().Server.ListenPeer)
 			role := cluster.RoleCandidate
 
 			for !runWait.IsClosed() {
@@ -577,11 +584,12 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 
 				if err != nil {
 					if errors.Is(err, syncer.ErrLeaderHandover) {
+						sc.logger.Infof("handover leadership, sleep 10 seconds")
 						// hand over
 						runWait.Sleep(10 * time.Second)
 					} else if errors.Is(err, syncer.ErrLeaderTakeover) {
 						// take over
-						runWait.Sleep(1 * time.Second)
+						time.Sleep(1 * time.Second)
 					} else if errors.Is(err, syncer.ErrBreak) {
 						runWait.Close(err)
 						return
@@ -592,10 +600,10 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli *cluster.Cluster, 
 	}
 }
 
-func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect *cluster.Election) (cluster.ClusterRole, error) {
+func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect cluster.Election) (cluster.ClusterRole, error) {
 	ctx, cancel := context.WithTimeout(ctx, config.Get().Cluster.LeaseRenewInterval)
 	defer cancel()
-	newRole, err := elect.Campaign(ctx, config.Get().Server.ListenPeer)
+	newRole, err := elect.Campaign(ctx)
 	sc.logger.Debugf("campaign : newRole(%v), error(%v)", newRole, err)
 	if err != nil {
 		sc.logger.Errorf("campaign : newRole(%v), error(%v)", newRole, err)
@@ -603,7 +611,7 @@ func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect *cluster.Electio
 	return newRole, err
 }
 
-func (sc *SyncerCmd) clusterRenew(ctx context.Context, elect *cluster.Election) error {
+func (sc *SyncerCmd) clusterRenew(ctx context.Context, elect cluster.Election) error {
 	ctx, cancel := context.WithTimeout(ctx, config.Get().Cluster.LeaseRenewInterval)
 	defer cancel()
 	err := elect.Renew(ctx)
@@ -613,7 +621,7 @@ func (sc *SyncerCmd) clusterRenew(ctx context.Context, elect *cluster.Election) 
 	return err
 }
 
-func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect *cluster.Election, input string) {
+func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect cluster.Election, input string) {
 	if wait.IsClosed() {
 		return
 	}
@@ -637,7 +645,6 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 				}
 			} else if role == cluster.RoleFollower {
 				role, err := sc.clusterCampaign(wait.Context(), elect)
-				sc.logger.Debugf("campagin : %v", err)
 				if err != nil {
 					return false, err
 				}

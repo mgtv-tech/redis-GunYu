@@ -1,6 +1,6 @@
 server:
-  listen: 127.0.0.1:18000
-  listenPeer: 127.0.0.1:18000
+  listen: 127.0.0.1:18001
+  listenPeer: 127.0.0.1:18001
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 10s
 input:
@@ -12,7 +12,7 @@ input:
   syncFrom: prefer_slave
 channel:
   storer:
-    dirPath: /tmp/redisgunyu4
+    dirPath: /tmp/redisgunyu5
     maxSize: 1073741800
     logSize: 10971520
 output:

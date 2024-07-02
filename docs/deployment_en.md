@@ -25,8 +25,6 @@ You can run below command directly.
 
 ### Cluster Deployment
 
-Currently, `redis-GunYu` implement hight-availability under etcd cluster, so it is necessary to deploy an etcd cluster before starting the redis-GunYu cluster.
-
 Adding `cluster` section to configuration file, refer to [Cluster Configuration](configuration_en.md#cluster), or the [demo configuration](configuration_en.md#detailed-configuration).
 
 

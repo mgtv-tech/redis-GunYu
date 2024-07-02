@@ -131,7 +131,7 @@ filter:
 
 集群模式配置
 - groupName ： 集群名，此名字在etcd集群中作为集群名使用，所以请确保唯一性
-- metaEtcd ： etcd配置
+- metaEtcd ： etcd配置 [可选]，如果没有配置etcd地址，则会使用源redis作为锁和注册中心
   - endpoints ： etcd节点地址
   - username ： 用户名
   - password ： 密码
@@ -148,6 +148,13 @@ cluster:
     endpoints:
       - 127.0.0.1:2379
 ```
+或
+```
+cluster:
+  groupName: redisA
+  leaseTimeout: 9s
+```
+
 
 
 ### 日志
