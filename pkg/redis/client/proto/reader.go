@@ -120,7 +120,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 	}
 
 	// Compatible with RESP2
-	if IsNilReply(line) {
+	if common.IsNilReply(line) {
 		return nil, common.ErrNil
 	}
 
@@ -550,11 +550,4 @@ func replyLen(line []byte) (n int, err error) {
 		}
 	}
 	return n, nil
-}
-
-// IsNilReply detects redis.Nil of RESP2.
-func IsNilReply(line []byte) bool {
-	return len(line) == 3 &&
-		(line[0] == RespString || line[0] == RespArray) &&
-		line[1] == '-' && line[2] == '1'
 }

@@ -192,6 +192,9 @@ func (bat *Batch) doBatch(batch *nodeBatch) {
 	for i := range batch.cmds {
 		reply, err := conn.receive()
 		if err != nil {
+			if err == common.ErrNil {
+				continue
+			}
 			batch.err = err
 			conn.shutdown()
 			batch.done <- 1

@@ -242,6 +242,10 @@ func (tb *batcher) Exec() ([]interface{}, error) {
 	for i := 0; i < receiveSize; i++ {
 		rpl, err := tb.conn.receive()
 		if err != nil {
+			if err == common.ErrNil {
+				replies = append(replies, nil)
+				continue
+			}
 			tb.conn.Close()
 			return nil, err
 		}
