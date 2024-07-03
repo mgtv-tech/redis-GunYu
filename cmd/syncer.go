@@ -501,7 +501,9 @@ func (sc *SyncerCmd) runSingle(runWait usync.WaitCloser, cfgs []syncer.SyncerCon
 			sc.logger.Infof("start syncer : %v", cfg)
 			err := sy.RunLeader()
 			runWait.Close(err)
-		}, nil)
+		}, func(i interface{}) {
+			runWait.Close(fmt.Errorf("panic : %v", i))
+		})
 
 		usync.SafeGo(func() {
 			<-runWait.Done()

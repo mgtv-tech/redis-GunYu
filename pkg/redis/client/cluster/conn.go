@@ -251,9 +251,6 @@ func (conn *redisConn) readReply() (interface{}, error) {
 			return string(line[1:]), nil
 		}
 	case '-':
-		if common.IsNilReply(line) {
-			return nil, common.ErrNil
-		}
 		return common.RedisError(string(line[1:])), nil
 	case ':':
 		return parseInt(line[1:])
