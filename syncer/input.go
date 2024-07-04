@@ -546,7 +546,11 @@ func (ri *RedisInput) sendOutput(wait usync.WaitCloser, reader *store.Reader) {
 	if wait.IsClosed() {
 		return
 	}
-	err := ri.output.Send(wait.Context(), reader)
+
+	ctx, cancel := context.WithCancel(wait.Context())
+	defer cancel()
+
+	err := ri.output.Send(ctx, reader)
 	wait.Close(err)
 }
 
