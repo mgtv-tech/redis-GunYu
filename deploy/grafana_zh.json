@@ -38,7 +38,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -89,7 +89,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "exemplar": false,
@@ -107,7 +107,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -158,7 +158,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "expr": "sum(rate(redisGunYu_output_send_cmd{cluster=\"$cluster\"}[1m])) ",
@@ -174,7 +174,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -226,7 +226,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "expr": "max(redisGunYu_storage_ratio{cluster=\"$cluster\"})",
@@ -242,7 +242,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -294,7 +294,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "expr": "max(abs(max(redisGunYu_input_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_send_offset{cluster=\"$cluster\"})by(input)))",
@@ -310,7 +310,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -362,7 +362,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"})",
@@ -378,7 +378,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+        "uid": ""
       },
       "fieldConfig": {
         "defaults": {
@@ -430,7 +430,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "editorMode": "code",
           "expr": "sum(increase(redisGunYu_input_sync_type{cluster=\"$cluster\"}[30m]))",
@@ -456,7 +456,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -538,7 +538,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_received_cmd{cluster=\"$cluster\"}[1m])) by(input)",
@@ -554,7 +554,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -636,7 +636,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_send_cmd{cluster=\"$cluster\"}[1m])) by(input)",
@@ -652,7 +652,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -734,7 +734,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_filter_cmd{cluster=\"$cluster\"}[1m])) by(input)",
@@ -750,7 +750,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -832,7 +832,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_success_cmd{cluster=\"$cluster\"}[1m])) by(input)",
@@ -848,7 +848,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -930,7 +930,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_fail_cmd{cluster=\"$cluster\"}[1m])) by(input)",
@@ -946,7 +946,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1028,7 +1028,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_sender{cluster=\"$cluster\"}[2m])) by(transaction, result)",
@@ -1044,7 +1044,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1126,7 +1126,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_rdb_key_send{cluster=\"$cluster\"}[2m])) by(input)",
@@ -1142,7 +1142,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1224,7 +1224,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_output_rdb_key_filter{cluster=\"$cluster\"}[2m])) by(input)",
@@ -1254,7 +1254,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "description": "",
           "fieldConfig": {
@@ -1380,7 +1380,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "exemplar": false,
@@ -1399,7 +1399,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "description": "已读取到的源端偏移 - 已成功写入目的端的偏移",
           "fieldConfig": {
@@ -1482,7 +1482,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "abs(max(redisGunYu_input_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
@@ -1498,7 +1498,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1580,7 +1580,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "abs(max(redisGunYu_input_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_send_offset{cluster=\"$cluster\"})by(input))",
@@ -1596,7 +1596,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1678,7 +1678,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "abs(max(redisGunYu_output_send_offset{cluster=\"$cluster\"}) by(input) - max(redisGunYu_output_ack_offset{cluster=\"$cluster\"})by(input))",
@@ -1694,7 +1694,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "description": "",
           "fieldConfig": {
@@ -1778,7 +1778,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"}) by(input) ",
@@ -1794,7 +1794,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1874,7 +1874,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(increase(redisGunYu_input_sync_type{cluster=\"$cluster\"}[5m])) by (input)",
@@ -1890,7 +1890,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -1970,7 +1970,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(redisGunYu_input_sync_type{cluster=\"$cluster\", sync_type=\"full\"} ) by (input)",
@@ -1986,7 +1986,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2066,7 +2066,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(increase(redisGunYu_syncer_role_change{cluster=\"$cluster\"}[5m])) by (input)",
@@ -2096,7 +2096,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2178,7 +2178,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_replica_leader_send{cluster=\"$cluster\"}[1m])) by(input)",
@@ -2194,7 +2194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2276,7 +2276,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_replica_follower_recv{cluster=\"$cluster\"}[1m])) by(input)",
@@ -2292,7 +2292,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2373,7 +2373,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(increase(redisGunYu_syncer_role_change{cluster=\"$cluster\"}[30m])) by (input)",
@@ -2389,7 +2389,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2470,7 +2470,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(increase(redisGunYu_input_sync_type{cluster=\"$cluster\"}[30m])) by(input)",
@@ -2500,7 +2500,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2581,7 +2581,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "redisGunYu_storage_size{cluster=\"$cluster\"}",
@@ -2597,7 +2597,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2678,7 +2678,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_aof_write{cluster=\"$cluster\"}[1m])) by(instance)",
@@ -2694,7 +2694,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2775,7 +2775,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(redisGunYu_rdb_write{cluster=\"$cluster\"}[1m])) by(instance)",
@@ -2805,7 +2805,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2887,7 +2887,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(process_cpu_seconds_total{cluster=\"$cluster\"}[2m])) by(instance) ",
@@ -2903,7 +2903,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -2985,7 +2985,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "process_resident_memory_bytes{cluster=\"$cluster\"}",
@@ -3001,7 +3001,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3083,7 +3083,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "go_memstats_alloc_bytes{cluster=\"$cluster\"}",
@@ -3099,7 +3099,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3181,7 +3181,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "rate(process_resident_memory_bytes{cluster=\"$cluster\"}[2m])",
@@ -3197,7 +3197,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3279,7 +3279,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "process_open_fds{cluster=\"$cluster\"}",
@@ -3295,7 +3295,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3377,7 +3377,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "deriv(go_memstats_alloc_bytes{cluster=\"$cluster\"}[2m])",
@@ -3393,7 +3393,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3475,7 +3475,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "sum(rate(go_gc_duration_seconds_sum{cluster=\"$cluster\"}[2m])) by (instance) /  sum(rate(go_gc_duration_seconds_count{cluster=\"$cluster\"}[2m])) by(instance)",
@@ -3491,7 +3491,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3573,7 +3573,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "go_goroutines{cluster=\"$cluster\"}",
@@ -3589,7 +3589,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+            "uid": ""
           },
           "fieldConfig": {
             "defaults": {
@@ -3671,7 +3671,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+                "uid": ""
               },
               "editorMode": "code",
               "expr": "\r\nsum(go_gc_duration_seconds{quantile=\"0.75\",cluster=\"$cluster\"}) by(instance)",
@@ -3706,7 +3706,7 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
+          "uid": ""
         },
         "definition": "label_values(redisGunYu_output_send_cmd,cluster)",
         "hide": 0,
