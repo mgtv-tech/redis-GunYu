@@ -202,10 +202,6 @@ func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
 }
 
 func (ro *RedisOutput) Send(ctx context.Context, reader *store.Reader) error {
-
-	// stats log
-	ro.stats(ctx)
-
 	if reader.IsAof() {
 		return ro.SendAof(ctx, reader)
 	}
@@ -253,6 +249,7 @@ func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error 
 }
 
 func (ro *RedisOutput) SendAof(ctx context.Context, reader *store.Reader) error {
+	ro.stats(ctx)
 	err := ro.sendAof(ctx, reader.RunId(), reader.IoReader(), reader.Left(), reader.Size())
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -287,79 +284,141 @@ func (ro *RedisOutput) rdbFilterCounterAdd(v uint) {
 	ro.rdbFilterCounterRt.Add(int64(v))
 }
 
+func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry) error {
+	var ok bool
+	cli, err := ro.NewRedisConn(ctx)
+	if err != nil {
+		ro.logger.Errorf("new redis error : redis(%v), err(%v)", ro.cfg.Redis.Addresses, err)
+		return err
+	}
+	defer cli.Close()
+
+	var ticker = time.Now()
+	pingC := 0
+	pingFn := func(f bool) {
+		if !f {
+			pingC++
+			return
+		}
+		if pingC > 0 {
+			ticker = time.Now()
+			pingC = 0
+			return
+		}
+		if time.Since(ticker) > time.Second*3 {
+			ticker = time.Now()
+			if _, err := cli.Do("PING"); err != nil {
+				ro.logger.Errorf("PING error : %v", err)
+			}
+		}
+	}
+
+	currentDB := 0
+	var e *rdb.BinEntry
+	for {
+		select {
+		case e, ok = <-pipe:
+			if !ok {
+				return nil
+			}
+			if e.Err != nil { // @TODO corrupted data
+				return e.Err
+			}
+			if e.Done {
+				return nil
+			}
+		case <-ctx.Done():
+			return nil
+		}
+
+		filterOut := false
+		if filter.FilterDB(int(e.DB)) {
+			filterOut = true
+		} else {
+			if tdb, ok := ro.selectDB(currentDB, int(e.DB)); ok {
+				currentDB = tdb
+				err = redis.SelectDB(cli, uint32(currentDB))
+				if err != nil {
+					ro.logger.Errorf("select db error : db(%d), err(%v)", currentDB, err)
+					return err
+				}
+			}
+
+			if ro.outFilter.FilterKey(util.BytesToString(e.Key)) {
+				filterOut = true
+			}
+		}
+
+		if filterOut {
+			ro.rdbFilterCounterAdd(1)
+		} else {
+			ro.rdbSendCounterAdd(1)
+			err := rdbrestore.RestoreRdbEntry(cli, e) // @TODO retry
+			if err != nil {
+				ro.logger.Errorf("restore rdb error : entry(%v), err(%v)", e, err)
+				return err
+			}
+		}
+		pingFn(filterOut)
+	}
+}
+
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
-	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
+	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.Parallel)
 
 	ctx, cancel := context.WithCancel(pctx)
 	defer cancel()
 
 	nsize := reader.Size()
-	ioReader := reader.IoReader()
 	var readBytes atomic.Int64
 	var fullDone atomic.Bool
+	startTime := time.Now()
 
 	statFn := func() {
-		startTime := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
-				if fullDone.Load() {
-					rByte := readBytes.Load()
-					ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
-						time.Since(startTime), nsize, rByte, 100, ro.rdbSendCounterRt.Load(), ro.rdbFilterCounterRt.Load())
-					fullSyncProgress.Set(100, ro.cfg.InputName)
-					ro.logger.Infof("sync rdb done")
-				} else {
-					ro.logger.Infof("sync rdb abort")
-				}
 				return
 			case <-time.After(5 * time.Second):
 			}
-
 			rByte := readBytes.Load()
 			ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
 				time.Since(startTime), nsize, rByte, 100*rByte/nsize, ro.rdbSendCounterRt.Load(), ro.rdbFilterCounterRt.Load())
 			fullSyncProgress.Set(100*float64(rByte)/float64(nsize), ro.cfg.InputName)
 		}
 	}
-
-	pipe := redis.ParseRdb(ioReader, &readBytes, config.RDBPipeSize, ro.cfg.Redis.Version)
-	errChan := make(chan error, ro.cfg.Parallel)
-
-	replayFn := func() error {
-		var ok bool
-		cli, err := ro.NewRedisConn(ctx)
-		if err != nil {
-			ro.logger.Errorf("new redis error : redis(%v), err(%v)", ro.cfg.Redis.Addresses, err)
-			return err
+	defer func() {
+		if fullDone.Load() {
+			rByte := readBytes.Load()
+			ro.logger.Infof("sync rdb process : cost(%v), total(%d), read(%d), progress(%3d%%), keys(%d), filtered(%d)",
+				time.Since(startTime), nsize, rByte, 100, ro.rdbSendCounterRt.Load(), ro.rdbFilterCounterRt.Load())
+			fullSyncProgress.Set(100, ro.cfg.InputName)
+			ro.logger.Infof("sync rdb done")
+		} else {
+			ro.logger.Errorf("sync rdb aborted")
 		}
-		defer cli.Close()
+	}()
 
-		var ticker = time.Now()
-		pingC := 0
-		pingFn := func(f bool) {
-			if !f {
-				pingC++
-				return
-			}
-			if pingC > 0 {
-				ticker = time.Now()
-				pingC = 0
-				return
-			}
-			if time.Since(ticker) > time.Second*3 {
-				ticker = time.Now()
-				if _, err := cli.Do("PING"); err != nil {
-					ro.logger.Errorf("PING error : %v", err)
-				}
-			}
-		}
+	rdbPipe := redis.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize, ro.cfg.Redis.Version)
+	errChan := make(chan error, ro.cfg.Parallel+1)
 
-		currentDB := 0
+	pipeSize := config.RdbPipeSize / ro.cfg.Parallel
+	if pipeSize < 1 {
+		pipeSize = 1
+	}
+	var pipes []chan *rdb.BinEntry
+	for i := 0; i < ro.cfg.Parallel; i++ {
+		pipes = append(pipes, make(chan *rdb.BinEntry, pipeSize))
+	}
+	pipeLen := uint32(len(pipes))
+
+	distributeTask := func() error {
 		var e *rdb.BinEntry
+		var ok bool
+		var idx uint32
 		for {
 			select {
-			case e, ok = <-pipe:
+			case e, ok = <-rdbPipe:
 				if !ok {
 					return nil
 				}
@@ -370,51 +429,46 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 					fullDone.Store(true)
 					return nil
 				}
+
+				if len(e.Key) > 0 {
+					idx = util.FnvHash(e.Key) % pipeLen
+				} else {
+					idx = (idx + 1) % pipeLen
+				}
+				select {
+				case pipes[idx] <- e:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-
-			filterOut := false
-			if filter.FilterDB(int(e.DB)) {
-				filterOut = true
-			} else {
-				if tdb, ok := ro.selectDB(currentDB, int(e.DB)); ok {
-					currentDB = tdb
-					err = redis.SelectDB(cli, uint32(currentDB))
-					if err != nil {
-						ro.logger.Errorf("select db error : db(%d), err(%v)", currentDB, err)
-						return err
-					}
-				}
-
-				if ro.outFilter.FilterKey(util.BytesToString(e.Key)) {
-					filterOut = true
-				}
-			}
-
-			if filterOut {
-				ro.rdbFilterCounterAdd(1)
-			} else {
-				ro.rdbSendCounterAdd(1)
-				err := rdbrestore.RestoreRdbEntry(cli, e) // @TODO retry
-				if err != nil {
-					ro.logger.Errorf("restore rdb error : entry(%v), err(%v)", e, err)
-					return err
-				}
-			}
-			pingFn(filterOut)
 		}
 	}
 
+	usync.SafeGo(func() {
+		defer func() {
+			for _, pipe := range pipes {
+				close(pipe)
+			}
+		}()
+		errChan <- distributeTask()
+	}, func(i interface{}) {
+		errChan <- fmt.Errorf("panic: %v", i)
+	})
+
 	for i := 0; i < ro.cfg.Parallel; i++ {
+		pp := pipes[i]
 		usync.SafeGo(func() {
-			errChan <- replayFn()
-		}, nil)
+			errChan <- ro.rdbReplay(ctx, pp)
+		}, func(i interface{}) {
+			errChan <- fmt.Errorf("panic: %v", i)
+		})
 	}
 	usync.SafeGo(statFn, nil)
 
 	errs := []error{}
-	for i := 0; i < ro.cfg.Parallel; i++ {
+	for i := 0; i < cap(errChan); i++ {
 		err := <-errChan
 		if err != nil {
 			cancel()
@@ -424,7 +478,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 
 	if len(errs) > 0 {
 		err := errors.Join(errs...)
-		ro.logger.Infof("send rdb ERROR : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), errs[0])
+		ro.logger.Errorf("send rdb ERROR : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), errs[0])
 		return err
 	}
 	ro.logger.Debugf("send rdb OK : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())

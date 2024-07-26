@@ -17,7 +17,7 @@ var (
 var (
 	StartTime   string
 	Version     = "1"
-	RDBPipeSize = 1024
+	RdbPipeSize = 1024
 )
 
 const (

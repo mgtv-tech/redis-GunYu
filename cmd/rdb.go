@@ -53,7 +53,7 @@ func (rc *RdbCmd) Print() error {
 		return err
 	}
 	var stat atomic.Int64
-	pipe := redis.ParseRdb(file, &stat, config.RDBPipeSize, "7.2") // @TODO version
+	pipe := redis.ParseRdb(file, &stat, config.RdbPipeSize, "7.2") // @TODO version
 	for {
 		select {
 		case e, ok := <-pipe:
