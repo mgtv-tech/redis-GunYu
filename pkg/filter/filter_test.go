@@ -17,11 +17,6 @@ func TestFilter(t *testing.T) {
 			assert.Equal(t, exps[i], flt.FilterKey(c))
 		}
 	}
-	filterSlotChecker := func(t *testing.T, flt *RedisCmdFilter, keys []string, exps []bool) {
-		for i, c := range keys {
-			assert.Equal(t, exps[i], flt.FilterSlot(c))
-		}
-	}
 
 	type cmdKey struct {
 		cmd     string
