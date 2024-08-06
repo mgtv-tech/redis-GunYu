@@ -158,6 +158,12 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		ro.outFilter.InsertPrefixKeyWhiteList(keyFilter.PrefixKeyWhitelist)
 	}
 
+	slotFilter := config.Get().Filter.SlotFilter
+	if slotFilter != nil {
+		ro.outFilter.InsertSlotWhiteList(slotFilter.KeySlotWhitelist)
+		ro.outFilter.InsertSlotBlackList(slotFilter.KeySlotBlacklist)
+	}
+
 	return ro
 }
 
@@ -344,7 +350,8 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 				}
 			}
 
-			if ro.outFilter.FilterKey(util.BytesToString(e.Key)) {
+			if ro.outFilter.FilterKey(util.BytesToString(e.Key)) ||
+				ro.outFilter.FilterSlot(util.BytesToString(e.Key)){
 				filterOut = true
 			}
 		}

@@ -1,6 +1,8 @@
 package filter
 
 import (
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"strings"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
@@ -28,6 +30,8 @@ type RedisCmdFilter struct {
 	cmdBlackTrie       *Trie
 	prefixKeyWhiteTrie *Trie
 	prefixKeyBlackTrie *Trie
+	slotKeyWhiteList   *RangeList
+	slotKeyBlackList   *RangeList
 }
 
 func (f *RedisCmdFilter) InsertCmdWhiteList(cmds []string, caseInsensitivity bool) {
@@ -108,6 +112,15 @@ func (f *RedisCmdFilter) FilterKey(key string) bool {
 	return false
 }
 
+func (f *RedisCmdFilter) FilterKeyBySlot(key string, startSlot, endSlot uint16) bool {
+	keySlot := redis.KeyToSlot(key)
+
+	if keySlot >= startSlot && keySlot <= endSlot {
+		return true
+	}
+	return false
+}
+
 // filter out
 func FilterDB(db int) bool {
 	if db == -1 {
@@ -143,7 +156,7 @@ func (f *RedisCmdFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool
 	foutKey := false
 	for firstkey := cmdPos.first - 1; firstkey <= lastkey; firstkey += keystep {
 		key := string(args[firstkey])
-		if !f.FilterKey(key) {
+		if !f.FilterKey(key) && !f.FilterSlot(key) {
 			array[number] = firstkey
 			number++
 		} else {
@@ -173,3 +186,61 @@ func (f *RedisCmdFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool
 
 	return newArgs, !pass
 }
+
+func (f *RedisCmdFilter) InsertSlotWhiteList(slots [][]uint16) {
+	log.Debugf("slot white list %s", slots)
+	if f.slotKeyWhiteList == nil {
+		f.slotKeyWhiteList = NewRangeList()
+	}
+	for _, slot := range slots {
+		if len(slot) != 1 && len(slot) != 2 {
+			continue
+		}
+		var left, right uint16
+		if len(slot) == 1 {
+			left = slot[0]
+			right = slot[0]
+		} else {
+			left = slot[0]
+			right = slot[1]
+			if left > right {
+				continue
+			}
+		}
+		f.slotKeyWhiteList.InsertSlotInList(left, right)
+	}
+}
+
+func (f *RedisCmdFilter) InsertSlotBlackList(slots [][]uint16) {
+	if f.slotKeyBlackList == nil {
+		f.slotKeyBlackList = NewRangeList()
+	}
+	for _, slot := range slots {
+		if len(slot) != 1 && len(slot) != 2 {
+			continue
+		}
+		var left, right uint16
+		if len(slot) == 1 {
+			left = slot[0]
+			right = slot[0]
+		} else {
+			left = slot[0]
+			right = slot[1]
+			if left > right {
+				continue
+			}
+		}
+		f.slotKeyBlackList.InsertSlotInList(left, right)
+	}
+}
+
+func (f *RedisCmdFilter) FilterSlot(key string) bool {
+	if f.slotKeyBlackList != nil && f.slotKeyBlackList.IsSlotInList(key) {
+		return true
+	}
+	if f.slotKeyWhiteList != nil && !f.slotKeyWhiteList.IsSlotInList(key) {
+		return true
+	}
+	return false
+}
+

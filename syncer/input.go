@@ -593,6 +593,7 @@ func (ri *RedisInput) sendPsync(cli *redis.StandaloneRedis, offset Offset) (Offs
 		ri.logger.Errorf("send psync : offset(%v), err(%v), input(%s, %d)", offset, err, pRunId, pOff)
 		return Offset{}, false, 0, err
 	}
+
 	var rdbSize int64
 	if wait == nil {
 		ri.logger.Debugf("send psync : offset(%v), input(%s, %d), aof_sync", offset, pRunId, pOff)

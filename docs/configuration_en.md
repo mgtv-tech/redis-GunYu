@@ -113,7 +113,9 @@ Configuration:
 - keyFilter: Filtering keys
   - prefixKeyBlacklist: Prefix key blacklist
   - prefixKeyWhitelist: Prefix key whitelist
-
+- slotFilter: Filtering slots keys
+  - keySlotBlacklist : slots blacklist
+  - keySlotWhitelist : slots whitelist
 
 Configuration example, not synchronizing `del` commands and keys starting with `redisGunYu`:
 ```
@@ -123,6 +125,10 @@ filter:
   keyFilter:
     prefixKeyBlacklist: 
       - redisGunYu
+  slotFilter:
+    keySlotWhitelist: 
+      - [0,1000]
+      - [1002] 
 ```
 
 
@@ -252,6 +258,16 @@ input:
 ```
 
 The corresponding command line argument would be `--sync.input.redis.addresses=127.0.0.1:6379,127.0.0.2:6379`.
+
+For example, if the slots white list are configured as follows in the configuration file:
+```
+filter:
+  slotFilter:
+    keySlotWhitelist: 
+      - [0,1000]
+      - [1002] 
+```
+The corresponding command line argument would be`--sync.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 You can use `redisGunYu -h` to view all available arguments.
 

@@ -343,14 +343,20 @@ type OutputStats struct {
 }
 
 type FilterConfig struct {
-	DbBlacklist  SliceInt         `yaml:"dbBlacklist"`
-	CmdBlacklist SliceString      `yaml:"commandBlacklist"`
-	KeyFilter    *FilterKeyConfig `yaml:"keyFilter"`
+	DbBlacklist  SliceInt          `yaml:"dbBlacklist"`
+	CmdBlacklist SliceString       `yaml:"commandBlacklist"`
+	KeyFilter    *FilterKeyConfig  `yaml:"keyFilter"`
+	SlotFilter   *FilterSlotConfig `yaml:"slotFilter"`
 }
 
 type FilterKeyConfig struct {
 	PrefixKeyWhitelist SliceString `yaml:"prefixKeyWhitelist"`
 	PrefixKeyBlacklist SliceString `yaml:"prefixKeyBlacklist"`
+}
+
+type FilterSlotConfig struct {
+	KeySlotWhitelist DoubleSliceUint16 `yaml:"keySlotWhitelist"`
+	KeySlotBlacklist DoubleSliceUint16 `yaml:"keySlotBlacklist"`
 }
 
 type LogHandlerFileConfig struct {
