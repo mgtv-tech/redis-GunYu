@@ -112,15 +112,6 @@ func (f *RedisCmdFilter) FilterKey(key string) bool {
 	return false
 }
 
-func (f *RedisCmdFilter) FilterKeyBySlot(key string, startSlot, endSlot uint16) bool {
-	keySlot := redis.KeyToSlot(key)
-
-	if keySlot >= startSlot && keySlot <= endSlot {
-		return true
-	}
-	return false
-}
-
 // filter out
 func FilterDB(db int) bool {
 	if db == -1 {
