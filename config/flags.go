@@ -124,10 +124,11 @@ func FlagsParseToStruct(prefix string, obj interface{}) {
 		case reflect.Slice:
 			kk := field.Type.Elem().Kind()
 			switch kk {
-			case reflect.String, reflect.Int:
+			case reflect.String, reflect.Int, reflect.Slice:
 				yy := (interface{})(val.Addr().Interface())
 				flag.Var((yy).(flag.Value), tag, usage)
 			}
+
 		default:
 			flagsParseType(field.Type.Kind(), val, tag, defVal, usage)
 		}

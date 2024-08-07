@@ -114,6 +114,10 @@ output配置如下：
 - keyFilter: 对key进行过滤
   - prefixKeyBlacklist : 前缀key黑名单
   - prefixKeyWhitelist : 前缀key白名单
+- slotFilter: 对slot进行过滤
+  - keySlotBlacklist : slot黑名单
+  - keySlotWhitelist : slot白名单
+  
 
 
 如下配置，不同步del命令，也不同步redisGunYu开头的key
@@ -124,6 +128,10 @@ filter:
   keyFilter:
     prefixKeyBlacklist: 
       - redisGunYu
+  slotFilter:
+    keySlotWhitelist: 
+      - [0,1000]
+      - [1002] 
 ```
 
 
@@ -260,6 +268,16 @@ input:
 ```
 
 则命令行名为`--sync.input.redis.addresses=127.0.0.1:6379,127.0.0.2:6379`
+
+如槽位白名单，配置文件如下，
+```
+filter:
+  slotFilter:
+    keySlotWhitelist: 
+      - [0,1000]
+      - [1002] 
+```
+则命令行名为`--sync.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 可以通过`redisGunYu -h`来查看都有哪些参数。
 

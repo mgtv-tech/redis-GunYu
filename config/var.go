@@ -301,29 +301,59 @@ func (ss *SliceString) Set(val string) error {
 
 type SliceInt []int
 
-func (ss *SliceInt) UnmarshalYAML(value *yaml.Node) error {
+func (si *SliceInt) UnmarshalYAML(value *yaml.Node) error {
 	var vv []int
 	if err := value.Decode(&vv); err != nil {
 		return err
 	}
-	*ss = vv
+	*si = vv
 	return nil
 }
 
 // for flag
-func (ss *SliceInt) String() string {
+func (si *SliceInt) String() string {
 	return "sliceint" // tag
 }
 
 // for flag
-func (ss *SliceInt) Set(val string) error {
+func (si *SliceInt) Set(val string) error {
 	vv := strings.Split(val, ",")
 	for _, v := range vv {
 		ii, err := strconv.Atoi(v)
 		if err != nil {
 			return err
 		}
-		*ss = append(*ss, ii)
+		*si = append(*si, ii)
+	}
+	return nil
+}
+
+type DoubleSliceUint16 [][]uint16
+
+// for flag
+func (d *DoubleSliceUint16) String() string {
+	return "doublesliceuint16"
+}
+
+//for flag ex: [0,1000],[1005,1006],[1995]
+func (d *DoubleSliceUint16) Set(value string) error {
+	value = strings.Trim(value, "[]")
+	slicesStr := strings.Split(value, "],[")
+
+	*d = make(DoubleSliceUint16, len(slicesStr))
+	for i, sliceStr := range slicesStr {
+		sliceStr = strings.TrimSpace(sliceStr)
+		numbersStr := strings.Split(sliceStr, ",")
+		numbers := make([]uint16, len(numbersStr))
+		for j, numberStr := range numbersStr {
+			numberStr = strings.TrimSpace(numberStr)
+			number, err := strconv.ParseUint(numberStr, 10, 16)
+			if err != nil {
+				return newConfigError("invalid number %s in slice at index %d: %w", numberStr, i, err)
+			}
+			numbers[j] = uint16(number)
+		}
+		(*d)[i] = numbers
 	}
 	return nil
 }
