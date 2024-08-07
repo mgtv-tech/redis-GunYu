@@ -20,11 +20,11 @@ func NewRangeList() *RangeList {
 }
 
 func (rl *RangeList) IsSlotInList(key string) bool {
-	keySlot := redis.KeyToSlot(key)
 	if len(rl.list) == 0 {
 		return false
 	}
-
+	keySlot := redis.KeyToSlot(key)
+	
 	left, right := 0, len(rl.list)-1
 	for left <= right {
 		mid := left + (right-left)/2
