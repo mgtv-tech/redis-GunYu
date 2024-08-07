@@ -19,12 +19,6 @@ func NewRangeList() *RangeList {
 	}
 }
 
-type ByLeft []*Range  
-  
-func (a ByLeft) Len() int           { return len(a) }  
-func (a ByLeft) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }  
-func (a ByLeft) Less(i, j int) bool { return a[i].Left < a[j].Left } 
-
 func (rl *RangeList) IsSlotInList(key string) bool {
 	keySlot := redis.KeyToSlot(key)
 	if len(rl.list) == 0 {
