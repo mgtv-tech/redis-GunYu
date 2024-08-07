@@ -1,6 +1,9 @@
 package filter
 
-import "github.com/mgtv-tech/redis-GunYu/pkg/redis"
+import (
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	"sort"
+)
 
 type Range struct {
 	Left, Right uint16
@@ -18,9 +21,20 @@ func NewRangeList() *RangeList {
 
 func (rl *RangeList) IsSlotInList(key string) bool {
 	keySlot := redis.KeyToSlot(key)
-	for _, r := range rl.list {
-		if keySlot >= r.Left && keySlot <= r.Right {
-			return true
+	if len(rl.list) == 0 {
+		return false
+	}
+
+	left, right := 0, len(rl.list)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if rl.list[mid].Left <= keySlot {
+			if keySlot <= rl.list[mid].Right {
+				return true
+			}
+			left = mid + 1
+		} else {
+			right = mid - 1
 		}
 	}
 	return false
@@ -28,6 +42,12 @@ func (rl *RangeList) IsSlotInList(key string) bool {
 
 func (rl *RangeList) InsertSlotInList(left, right uint16) {
 	if left <= right {
-		rl.list = append(rl.list, &Range{Left: left, Right: right})
+		newRange := &Range{Left: left, Right: right}
+		i := sort.Search(len(rl.list), func(i int) bool {
+			return rl.list[i].Left > left
+		})
+		rl.list = append(rl.list, nil)
+		copy(rl.list[i+1:], rl.list[i:])
+		rl.list[i] = newRange
 	}
 }
