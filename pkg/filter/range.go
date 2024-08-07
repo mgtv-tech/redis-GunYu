@@ -23,8 +23,6 @@ func NewRangeList() *RangeList {
 	}
 }
 
-type ByLeft []*Range
-
 func (rl *RangeList) IsSlotInList(key string) bool {
 	keySlot := redis.KeyToSlot(key)
 	if len(rl.list) == 0 {
