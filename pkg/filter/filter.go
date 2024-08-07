@@ -2,7 +2,6 @@ package filter
 
 import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
-	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"strings"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
