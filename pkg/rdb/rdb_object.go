@@ -183,6 +183,7 @@ func (bp *BaseParser) CreateValueDump() []byte {
 
 func CreateValueDump(rtype byte, data []byte) []byte {
 	var b bytes.Buffer
+	b.Grow(len(data) + 1 + 2 + 8)
 	c := digest.New()
 	w := io.MultiWriter(&b, c)
 	w.Write([]byte{rtype}) // 1B
