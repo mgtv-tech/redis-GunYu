@@ -6,12 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sync/atomic"
-
-	"net/http"
-	_ "net/http/pprof"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/io/pipe"
@@ -46,10 +42,6 @@ func (sc *RdbCmd) Stop() error {
 }
 
 func (rc *RdbCmd) Run() error {
-	go func() {
-		log.Println(http.ListenAndServe("localhost:8080", nil))
-	}()
-
 	action := config.GetRdbCmdConfig().Action
 	switch action {
 	case "print":
