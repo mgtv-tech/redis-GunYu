@@ -49,7 +49,7 @@ type RedisOutput struct {
 	cpGuard         sync.RWMutex
 	checkpointInMem checkpoint.CheckpointInfo
 
-	outFilter *filter.RedisCmdFilter
+	outFilter *filter.RedisKeyFilter
 }
 
 var (
@@ -147,21 +147,25 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
 		ro.cfg.Redis.GetClusterOptions().HandleAskErr = false
 	}
-	ro.outFilter = &filter.RedisCmdFilter{}
+	ro.outFilter = &filter.RedisKeyFilter{}
 	ro.outFilter.InsertCmdBlackList(filter.NoRouteCmds, true)
-	ro.outFilter.InsertCmdBlackList(config.Get().Filter.CmdBlacklist, true)
+	ro.outFilter.InsertCmdBlackList(cfg.Filter.CmdBlacklist, true)
 
 	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey, config.NamespacePrefixKey})
-	keyFilter := config.Get().Filter.KeyFilter
+	keyFilter := cfg.Filter.KeyFilter
 	if keyFilter != nil {
 		ro.outFilter.InsertPrefixKeyBlackList(keyFilter.PrefixKeyBlacklist)
 		ro.outFilter.InsertPrefixKeyWhiteList(keyFilter.PrefixKeyWhitelist)
 	}
 
-	slotFilter := config.Get().Filter.SlotFilter
+	slotFilter := cfg.Filter.SlotFilter
 	if slotFilter != nil {
 		ro.outFilter.InsertSlotWhiteList(slotFilter.KeySlotWhitelist)
 		ro.outFilter.InsertSlotBlackList(slotFilter.KeySlotBlacklist)
+	}
+	dbBlackList := cfg.Filter.DbBlacklist
+	if len(dbBlackList) > 0 {
+		ro.outFilter.InsertDbBlackList(dbBlackList)
 	}
 
 	return ro
@@ -169,12 +173,30 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 
 type RedisOutputConfig struct {
 	InputName                  string
-	Redis                      config.RedisConfig
-	Parallel                   int
-	EnableResumeFromBreakPoint bool
 	CheckpointName             string
 	RunId                      string
 	CanTransaction             bool
+	Redis                      config.RedisConfig
+	EnableResumeFromBreakPoint bool
+
+	ReplaceHashTag         bool               `yaml:"replaceHashTag"`
+	KeyExists              string             `yaml:"keyExists"` // replace|ignore|error
+	KeyExistsLog           bool               `yaml:"keyExistsLog"`
+	FunctionExists         string             `yaml:"functionExists"`
+	MaxProtoBulkLen        int                `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
+	TargetDb               int                `yaml:"-"`
+	TargetDbMap            map[int]int        `yaml:"targetDbMap"`
+	BatchCmdCount          uint               `yaml:"batchCmdCount"`
+	BatchTicker            time.Duration      `yaml:"batchTicker"`
+	BatchBufferSize        uint64             `yaml:"batchBufferSize"`
+	KeepaliveTicker        time.Duration      `yaml:"keepaliveTicker"`
+	ReplayRdbParallel      int                `yaml:"replayRdbParallel"`
+	ReplayRdbEnableRestore bool               `yaml:"replayRdbEnableRestore" default:"true"`
+	UpdateCheckpointTicker time.Duration      `yaml:"updateCheckpointTicker"`
+	Stats                  config.OutputStats `yaml:"stats"`
+
+	Filter           config.FilterConfig
+	SyncDelayTestKey string
 }
 
 type cmdExecution struct {
@@ -215,10 +237,10 @@ func (ro *RedisOutput) Send(ctx context.Context, reader *store.Reader) error {
 }
 
 func (ro *RedisOutput) stats(ctx context.Context) {
-	if config.Get().Output.Stats.DisableLog {
+	if ro.cfg.Stats.DisableLog {
 		return
 	}
-	interval := config.Get().Output.Stats.LogInterval
+	interval := ro.cfg.Stats.LogInterval
 	usync.SafeGo(func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -319,6 +341,16 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 		}
 	}
 
+	replay := &rdbrestore.RdbReplay{
+		Client:          cli,
+		RedisVersion:    ro.cfg.Redis.Version,
+		EnableRestore:   ro.cfg.ReplayRdbEnableRestore,
+		MaxProtoBulkLen: ro.cfg.MaxProtoBulkLen,
+		KeyExists:       ro.cfg.KeyExists,
+		KeyExistsLog:    ro.cfg.KeyExistsLog,
+		ReplaceHashTag:  ro.cfg.ReplaceHashTag,
+	}
+
 	currentDB := 0
 	var e *rdb.BinEntry
 	for {
@@ -338,7 +370,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 		}
 
 		filterOut := false
-		if filter.FilterDB(int(e.DB)) {
+		if ro.outFilter.FilterDb(int(e.DB)) {
 			filterOut = true
 		} else {
 			if tdb, ok := ro.selectDB(currentDB, int(e.DB)); ok {
@@ -351,7 +383,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 			}
 
 			if ro.outFilter.FilterKey(util.BytesToString(e.Key)) ||
-				ro.outFilter.FilterSlot(util.BytesToString(e.Key)){
+				ro.outFilter.FilterSlot(util.BytesToString(e.Key)) {
 				filterOut = true
 			}
 		}
@@ -360,7 +392,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 			ro.rdbFilterCounterAdd(1)
 		} else {
 			ro.rdbSendCounterAdd(1)
-			err := rdbrestore.RestoreRdbEntry(cli, e) // @TODO retry
+			err := replay.Replay(e) // @TODO retry
 			if err != nil {
 				ro.logger.Errorf("restore rdb error : entry(%v), err(%v)", e, err)
 				return err
@@ -371,7 +403,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 }
 
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
-	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.Parallel)
+	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.ReplayRdbParallel)
 
 	ctx, cancel := context.WithCancel(pctx)
 	defer cancel()
@@ -406,15 +438,16 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		}
 	}()
 
-	rdbPipe := redis.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize, ro.cfg.Redis.Version)
-	errChan := make(chan error, ro.cfg.Parallel+1)
+	rdbPipe := rdb.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize,
+		rdb.WithTargetRedisVersion(ro.cfg.Redis.Version), rdb.WithFunctionExists(ro.cfg.FunctionExists))
+	errChan := make(chan error, ro.cfg.ReplayRdbParallel+1)
 
-	pipeSize := config.RdbPipeSize / ro.cfg.Parallel
+	pipeSize := config.RdbPipeSize / ro.cfg.ReplayRdbParallel
 	if pipeSize < 1 {
 		pipeSize = 1
 	}
 	var pipes []chan *rdb.BinEntry
-	for i := 0; i < ro.cfg.Parallel; i++ {
+	for i := 0; i < ro.cfg.ReplayRdbParallel; i++ {
 		pipes = append(pipes, make(chan *rdb.BinEntry, pipeSize))
 	}
 	pipeLen := uint32(len(pipes))
@@ -464,7 +497,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		errChan <- fmt.Errorf("panic: %v", i)
 	})
 
-	for i := 0; i < ro.cfg.Parallel; i++ {
+	for i := 0; i < ro.cfg.ReplayRdbParallel; i++ {
 		pp := pipes[i]
 		usync.SafeGo(func() {
 			errChan <- ro.rdbReplay(ctx, pp)
@@ -531,7 +564,7 @@ func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err
 func (ro *RedisOutput) sendAof(ctx context.Context, runId string, reader *bufio.Reader, offset int64, nsize int64) (err error) {
 	ro.logger.Infof("send aof : runId(%s), offset(%d), size(%d)", runId, offset, nsize)
 
-	sendBuf := make(chan cmdExecution, config.Get().Output.BatchCmdCount*10)
+	sendBuf := make(chan cmdExecution, ro.cfg.BatchCmdCount*10)
 	replayQuit := usync.NewWaitCloserFromContext(ctx, nil)
 	// @TODO fetch source offset, calculate gap between source and output
 	//go ro.fetchOffset()
@@ -615,7 +648,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		}
 	}
 
-	syncDelayTestkey := []byte(config.Get().Input.SyncDelayTestKey)
+	syncDelayTestkey := []byte(ro.cfg.SyncDelayTestKey)
 
 	decoder := client.NewDecoder(reader)
 
@@ -658,7 +691,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 					ro.logger.Errorf("%s", err.Error())
 					return err
 				}
-				bypass = filter.FilterDB(n) // filter following commands
+				bypass = ro.outFilter.FilterDb(n) // filter following commands
 				selectDB = n
 			} else if ro.outFilter.FilterCmd(sCmd) {
 				ignoreCmd = true
@@ -798,7 +831,7 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, conn client.Redis, 
 	defer updateCp()
 
 	usync.SafeGo(func() {
-		updateCpTicker := time.NewTicker(config.Get().Output.UpdateCheckpointTicker)
+		updateCpTicker := time.NewTicker(ro.cfg.UpdateCheckpointTicker)
 		defer updateCpTicker.Stop()
 		var err error
 		for {
@@ -878,16 +911,16 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 	var txnStatus txnStatus // transaction status
 	var needFlush bool
 
-	cmdQueue := make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
+	cmdQueue := make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
 	checkpointKv := checkpoint.CheckpointInfo{
 		Key:     ro.cfg.CheckpointName,
 		RunId:   runId,
 		Version: config.Version,
 	}
-	ticker := time.NewTicker(time.Duration(config.Get().Output.BatchTicker))
+	ticker := time.NewTicker(time.Duration(ro.cfg.BatchTicker))
 	defer ticker.Stop()
 
-	keepaliveTicker := time.NewTicker(time.Duration(config.Get().Output.KeepaliveTicker))
+	keepaliveTicker := time.NewTicker(time.Duration(ro.cfg.KeepaliveTicker))
 	defer keepaliveTicker.Stop()
 
 	cpInDbs := make(map[int]struct{})
@@ -980,8 +1013,8 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 		batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
 		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.cfg.InputName)
 
-		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
-			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
+		if uint(len(cmdQueue)) > ro.cfg.BatchCmdCount*2 { // avoid occuping huge memory
+			cmdQueue = make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
 		} else {
 			cmdQueue = cmdQueue[:0]
 		}
@@ -1049,8 +1082,8 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 		}
 
 		if !needFlush && !isTransaction &&
-			(queuedCmdCount >= config.Get().Output.BatchCmdCount ||
-				queuedByteSize >= config.Get().Output.BatchBufferSize) {
+			(queuedCmdCount >= ro.cfg.BatchCmdCount ||
+				queuedByteSize >= ro.cfg.BatchBufferSize) {
 			needFlush = true
 		}
 
@@ -1090,19 +1123,19 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	var txnStatus txnStatus // transaction status
 	var needFlush bool
 
-	cmdQueue := make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
+	cmdQueue := make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
 	checkpointKv := checkpoint.CheckpointInfo{
 		Key:     ro.cfg.CheckpointName,
 		RunId:   runId,
 		Version: config.Version,
 	}
-	batchTicker := time.NewTicker(time.Duration(config.Get().Output.BatchTicker))
+	batchTicker := time.NewTicker(time.Duration(ro.cfg.BatchTicker))
 	defer batchTicker.Stop()
 
-	keepaliveTicker := time.NewTicker(time.Duration(config.Get().Output.KeepaliveTicker))
+	keepaliveTicker := time.NewTicker(time.Duration(ro.cfg.KeepaliveTicker))
 	defer keepaliveTicker.Stop()
 
-	cpTicker := config.Get().Output.UpdateCheckpointTicker
+	cpTicker := ro.cfg.UpdateCheckpointTicker
 	if transactionMode {
 		cpTicker = time.Hour * 24 * 365 * 100
 	}
@@ -1190,8 +1223,8 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 
-		if uint(len(cmdQueue)) > config.Get().Output.BatchCmdCount*2 { // avoid occuping huge memory
-			cmdQueue = make([]cmdExecution, 0, config.Get().Output.BatchCmdCount+1)
+		if uint(len(cmdQueue)) > ro.cfg.BatchCmdCount*2 { // avoid occuping huge memory
+			cmdQueue = make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
 		} else {
 			cmdQueue = cmdQueue[:0]
 		}
@@ -1310,8 +1343,8 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		}
 
 		if !needFlush && !inTransaction &&
-			(uint(len(cmdQueue)) >= config.Get().Output.BatchCmdCount ||
-				queuedByteSize >= config.Get().Output.BatchBufferSize) {
+			(uint(len(cmdQueue)) >= ro.cfg.BatchCmdCount ||
+				queuedByteSize >= ro.cfg.BatchBufferSize) {
 			needFlush = true
 		}
 
@@ -1335,9 +1368,9 @@ func (ro *RedisOutput) selectDB(currentDB int, originDB int) (int, bool) {
 		return currentDB, false
 	}
 	targetDB := originDB
-	if config.Get().Output.TargetDb != -1 { // highest priority
-		targetDB = config.Get().Output.TargetDb
-	} else if tdb, ok := config.Get().Output.TargetDbMap[originDB]; ok {
+	if ro.cfg.TargetDb != -1 { // highest priority
+		targetDB = ro.cfg.TargetDb
+	} else if tdb, ok := ro.cfg.TargetDbMap[originDB]; ok {
 		targetDB = tdb
 	}
 

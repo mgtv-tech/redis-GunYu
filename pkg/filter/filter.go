@@ -1,10 +1,9 @@
 package filter
 
 import (
-	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"strings"
 
-	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 )
 
 var (
@@ -24,16 +23,21 @@ var (
 		"PFSELFTEST", "PFDEBUG"}
 )
 
-type RedisCmdFilter struct {
+type RedisKeyFilter struct {
 	cmdWhiteTrie       *Trie
 	cmdBlackTrie       *Trie
 	prefixKeyWhiteTrie *Trie
 	prefixKeyBlackTrie *Trie
 	slotKeyWhiteList   *RangeList
 	slotKeyBlackList   *RangeList
+	dbBlackList        []int
 }
 
-func (f *RedisCmdFilter) InsertCmdWhiteList(cmds []string, caseInsensitivity bool) {
+func (f *RedisKeyFilter) InsertDbBlackList(dbs []int) {
+	f.dbBlackList = append(f.dbBlackList, dbs...)
+}
+
+func (f *RedisKeyFilter) InsertCmdWhiteList(cmds []string, caseInsensitivity bool) {
 	if len(cmds) == 0 {
 		return
 	}
@@ -50,7 +54,7 @@ func (f *RedisCmdFilter) InsertCmdWhiteList(cmds []string, caseInsensitivity boo
 	}
 }
 
-func (f *RedisCmdFilter) InsertCmdBlackList(cmds []string, caseInsensitivity bool) {
+func (f *RedisKeyFilter) InsertCmdBlackList(cmds []string, caseInsensitivity bool) {
 	if len(cmds) == 0 {
 		return
 	}
@@ -67,7 +71,7 @@ func (f *RedisCmdFilter) InsertCmdBlackList(cmds []string, caseInsensitivity boo
 	}
 }
 
-func (f *RedisCmdFilter) InsertPrefixKeyWhiteList(keys []string) {
+func (f *RedisKeyFilter) InsertPrefixKeyWhiteList(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
@@ -79,7 +83,7 @@ func (f *RedisCmdFilter) InsertPrefixKeyWhiteList(keys []string) {
 	}
 }
 
-func (f *RedisCmdFilter) InsertPrefixKeyBlackList(keys []string) {
+func (f *RedisKeyFilter) InsertPrefixKeyBlackList(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
@@ -91,7 +95,7 @@ func (f *RedisCmdFilter) InsertPrefixKeyBlackList(keys []string) {
 	}
 }
 
-func (f *RedisCmdFilter) FilterCmd(cmd string) bool {
+func (f *RedisKeyFilter) FilterCmd(cmd string) bool {
 	if f.cmdBlackTrie != nil && f.cmdBlackTrie.Search(cmd) {
 		return true
 	}
@@ -101,7 +105,7 @@ func (f *RedisCmdFilter) FilterCmd(cmd string) bool {
 	return false
 }
 
-func (f *RedisCmdFilter) FilterKey(key string) bool {
+func (f *RedisKeyFilter) FilterKey(key string) bool {
 	if f.prefixKeyBlackTrie != nil && f.prefixKeyBlackTrie.IsPrefixMatch(key) {
 		return true
 	}
@@ -111,13 +115,12 @@ func (f *RedisCmdFilter) FilterKey(key string) bool {
 	return false
 }
 
-// filter out
-func FilterDB(db int) bool {
+func (f *RedisKeyFilter) FilterDb(db int) bool {
 	if db == -1 {
 		return false
 	}
-	if len(config.Get().Filter.DbBlacklist) != 0 {
-		for _, e := range config.Get().Filter.DbBlacklist {
+	if len(f.dbBlackList) > 0 {
+		for _, e := range f.dbBlackList {
 			if e == db {
 				return true
 			}
@@ -126,7 +129,7 @@ func FilterDB(db int) bool {
 	return false
 }
 
-func (f *RedisCmdFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool) {
+func (f *RedisKeyFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool) {
 	if f.prefixKeyBlackTrie == nil && f.prefixKeyWhiteTrie == nil {
 		return args, false
 	}
@@ -177,8 +180,11 @@ func (f *RedisCmdFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool
 	return newArgs, !pass
 }
 
-func (f *RedisCmdFilter) InsertSlotWhiteList(slots [][]uint16) {
+func (f *RedisKeyFilter) InsertSlotWhiteList(slots [][]uint16) {
 	log.Debugf("slot white list %s", slots)
+	if len(slots) == 0 {
+		return
+	}
 	if f.slotKeyWhiteList == nil {
 		f.slotKeyWhiteList = NewRangeList()
 	}
@@ -201,7 +207,10 @@ func (f *RedisCmdFilter) InsertSlotWhiteList(slots [][]uint16) {
 	}
 }
 
-func (f *RedisCmdFilter) InsertSlotBlackList(slots [][]uint16) {
+func (f *RedisKeyFilter) InsertSlotBlackList(slots [][]uint16) {
+	if len(slots) == 0 {
+		return
+	}
 	if f.slotKeyBlackList == nil {
 		f.slotKeyBlackList = NewRangeList()
 	}
@@ -224,7 +233,7 @@ func (f *RedisCmdFilter) InsertSlotBlackList(slots [][]uint16) {
 	}
 }
 
-func (f *RedisCmdFilter) FilterSlot(key string) bool {
+func (f *RedisKeyFilter) FilterSlot(key string) bool {
 	if f.slotKeyBlackList != nil && f.slotKeyBlackList.IsSlotInList(key) {
 		return true
 	}
@@ -233,4 +242,3 @@ func (f *RedisCmdFilter) FilterSlot(key string) bool {
 	}
 	return false
 }
-

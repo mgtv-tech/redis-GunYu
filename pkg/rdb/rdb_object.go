@@ -8,7 +8,6 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	rerror "github.com/mgtv-tech/redis-GunYu/pkg/errors"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
@@ -47,7 +46,7 @@ type Parser interface {
 	CanRestore() bool
 }
 
-func NewParser(t byte, targetRedisVersion string, rdbVersion int64) (Parser, error) {
+func NewParser(t byte, rdbVersion int64, targetRedisVersion string, targetFunctionExist string) (Parser, error) {
 	switch t {
 	case RdbTypeString:
 		// string
@@ -109,6 +108,7 @@ func NewParser(t byte, targetRedisVersion string, rdbVersion int64) (Parser, err
 		p := &FunctionParser{}
 		p.rtype = t
 		p.targetRedisVersion = targetRedisVersion
+		p.targetFunctionExist = targetFunctionExist
 		p.rdbVersion = rdbVersion
 		p.otype = RdbObjectFunction
 		return p, nil
@@ -1016,6 +1016,7 @@ func (mp *ModuleParser) ExecCmd(cb RdbObjExecutor) {
 // function
 type FunctionParser struct {
 	BaseParser
+	targetFunctionExist string
 }
 
 func (fp *FunctionParser) ReadBuffer(lr *Loader) {
@@ -1034,9 +1035,9 @@ func (fp *FunctionParser) ExecCmd(cb RdbObjExecutor) {
 	if util.VersionGE(fp.targetRedisVersion, "7", util.VersionMajor) {
 		val := fp.CreateValueDump()
 
-		if config.Get().Output.FunctionExists == "flush" {
+		if fp.targetFunctionExist == "flush" {
 			panicIfErr(cb("FUNCTION", "RESTORE", val, "FLUSH"))
-		} else if config.Get().Output.FunctionExists == "append" {
+		} else if fp.targetFunctionExist == "append" {
 			panicIfErr(cb("FUNCTION", "RESTORE", val))
 		} else {
 			panicIfErr(cb("FUNCTION", "RESTORE", val, "REPLACE"))

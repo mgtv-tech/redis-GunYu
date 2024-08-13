@@ -125,7 +125,7 @@ func (ri *RedisInput) SetChannel(ch Channel) {
 }
 
 func (ri *RedisInput) rdbLimiterAcquire(wait usync.WaitChannel) {
-	limiter := config.Get().Input.RdbLimiter()
+	limiter := config.GetSyncerConfig().Input.RdbLimiter()
 	select {
 	case <-wait:
 		return
@@ -134,7 +134,7 @@ func (ri *RedisInput) rdbLimiterAcquire(wait usync.WaitChannel) {
 }
 
 func (ri *RedisInput) rdbLimiterRelease() {
-	<-config.Get().Input.RdbLimiter()
+	<-config.GetSyncerConfig().Input.RdbLimiter()
 }
 
 func (ri *RedisInput) RunIds() []string {
@@ -470,11 +470,11 @@ func (ri *RedisInput) Run() (err error) {
 }
 
 func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConfig) {
-	testKey := config.Get().Input.SyncDelayTestKey
+	testKey := config.GetSyncerConfig().Input.SyncDelayTestKey
 	if testKey == "" {
 		return
 	}
-	timeout := config.Get().Server.GracefullStopTimeout
+	timeout := config.GetSyncerConfig().Server.GracefullStopTimeout
 	cfg.Type = cfg.Otype
 
 	usync.SafeGo(func() {
@@ -576,7 +576,7 @@ func (ri *RedisInput) newRedisConn(ctx context.Context) (cli *redis.StandaloneRe
 func (ri *RedisInput) pSync(cli *redis.StandaloneRedis, offset Offset) (
 	off Offset, fullSync bool, rdbSize int64, err error) {
 
-	err = cli.SendPSyncListeningPort(config.Get().Server.ListenPort)
+	err = cli.SendPSyncListeningPort(config.GetSyncerConfig().Server.ListenPort)
 	if err != nil {
 		ri.logger.Errorf("psync error : offset(%v), err(%v)", offset, err)
 		return

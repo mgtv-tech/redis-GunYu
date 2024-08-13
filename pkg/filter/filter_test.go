@@ -7,12 +7,12 @@ import (
 )
 
 func TestFilter(t *testing.T) {
-	filterCmdChecker := func(t *testing.T, flt *RedisCmdFilter, cmds []string, exps []bool) {
+	filterCmdChecker := func(t *testing.T, flt *RedisKeyFilter, cmds []string, exps []bool) {
 		for i, c := range cmds {
 			assert.Equal(t, exps[i], flt.FilterCmd(c))
 		}
 	}
-	filterKeyChecker := func(t *testing.T, flt *RedisCmdFilter, keys []string, exps []bool) {
+	filterKeyChecker := func(t *testing.T, flt *RedisKeyFilter, keys []string, exps []bool) {
 		for i, c := range keys {
 			assert.Equal(t, exps[i], flt.FilterKey(c))
 		}
@@ -24,7 +24,7 @@ func TestFilter(t *testing.T) {
 		expArgs [][]byte
 		expBool bool
 	}
-	filterCmdKeyChecker := func(t *testing.T, flt *RedisCmdFilter, cmdKeys []cmdKey) {
+	filterCmdKeyChecker := func(t *testing.T, flt *RedisKeyFilter, cmdKeys []cmdKey) {
 		for _, c := range cmdKeys {
 			ea, eb := flt.FilterCmdKey(c.cmd, c.args)
 			if c.expBool != eb {
@@ -37,13 +37,13 @@ func TestFilter(t *testing.T) {
 
 	t.Run("no filter", func(t *testing.T) {
 		t.Parallel()
-		ft := &RedisCmdFilter{}
+		ft := &RedisKeyFilter{}
 		filterCmdChecker(t, ft, []string{"", "a"}, []bool{false, false})
 		filterKeyChecker(t, ft, []string{"", "a"}, []bool{false, false})
 	})
 	t.Run("filter cmd", func(t *testing.T) {
 		t.Parallel()
-		ft := &RedisCmdFilter{}
+		ft := &RedisKeyFilter{}
 		ft.InsertCmdBlackList([]string{"del", "lpush"}, true)
 		filterCmdChecker(t, ft,
 			[]string{"delete", "lp", "del", "lpop", "lpush", "cluster"},
@@ -64,7 +64,7 @@ func TestFilter(t *testing.T) {
 	})
 	t.Run("filter key", func(t *testing.T) {
 		t.Parallel()
-		ft := &RedisCmdFilter{}
+		ft := &RedisKeyFilter{}
 		ft.InsertPrefixKeyBlackList([]string{"redis"})
 		filterKeyChecker(t, ft, []string{"re", "redis", "redis_1"}, []bool{false, true, true})
 
@@ -78,7 +78,7 @@ func TestFilter(t *testing.T) {
 	})
 	t.Run("filter cmd key", func(t *testing.T) {
 		t.Parallel()
-		ft := &RedisCmdFilter{}
+		ft := &RedisKeyFilter{}
 		ft.InsertCmdBlackList(NoRouteCmds, true)
 		ft.InsertCmdBlackList([]string{"cluster", "flushdb", "incr"}, true)
 

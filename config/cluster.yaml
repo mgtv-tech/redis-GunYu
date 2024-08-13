@@ -20,11 +20,12 @@ output:
   redis:
     addresses: [127.0.0.1:36300,127.0.0.1:36301,127.0.0.1:36302]
     type: cluster
-  resumeFromBreakPoint: true
-  keyExists: replace
-  metric: true
-  targetDb: -1
-  replayTransaction: false
+  replay:
+    resumeFromBreakPoint: true
+    keyExists: replace
+    metric: true
+    targetDb: -1
+    replayTransaction: false
 log:
   level: info
   handler:

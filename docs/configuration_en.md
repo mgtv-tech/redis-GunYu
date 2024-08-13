@@ -6,7 +6,6 @@
     - [Input Redis(Source Redis)](#input-redissource-redis)
     - [Output redis(Target Redis)](#output-redistarget-redis)
     - [Cache](#cache)
-    - [Filtering](#filtering)
     - [Cluster](#cluster)
     - [Logging](#logging)
     - [Server](#server)
@@ -66,29 +65,56 @@ The input configuration is as follows:
 
 The output configuration is as follows:
 - redis: Redis configuration.
-- resumeFromBreakPoint: Enable or disable breakpoint resumption. Enabled by default.
-- keyExists: Behavior when the key already exists in the output.
-  - replace: Replace the key (default).
-  - ignore: Ignore the key.
-  - error: Throw an error and stop synchronization.
-- keyExistsLog: Logging behavior(disabled by default).
-  - true: If `keyExists` is "replace," log an info message when replacing the key; if `keyExists` is "ignore," log a warning message when replacing the key.
-  - false: Disable `keyExists` logging.
-- functionExists: Behavior for replaying function fields, similar to the `FUNCTION RESTORE` command parameters.
-  - flush:
-  - replace:
-- maxProtoBulkLen: Maximum size of the protocol's buffer, referring to the Redis configuration `proto-max-bulk-len`. The default is 512 MiB.
-- targetDb: Which database will be synced. The default value is -1, it is all database of input redis.
-- batchCmdCount: Number of commands for batching(default: 100).
-- batchTicker: Waiting time for batching(default: 10ms).
-- batchBufferSize: Buffer size for batching. `redis-GunYu` will flush the batch buffer if one of them is satisfied.
-- replayRdbParallel: Number of threads used for replaying RDB. The default is the CPU count multiplied by 4.
-- updateCheckpointTicker: Default: 1 second.
-- keepaliveTicker: Default: 3 seconds. Interval for keeping the heartbeat.
+- replay: 
+  - resumeFromBreakPoint: Enable or disable breakpoint resumption. Enabled by default.
+  - keyExists: Behavior when the key already exists in the output.
+    - replace: Replace the key (default).
+    - ignore: Ignore the key.
+    - error: Throw an error and stop synchronization.
+  - keyExistsLog: Logging behavior(disabled by default).
+    - true: If `keyExists` is "replace," log an info message when replacing the key; if `keyExists` is "ignore," log a warning message when replacing the key.
+    - false: Disable `keyExists` logging.
+  - functionExists: Behavior for replaying function fields, similar to the `FUNCTION RESTORE` command parameters.
+    - flush:
+    - replace:
+  - maxProtoBulkLen: Maximum size of the protocol's buffer, referring to the Redis configuration `proto-max-bulk-len`. The default is 512 MiB.
+  - targetDb: Which database will be synced. The default value is -1, it is all database of input redis.
+  - batchCmdCount: Number of commands for batching(default: 100).
+  - batchTicker: Waiting time for batching(default: 10ms).
+  - batchBufferSize: Buffer size for batching. `redis-GunYu` will flush the batch buffer if one of them is satisfied.
+  - replayRdbParallel: Number of threads used for replaying RDB. The default is the CPU count multiplied by 4.
+  - updateCheckpointTicker: Default: 1 second.
+  - keepaliveTicker: Default: 3 seconds. Interval for keeping the heartbeat.
+- filter:
+  - commandBlacklist: Command blacklist
+  - keyFilter: Filtering keys
+    - prefixKeyBlacklist: Prefix key blacklist
+    - prefixKeyWhitelist: Prefix key whitelist
+  - slotFilter: Filtering slots keys
+    - keySlotBlacklist : slots blacklist
+    - keySlotWhitelist : slots whitelist
+
 
 > The synchronization delay depends on `batchCmdCount` and `batchTicker`. redis-GunYu packages commands, and then sends them to the target endpoint as long as one of the two configurations is satisfied.
 
 
+
+**example of filter configuration**
+
+not synchronizing `del` commands and keys starting with `redisGunYu`:
+```
+output:
+  filter:
+    commandBlacklist:
+      - del
+    keyFilter:
+      prefixKeyBlacklist: 
+        - redisGunYu
+    slotFilter:
+      keySlotWhitelist: 
+        - [0,1000]
+        - [1002] 
+```
 
 
 ### Cache
@@ -107,29 +133,6 @@ Configuration:
 - staleCheckpointDuration: The checkpoints which are older than staleCheckpointDuration are expired, default is 12 hours
 
 
-### Filtering
-
-- commandBlacklist: Command blacklist
-- keyFilter: Filtering keys
-  - prefixKeyBlacklist: Prefix key blacklist
-  - prefixKeyWhitelist: Prefix key whitelist
-- slotFilter: Filtering slots keys
-  - keySlotBlacklist : slots blacklist
-  - keySlotWhitelist : slots whitelist
-
-Configuration example, not synchronizing `del` commands and keys starting with `redisGunYu`:
-```
-filter:
-  commandBlacklist:
-    - del
-  keyFilter:
-    prefixKeyBlacklist: 
-      - redisGunYu
-  slotFilter:
-    keySlotWhitelist: 
-      - [0,1000]
-      - [1002] 
-```
 
 
 ### Cluster
@@ -223,7 +226,8 @@ output:
   redis:
     addresses: [127.0.0.1:6310]
     type: cluster
-  resumeFromBreakPoint: true
+  replay:
+    resumeFromBreakPoint: true
 log:
   level: info
   handler:
@@ -234,9 +238,6 @@ log:
 cluster:
   groupName: redis1
   leaseTimeout: 3s
-  metaEtcd: 
-    endpoints:
-      - 127.0.0.1:2379
 ```
 
 
@@ -261,13 +262,14 @@ The corresponding command line argument would be `--sync.input.redis.addresses=1
 
 For example, if the slots white list are configured as follows in the configuration file:
 ```
-filter:
-  slotFilter:
-    keySlotWhitelist: 
-      - [0,1000]
-      - [1002] 
+output:
+  filter:
+    slotFilter:
+      keySlotWhitelist: 
+        - [0,1000]
+        - [1002] 
 ```
-The corresponding command line argument would be`--sync.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
+The corresponding command line argument would be`--sync.output.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 You can use `redisGunYu -h` to view all available arguments.
 

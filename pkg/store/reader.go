@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 
+	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
@@ -16,6 +17,20 @@ type Reader struct {
 	runId  string
 	left   int64
 	logger log.Logger
+}
+
+func NewReader(reader *bufio.Reader, rdb *RdbReader, aof *AofRotateReader,
+	left int64, size int64, runId string) *Reader {
+
+	return &Reader{
+		rdb:    rdb,
+		aof:    aof,
+		reader: reader,
+		left:   left,
+		size:   size,
+		runId:  runId,
+		logger: log.WithLogger(config.LogModuleName("[Reader(rdb)] ")),
+	}
 }
 
 func (r *Reader) Start(wait usync.WaitCloser) {

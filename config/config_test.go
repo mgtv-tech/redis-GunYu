@@ -8,7 +8,7 @@ import (
 )
 
 func TestInitConfig(t *testing.T) {
-	err := InitConfig("./cluster.yaml")
+	err := InitSyncerConfig("./cluster.yaml")
 	assert.Nil(t, err)
 }
 

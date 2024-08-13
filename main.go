@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/automaxprocs/maxprocs"
 
@@ -23,14 +24,16 @@ func main() {
 }
 
 func runCmd() error {
+	gracefullTimeout := 5 * time.Second
 	var cmder cmd.Cmd
 	switch config.GetFlag().Cmd {
 	case "sync":
 		if config.GetFlag().ConfigPath != "" {
-			panicIfError(config.InitConfig(config.GetFlag().ConfigPath))
+			panicIfError(config.InitSyncerConfig(config.GetFlag().ConfigPath))
 		}
-		panicIfError(log.InitLog(*config.Get().Log))
+		panicIfError(log.InitLog(*config.GetSyncerConfig().Log))
 		cmder = cmd.NewSyncerCmd()
+		gracefullTimeout = config.GetSyncerConfig().Server.GracefullStopTimeout
 	case "rdb":
 		cmder = cmd.NewRdbCmd()
 	case "aof":
@@ -40,13 +43,13 @@ func runCmd() error {
 	}
 
 	sync.SafeGo(func() {
-		handleSignal(cmder)
+		handleSignal(cmder, gracefullTimeout)
 	}, nil)
 
 	return cmder.Run()
 }
 
-func handleSignal(c cmd.Cmd) {
+func handleSignal(c cmd.Cmd, gracefullTimeout time.Duration) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGPIPE, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGABRT)
 	for {
@@ -55,7 +58,7 @@ func handleSignal(c cmd.Cmd) {
 		switch sig {
 		case syscall.SIGPIPE:
 		default:
-			ctx, cancel := context.WithTimeout(context.Background(), config.Get().Server.GracefullStopTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), gracefullTimeout)
 			defer cancel()
 
 			util.StopWithCtx(ctx, func() {

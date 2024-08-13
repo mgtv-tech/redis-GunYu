@@ -6,7 +6,6 @@
     - [输入端](#输入端)
     - [输出端](#输出端)
     - [缓存区](#缓存区)
-    - [过滤](#过滤)
     - [集群](#集群)
     - [日志](#日志)
     - [服务器](#服务器)
@@ -68,28 +67,54 @@ input配置如下
 
 output配置如下：
 - redis ： redis配置
-- resumeFromBreakPoint ： 是否开启断点续传，默认开启
-- keyExists ： output中key存在，如何处理
-  - replace ： 替换，默认值
-  - ignore ： 忽略
-  - error ： 报错，停止同步
-- keyExistsLog ： 配合keyExists使用，默认关闭
-  - true ： 如果keyExists是replace，则替换key时，打印info日志；如果keyiExists是ignore，则替换key时，打印warning日志
-  - false ： 关闭keyExists日志
-- functionExists ： 如何回放函数字段，参考`FUNCTION RESTORE`命令参数
-  - flush ： 
-  - replace ： 
-- maxProtoBulkLen ： 协议最大的缓存区大小，参考redis配置`proto-max-bulk-len`，默认是512MiB
-- targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步
-- batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
-- batchTicker ： 批量同步命令的等待时间，最多等待batchTicker再进行打包同步，默认10ms
-- batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTicker、batchBufferSize三者是或关系，只要满足一个，就进行同步。
-- replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
-- updateCheckpointTicker ： 默认1秒
-- keepaliveTicker ： 默认3秒，保持心跳时间间隔
+- replay: 回放日志
+  - resumeFromBreakPoint ： 是否开启断点续传，默认开启
+  - keyExists ： output中key存在，如何处理
+    - replace ： 替换，默认值
+    - ignore ： 忽略
+    - error ： 报错，停止同步
+  - keyExistsLog ： 配合keyExists使用，默认关闭
+    - true ： 如果keyExists是replace，则替换key时，打印info日志；如果keyiExists是ignore，则替换key时，打印warning日志
+    - false ： 关闭keyExists日志
+  - functionExists ： 如何回放函数字段，参考`FUNCTION RESTORE`命令参数
+    - flush ： 
+    - replace ： 
+  - maxProtoBulkLen ： 协议最大的缓存区大小，参考redis配置`proto-max-bulk-len`，默认是512MiB
+  - targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步
+  - batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
+  - batchTicker ： 批量同步命令的等待时间，最多等待batchTicker再进行打包同步，默认10ms
+  - batchBufferSize ： 批量同步命令的缓冲大小，当打包缓冲区的大小超过batchBufferSize，则进行同步，默认64KB。batchCmdCount、batchTicker、batchBufferSize三者是或关系，只要满足一个，就进行同步。
+  - replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
+  - updateCheckpointTicker ： 默认1秒
+  - keepaliveTicker ： 默认3秒，保持心跳时间间隔
+- filter:
+  - commandBlacklist :  命令黑名单，数组结构，忽略掉这些命令
+  - keyFilter: 对key进行过滤
+    - prefixKeyBlacklist : 前缀key黑名单
+    - prefixKeyWhitelist : 前缀key白名单
+  - slotFilter: 对slot进行过滤
+    - keySlotBlacklist : slot黑名单
+    - keySlotWhitelist : slot白名单
 
 
 > 同步延迟主要取决于`batchCmdCount`和`batchTicker`，工具会将命令打包发送到目标端，只要两个配置中的一个满足则即可
+
+
+**filter配置示例**
+如下配置，不同步del命令，也不同步redisGunYu开头的key
+```
+filter:
+  commandBlacklist:
+    - del
+  keyFilter:
+    prefixKeyBlacklist: 
+      - redisGunYu
+  slotFilter:
+    keySlotWhitelist: 
+      - [0,1000]
+      - [1002] 
+```
+
 
 
 ### 缓存区
@@ -108,31 +133,6 @@ output配置如下：
 - staleCheckpointDuration ： 多久以前的快照视为过期快照，默认12小时
 
 
-### 过滤
-
-- commandBlacklist :  命令黑名单，数组结构，忽略掉这些命令
-- keyFilter: 对key进行过滤
-  - prefixKeyBlacklist : 前缀key黑名单
-  - prefixKeyWhitelist : 前缀key白名单
-- slotFilter: 对slot进行过滤
-  - keySlotBlacklist : slot黑名单
-  - keySlotWhitelist : slot白名单
-  
-
-
-如下配置，不同步del命令，也不同步redisGunYu开头的key
-```
-filter:
-  commandBlacklist:
-    - del
-  keyFilter:
-    prefixKeyBlacklist: 
-      - redisGunYu
-  slotFilter:
-    keySlotWhitelist: 
-      - [0,1000]
-      - [1002] 
-```
 
 
 ### 集群
@@ -232,7 +232,8 @@ output:
   redis:
     addresses: [127.0.0.1:6310]
     type: cluster
-  resumeFromBreakPoint: true
+  filter:
+    resumeFromBreakPoint: true
 log:
   level: info
   handler:
@@ -243,9 +244,6 @@ log:
 cluster:
   groupName: redis1
   leaseTimeout: 3s
-  metaEtcd: 
-    endpoints:
-      - 127.0.0.1:2379
 ```
 
 
@@ -271,13 +269,14 @@ input:
 
 如槽位白名单，配置文件如下，
 ```
-filter:
-  slotFilter:
-    keySlotWhitelist: 
-      - [0,1000]
-      - [1002] 
+output:
+  filter:
+    slotFilter:
+      keySlotWhitelist: 
+        - [0,1000]
+        - [1002] 
 ```
-则命令行名为`--sync.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
+则命令行名为`--sync.output.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 可以通过`redisGunYu -h`来查看都有哪些参数。
 

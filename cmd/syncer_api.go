@@ -31,7 +31,7 @@ import (
 )
 
 func (sc *SyncerCmd) startServer() {
-	listen := config.Get().Server.Listen
+	listen := config.GetSyncerConfig().Server.Listen
 
 	if listen == "" {
 		return
@@ -102,7 +102,7 @@ func (sc *SyncerCmd) stopServer() {
 	if sc.grpcSvr != nil {
 		sc.logger.Infof("stop grpc server")
 
-		ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.Get().Server.GracefullStopTimeout)
+		ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.GetSyncerConfig().Server.GracefullStopTimeout)
 		defer cancel()
 
 		util.StopWithCtx(ctx, sc.grpcSvr.GracefulStop)
@@ -113,7 +113,7 @@ func (sc *SyncerCmd) stopServer() {
 	if sc.httpSvr != nil {
 		sc.logger.Infof("stop http server")
 
-		ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.Get().Server.GracefullStopTimeout)
+		ctx, cancel := context.WithTimeout(sc.waitCloser.Context(), config.GetSyncerConfig().Server.GracefullStopTimeout)
 		defer cancel()
 		err := sc.httpSvr.Shutdown(ctx)
 		if err != nil {
@@ -144,7 +144,7 @@ func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ApiService_SyncServer) 
 }
 
 func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
-	httpCfg := config.Get().Server
+	httpCfg := config.GetSyncerConfig().Server
 
 	// metrics
 	engine.GET(httpCfg.MetricRoutePath, func(ctx *gin.Context) {
@@ -195,7 +195,7 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 	})
 
 	syncerGroup.GET("config", func(ctx *gin.Context) {
-		cfg := config.Get()
+		cfg := config.GetSyncerConfig()
 		format := ctx.Query("format")
 		if format == "json" {
 			ctx.JSON(http.StatusOK, cfg)
@@ -276,7 +276,7 @@ func (sc *SyncerCmd) parseInputsFromQuery(ctx *gin.Context) []string {
 	}
 
 	realInputs := []string{}
-	inputRedis := config.Get().Input.Redis
+	inputRedis := config.GetSyncerConfig().Input.Redis
 	for _, input := range inputs {
 		sy := sc.getSyncer(input)
 		if sy.sync == nil {
@@ -321,7 +321,7 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	}
 
 	followers := []string{}
-	if config.Get().Cluster != nil {
+	if config.GetSyncerConfig().Cluster != nil {
 		selfSyncs := map[string]syncerInfo{}
 		for _, in := range inputs {
 			syncer := sc.getSyncer(in)
@@ -342,7 +342,7 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 				return
 			}
 			for _, s := range allSyncers {
-				if s != config.Get().Server.ListenPeer {
+				if s != config.GetSyncerConfig().Server.ListenPeer {
 					followers = append(followers, s)
 				}
 			}
@@ -408,7 +408,7 @@ func (sc *SyncerCmd) takeover(ctx context.Context, inputs []string) error {
 		}
 
 		for _, vv := range syncers {
-			if vv == config.Get().Server.ListenPeer {
+			if vv == config.GetSyncerConfig().Server.ListenPeer {
 				continue
 			}
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s/syncer/handover", vv), nil)
@@ -476,8 +476,8 @@ func (sc *SyncerCmd) filterOutput(ctx context.Context, inputs []string) ([]confi
 	if len(allInputs) == len(inputs) {
 		outputCfgs = sc.allOutputs(ctx)
 	} else { // partial : select related outputs
-		outputRedis := config.Get().Output.Redis
-		inputRedis := config.Get().Input.Redis
+		outputRedis := config.GetSyncerConfig().Output.Redis
+		inputRedis := config.GetSyncerConfig().Input.Redis
 		if (inputRedis.IsStanalone() && outputRedis.IsCluster()) ||
 			inputRedis.IsCluster() && outputRedis.IsStanalone() { // can't select related outputs
 			return nil, errors.New("redis type of input and output are different")
@@ -495,7 +495,7 @@ func (sc *SyncerCmd) filterOutput(ctx context.Context, inputs []string) ([]confi
 				return nil, errors.New("slots of input and output are inconsistent")
 			}
 
-			outputNodes := outputRedis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+			outputNodes := outputRedis.SelNodes(config.GetSyncerConfig().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
 			for _, input := range inputs {
 				inputNode := inputRedis.SelNodeByAddress(input)
 				if inputNode == nil {
@@ -587,10 +587,10 @@ func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error 
 		return nil
 	}
 
-	if config.Get().Output.Redis.Type == config.RedisTypeCluster {
-		cli, err := client.NewRedis(*config.Get().Output.Redis)
+	if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeCluster {
+		cli, err := client.NewRedis(*config.GetSyncerConfig().Output.Redis)
 		if err != nil {
-			sc.logger.Errorf("new redis error : addr(%s), err(%v)", config.Get().Output.Redis.Address(), err)
+			sc.logger.Errorf("new redis error : addr(%s), err(%v)", config.GetSyncerConfig().Output.Redis.Address(), err)
 			return err
 		}
 		err = delCheckpoint(cli)
@@ -598,8 +598,8 @@ func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error 
 		if err != nil {
 			return err
 		}
-	} else if config.Get().Output.Redis.Type == config.RedisTypeStandalone {
-		outputs := config.Get().Output.Redis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+	} else if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeStandalone {
+		outputs := config.GetSyncerConfig().Output.Redis.SelNodes(config.GetSyncerConfig().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
 		for _, out := range outputs {
 			cli, err := client.NewRedis(out)
 			if err != nil {
@@ -627,8 +627,8 @@ func (sc *SyncerCmd) resume(ctx context.Context, inputs []string) error {
 }
 
 func (sc *SyncerCmd) allInputs(ctx context.Context) []string {
-	all := config.Get().Input.Mode != config.InputModeStatic
-	inputRedis := config.Get().Input.Redis.SelNodes(all, config.Get().Input.SyncFrom)
+	all := config.GetSyncerConfig().Input.Mode != config.InputModeStatic
+	inputRedis := config.GetSyncerConfig().Input.Redis.SelNodes(all, config.GetSyncerConfig().Input.SyncFrom)
 	addrs := []string{}
 	for _, r := range inputRedis {
 		addrs = append(addrs, r.Addresses...)
@@ -637,7 +637,7 @@ func (sc *SyncerCmd) allInputs(ctx context.Context) []string {
 }
 
 func (sc *SyncerCmd) allOutputs(ctx context.Context) []config.RedisConfig {
-	rr := config.Get().Output.Redis.SelNodes(config.Get().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
+	rr := config.GetSyncerConfig().Output.Redis.SelNodes(config.GetSyncerConfig().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
 	return rr
 }
 
