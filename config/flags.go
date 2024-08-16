@@ -25,15 +25,49 @@ func GetFlag() *Flags {
 type Flags struct {
 	ConfigPath string
 	Cmd        string
-	RdbCmd     RdbCmdFlags
 	DiffCmd    DiffCmdFlags
 	AofCmd     AofCmdFlags
 }
 
-type RdbCmdFlags struct {
-	RdbAction string
-	RdbPath   string
-	ToCmd     bool
+type RdbCmdConfig struct {
+	Action  string
+	RdbPath string
+	Print   RdbCmdPrint
+	Load    RdbCmdLoad
+}
+
+func (rcf *RdbCmdConfig) fix() error {
+	if len(rcf.Action) == 0 {
+		return newConfigError("no action")
+	}
+	if len(rcf.RdbPath) == 0 {
+		return newConfigError("no rdb path")
+	}
+	if rcf.Action == "load" {
+		return rcf.Load.fix()
+	}
+	return nil
+}
+
+type RdbCmdLoad struct {
+	Redis  *RedisConfig
+	Replay ReplayConfig
+	Filter FilterConfig
+}
+
+func (rcl *RdbCmdLoad) fix() error {
+	if rcl.Redis == nil {
+		return newConfigError("no redis configuration")
+	}
+	err := rcl.Redis.fix()
+	if err != nil {
+		return err
+	}
+	return rcl.Replay.fix()
+}
+
+type RdbCmdPrint struct {
+	ToCmd bool
 }
 
 type DiffCmdFlags struct {
@@ -54,10 +88,6 @@ func LoadFlags() error {
 	flag.StringVar(&flagVar.Cmd, "cmd", "sync", "command name : sync/rdb/diff")
 	flag.StringVar(&flagVar.ConfigPath, "conf", "", "config file path")
 
-	flag.StringVar(&flagVar.RdbCmd.RdbPath, "rdb.path", "", "rdb file path")
-	flag.StringVar(&flagVar.RdbCmd.RdbAction, "rdb.action", "print", "print/mq/redis")
-	flag.BoolVar(&flagVar.RdbCmd.ToCmd, "rdb.tocmd", false, "true/false")
-
 	flag.StringVar(&flagVar.DiffCmd.DiffMode, "diff.mode", "scan", "scan/rdb")
 	flag.StringVar(&flagVar.DiffCmd.A, "diff.a", "", "")
 	flag.StringVar(&flagVar.DiffCmd.B, "diff.b", "", "")
@@ -68,20 +98,33 @@ func LoadFlags() error {
 	flag.Int64Var(&flagVar.AofCmd.Offset, "aof.offset", 0, "aof offset")
 	flag.Int64Var(&flagVar.AofCmd.Size, "aof.size", -1, "aof size")
 
-	tmpCfg := Config{}
-	FlagsParseToStruct("sync", &tmpCfg)
+	tmpSyncerCfg := SyncConfig{}
+	FlagsParseToStruct("sync", &tmpSyncerCfg)
+
+	tmpRdbCfg := RdbCmdConfig{}
+	FlagsParseToStruct("rdb", &tmpRdbCfg)
 
 	flag.Parse()
 
 	version.Init()
 
 	if flagVar.Cmd == "sync" && len(flagVar.ConfigPath) == 0 {
-		cfg = &tmpCfg
-		FlagsSetToStruct(cfg)
-
-		if err := cfg.fix(); err != nil {
+		syncCfg = &tmpSyncerCfg
+		FlagsSetToStruct(syncCfg)
+		if err := syncCfg.fix(); err != nil {
 			return err
 		}
+		logCfg = syncCfg.Log
+	} else if flagVar.Cmd == "rdb" {
+		rdbCfg = &tmpRdbCfg
+		FlagsSetToStruct(rdbCfg)
+		if err := rdbCfg.fix(); err != nil {
+			return err
+		}
+	}
+	if logCfg == nil {
+		logCfg = &LogConfig{}
+		logCfg.fix()
 	}
 
 	return nil

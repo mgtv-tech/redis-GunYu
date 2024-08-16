@@ -18,7 +18,6 @@ import (
 
 type RdbReader struct {
 	mux      sync.RWMutex
-	dir      string
 	filePath string
 	reader   *os.File
 	writer   io.WriteCloser
@@ -26,6 +25,15 @@ type RdbReader struct {
 	size     int64
 	wait     usync.WaitCloser
 	observer atomic.Pointer[Observer]
+}
+
+func NewRdbReaderFromFile(w io.WriteCloser, rdbFilePath string, verifyCrc bool) (*RdbReader, error) {
+	fi, err := os.Stat(rdbFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	return newRdbReader(w, rdbFilePath, 0, fi.Size(), verifyCrc, false)
 }
 
 func NewRdbReader(w io.WriteCloser, rdbDir string, offset int64, rdbSize int64, verifyCrc bool) (*RdbReader, error) {
@@ -40,9 +48,13 @@ func NewRdbReader(w io.WriteCloser, rdbDir string, offset int64, rdbSize int64, 
 		writting = true
 	}
 
+	return newRdbReader(w, rdbFn, offset, rdbSize, verifyCrc, writting)
+}
+
+func newRdbReader(w io.WriteCloser, rdbFilePath string, offset int64, rdbSize int64, verifyCrc bool, isWritting bool) (*RdbReader, error) {
+
 	r := &RdbReader{
-		dir:      rdbDir,
-		filePath: rdbFn,
+		filePath: rdbFilePath,
 		writer:   w,
 		size:     rdbSize,
 		offset:   offset,
@@ -59,7 +71,7 @@ func NewRdbReader(w io.WriteCloser, rdbDir string, offset int64, rdbSize int64, 
 	var obr Observer = &observerProxy{}
 	r.observer.Store(&obr)
 
-	if !writting && verifyCrc {
+	if !isWritting && verifyCrc {
 		err = r.checkHeader()
 		if err != nil {
 			file.Close()
@@ -197,4 +209,8 @@ func (r *RdbReader) closeRdb() error {
 	err := r.reader.Close()
 	(*r.observer.Load()).Close(r.offset, r.size)
 	return err
+}
+
+func (r *RdbReader) Size() int64 {
+	return r.size
 }

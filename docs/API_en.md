@@ -1,6 +1,11 @@
 
 # API
 
+
+If command is sync, `redisGunYu` supports below APIs.
+
+
+
 - [API](#api)
   - [Process](#process)
     - [Stop Process](#stop-process)

@@ -555,6 +555,33 @@ func parseClusterShards(ret interface{}) ([]*config.RedisClusterShard, error) {
 	return cShards, nil
 }
 
+func FixVersion(redisCfg *config.RedisConfig) error {
+	if redisCfg.Version != "" {
+		return nil
+	}
+
+	cli, err := client.NewRedis(*redisCfg)
+	if err != nil {
+		log.Errorf("new redis error : addr(%s), error(%v)", redisCfg.Address(), err)
+		return err
+	}
+
+	ver, err := GetRedisVersion(cli)
+	cli.Close()
+
+	if err != nil {
+		log.Errorf("redis get version error : addr(%s), error(%v)", redisCfg.Address(), err)
+		return err
+	}
+	if ver == "" {
+		return errors.Errorf("cannot get redis version")
+	}
+
+	redisCfg.Version = ver
+	return nil
+
+}
+
 func FixTopology(redisCfg *config.RedisConfig) error {
 
 	if redisCfg.Type == config.RedisTypeCluster {

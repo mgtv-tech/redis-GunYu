@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
@@ -67,7 +66,7 @@ func (bs *baseSuite) getLoader(s string) *Loader {
 	p, err := hex.DecodeString(strings.NewReplacer("\t", "", "\r", "", "\n", "", " ", "").Replace(s))
 	bs.Nil(err)
 	r := bytes.NewReader(p)
-	l := NewLoader(r, "7")
+	l := NewLoader(r, WithTargetRedisVersion("7"))
 	bs.Nil(l.Header())
 	return l
 }
@@ -833,7 +832,6 @@ type functionTestSuite struct {
 }
 
 func (ts *functionTestSuite) TestRdb11() {
-	config.Get().Output = &config.OutputConfig{}
 	//redis7.2(rdb 11) :
 	// if (sdslen(field)>64 || sdslen(value) > 64), RdbTypeHash; else RdbTypeHashListpack
 	ts.redisVersion = "7.2"

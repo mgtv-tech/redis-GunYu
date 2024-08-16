@@ -6,22 +6,19 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/errors"
-	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type RdbReader struct {
 	raw          io.Reader
 	buf          [16]byte
-	logger       log.Logger
 	totalEntries uint32
 	readEntries  uint32
 }
 
 func NewRdbReader(r io.Reader) *RdbReader {
-	return &RdbReader{raw: r, logger: log.WithLogger(config.LogModuleName("[RdbReader] "))}
+	return &RdbReader{raw: r}
 }
 
 func (r *RdbReader) Read(p []byte) (int, error) {
@@ -30,7 +27,7 @@ func (r *RdbReader) Read(p []byte) (int, error) {
 }
 
 func (r *RdbReader) newParser(t byte, l *Loader) Parser {
-	p, err := NewParser(t, l.targetRedisVersion, l.rdbVersion)
+	p, err := NewParser(t, l.rdbVersion, l.options.targetRedisVersion, l.options.targetFunctionExists)
 	panicIfErr(err)
 	p.ReadBuffer(l)
 	return p

@@ -5,7 +5,7 @@ server:
   checkRedisTypologyTicker: 10s
 input:
   redis:
-    addresses: [127.0.0.1:16300,127.0.0.1:16310]
+    addresses: [127.0.0.1:16300,127.0.0.1:16301]
     type: cluster
   mode: dynamic
   syncDelayTestKey: redis-GunYu-syncDelay-testKey
@@ -18,13 +18,14 @@ channel:
   staleCheckpointDuration: 10m
 output:
   redis:
-    addresses: [127.0.0.1:36300,127.0.0.1:36301,127.0.0.1:36302]
+    addresses: [127.0.0.1:16400,127.0.0.1:16401]
     type: cluster
-  resumeFromBreakPoint: true
-  keyExists: replace
-  metric: true
-  targetDb: -1
-  replayTransaction: false
+  replay:
+    resumeFromBreakPoint: true
+    keyExists: replace
+    metric: true
+    targetDb: -1
+    replayTransaction: true
 log:
   level: info
   handler:

@@ -95,7 +95,7 @@ func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {
 	// 		return nil, err
 	// 	}
 	// }
-	r, err := sc.storer.GetReader(offset.Offset, config.Get().Channel.VerifyCrc)
+	r, err := sc.storer.GetReader(offset.Offset, config.GetSyncerConfig().Channel.VerifyCrc)
 	if err != nil {
 		sc.logger.Errorf("storer.GetReader error : offset(%v), err(%v)", offset, err)
 	}

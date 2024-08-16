@@ -16,7 +16,13 @@ channel:
     maxSize: 1073741800
     logSize: 10971520
 output:
-  keepaliveTicker: 100s
+  replay:
+    resumeFromBreakPoint: true
+    keyExists: replace
+    metric: true
+    targetDb: -1
+    replayTransaction: true
+    keepaliveTicker: 100s
   redis:
     addresses: [127.0.0.1:6479]
     type: standalone

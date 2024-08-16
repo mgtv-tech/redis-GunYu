@@ -16,7 +16,6 @@ channel:
     maxSize: 1073741800
     logSize: 10971520
 output:
-  keepaliveTicker: 100s
   redis:
     addresses: [127.0.0.1:6479]
     type: standalone

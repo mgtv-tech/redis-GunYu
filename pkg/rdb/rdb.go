@@ -1,4 +1,4 @@
-package redis
+package rdb
 
 import (
 	"errors"
@@ -7,24 +7,42 @@ import (
 	"sync/atomic"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/common"
-	"github.com/mgtv-tech/redis-GunYu/pkg/rdb"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
-func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersion string) chan *rdb.BinEntry {
-	pipe := make(chan *rdb.BinEntry, size)
+type RdbParseOption func(o *rdbParseOptions)
+
+type rdbParseOptions struct {
+	targetRedisVersion   string
+	targetFunctionExists string
+}
+
+func WithTargetRedisVersion(version string) RdbParseOption {
+	return func(o *rdbParseOptions) {
+		o.targetRedisVersion = version
+	}
+}
+
+func WithFunctionExists(functionExists string) RdbParseOption {
+	return func(o *rdbParseOptions) {
+		o.targetFunctionExists = functionExists
+	}
+}
+
+func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, options ...RdbParseOption) chan *BinEntry {
+	pipe := make(chan *BinEntry, size)
 	usync.SafeGo(func() {
 		defer close(pipe)
-		l := rdb.NewLoader(NewCountReader(reader, rbytes), targetRedisVersion)
+		l := NewLoader(NewCountReader(reader, rbytes), options...)
 		if err := l.Header(); err != nil {
-			pipe <- &rdb.BinEntry{
+			pipe <- &BinEntry{
 				Err: errors.Join(common.ErrCorrupted, fmt.Errorf("parse rdb header error : %w", err)),
 			}
 			return
 		}
 		for {
 			if entry, err := l.Next(); err != nil {
-				pipe <- &rdb.BinEntry{
+				pipe <- &BinEntry{
 					Err: err,
 				}
 				return
@@ -32,14 +50,14 @@ func ParseRdb(reader io.Reader, rbytes *atomic.Int64, size int, targetRedisVersi
 				if entry != nil {
 					pipe <- entry
 				} else {
-					if rdb.RdbVersion > 2 {
+					if RdbVersion > 2 {
 						if err := l.Footer(); err != nil {
-							pipe <- &rdb.BinEntry{
+							pipe <- &BinEntry{
 								Err: errors.Join(common.ErrCorrupted, fmt.Errorf("parse rdb checksum error : %w", err)),
 							}
 						}
 					}
-					pipe <- &rdb.BinEntry{
+					pipe <- &BinEntry{
 						Done: true,
 					}
 					return

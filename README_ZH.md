@@ -9,6 +9,7 @@
   - [简介](#简介)
   - [特性](#特性)
     - [数据实时同步](#数据实时同步)
+    - [RDB导入到redis](#rdb导入到redis)
     - [其他](#其他)
   - [产品比较](#产品比较)
   - [实现](#实现)
@@ -71,6 +72,14 @@
 
 
 
+
+### RDB导入到redis
+
+此功能是解析RDB文件，然后将数据回放到正在运行的redis中，可以对RDB文件进行过滤。
+
+
+
+
 ### 其他
 
 其他功能，仍在开发中。
@@ -79,7 +88,7 @@
 
 ## 产品比较
 
-从产品需求上，对redis-GunYu和几个主流工具进行比较
+从产品需求上，对redis-GunYu和几个主流工具的实时同步功能进行比较
 
 功能点 | redis-shake/v2 |  DTS | xpipe | redis-GunYu
 -- | -- | -- | -- | -- 
@@ -94,7 +103,7 @@
 
 ## 实现
 
-`redis-GunYu`的技术实现如图所示，具体技术原理请见[技术实现](docs/tech_zh.md)
+`redis-GunYu`同步功能的技术实现如图所示，具体技术原理请见[技术实现](docs/tech_zh.md)
 
 <img src="docs/imgs/sync.png" width = "400" height = "150" alt="架构图" align=center />
 
@@ -128,10 +137,15 @@ make
 
 ### 使用
 
+我们以使用同步功能为例
+
+
 **配置文件的方式启动**
 ```
-./redisGunYu -conf ./config.yaml
+./redisGunYu -conf ./config.yaml -cmd=sync
 ```
+`-cmd=sync` 可忽略
+
 
 **命令行传递参数的方式启动**
 ``` 

@@ -409,15 +409,34 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		return nil, errors.Join(ErrRestart, err)
 	}
 
+	cfg := config.GetSyncerConfig().Output
+
 	outputCfg := RedisOutputConfig{
 		InputName:                  s.cfg.Input.Address(),
-		Redis:                      s.cfg.Output,
-		Parallel:                   config.Get().Output.ReplayRdbParallel,
-		EnableResumeFromBreakPoint: *config.Get().Output.ResumeFromBreakPoint,
 		RunId:                      id1,
 		CanTransaction:             s.cfg.CanTransaction,
+		Redis:                      s.cfg.Output,
+		EnableResumeFromBreakPoint: *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint,
+		ReplaceHashTag:             cfg.Replay.ReplaceHashTag,
+		KeyExists:                  cfg.Replay.KeyExists,
+		KeyExistsLog:               cfg.Replay.KeyExistsLog,
+		FunctionExists:             cfg.Replay.FunctionExists,
+		MaxProtoBulkLen:            cfg.Replay.MaxProtoBulkLen,
+		TargetDb:                   cfg.Replay.TargetDb,
+		TargetDbMap:                cfg.Replay.TargetDbMap,
+		BatchCmdCount:              cfg.Replay.BatchCmdCount,
+		BatchTicker:                cfg.Replay.BatchTicker,
+		BatchBufferSize:            cfg.Replay.BatchBufferSize,
+		KeepaliveTicker:            cfg.Replay.KeepaliveTicker,
+		ReplayRdbParallel:          cfg.Replay.ReplayRdbParallel,
+		ReplayRdbEnableRestore:     *cfg.Replay.ReplayRdbEnableRestore,
+		UpdateCheckpointTicker:     cfg.Replay.UpdateCheckpointTicker,
+		Stats:                      cfg.Replay.Stats,
+		Filter:                     config.GetSyncerConfig().Output.Filter,
+		SyncDelayTestKey:           config.GetSyncerConfig().Input.SyncDelayTestKey,
 	}
-	if *config.Get().Output.ResumeFromBreakPoint {
+
+	if *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint {
 		var localCheckpoint string
 		if s.cfg.CanTransaction && s.cfg.Output.IsCluster() {
 			localCheckpoint = choseKeyInSlots(config.CheckpointKey, s.cfg.Output.GetAllSlots())

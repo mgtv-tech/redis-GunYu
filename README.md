@@ -12,6 +12,7 @@ Translations: [English](README.md) | [简体中文](README_ZH.md)
   - [Overview](#overview)
   - [Features](#features)
     - [Real-time Data Synchronization](#real-time-data-synchronization)
+    - [Load RDB into redis](#load-rdb-into-redis)
     - [Other Features](#other-features)
   - [Product Comparison](#product-comparison)
   - [Technical Implementation](#technical-implementation)
@@ -63,6 +64,11 @@ The feature matrix of `redis-GunYu` for real-time synchronization
   - Monitoring: Rich monitoring metrics, such as replication latency metrics in time and space dimensions
   - Data filtering: Filter by certain regular keys, databases, commands, etc.
   - Redis topology: Real-time monitoring of topology changes in the source and target Redis (e.g., adding/removing nodes, master-slave switch, etc.), to change consistency strategies and adjust other functional strategies
+
+
+### Load RDB into redis
+
+Load a RDB file to a running redis server or cluster. Refers to [RDB](rdb_en.md)
 
 
 ### Other Features
@@ -118,6 +124,8 @@ This generates the `redisGunYu` binary file locally.
 ```
 ./redisGunYu -conf ./config.yaml
 ```
+Default command is sync, you can run other command with `-cmd=command name`.
+
 
 **Start with command line arguments**
 ``` 

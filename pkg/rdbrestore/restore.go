@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/rdb"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
@@ -19,10 +18,19 @@ var (
 	ErrRestoreRdb = errors.New("restore rdb error")
 )
 
-func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
+type RdbReplay struct {
+	Client          client.Redis
+	RedisVersion    string
+	EnableRestore   bool
+	MaxProtoBulkLen int
+	KeyExists       string
+	KeyExistsLog    bool
+	ReplaceHashTag  bool
+}
 
+func (rr *RdbReplay) Replay(e *rdb.BinEntry) (err error) {
 	var ttlms uint64
-	if config.Get().Output.ReplaceHashTag {
+	if rr.ReplaceHashTag {
 		e.Key = bytes.Replace(e.Key, []byte("{"), []byte(""), 1)
 		e.Key = bytes.Replace(e.Key, []byte("}"), []byte(""), 1)
 	}
@@ -38,34 +46,34 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 
 	ot := e.ObjectParser.Type()
 	if ot == rdb.RdbObjectFunction || ot == rdb.RdbObjectAux {
-		return restoreOnce(cli, e)
+		return restoreOnce(rr.Client, e)
 	}
 
-	restoreCmd := *config.Get().Output.ReplayRdbEnableRestore
+	restoreCmd := rr.EnableRestore
 	if restoreCmd &&
-		(!e.CanRestore() || e.ObjectParser.ValueDumpSize() > config.Get().Output.MaxProtoBulkLen ||
+		(!e.CanRestore() || e.ObjectParser.ValueDumpSize() > rr.MaxProtoBulkLen ||
 			e.ObjectParser.IsSplited()) {
 		restoreCmd = false
 	}
 
 	if !restoreCmd {
 		if e.FirstBin() {
-			exist, err := common.Bool(cli.Do("exists", e.Key))
+			exist, err := common.Bool(rr.Client.Do("exists", e.Key))
 			if err != nil {
 				return err
 			}
 			if exist {
-				switch config.Get().Output.KeyExists {
+				switch rr.KeyExists {
 				case "replace":
-					if config.Get().Output.KeyExistsLog {
+					if rr.KeyExistsLog {
 						log.Infof("replace key: %s", e.Key)
 					}
-					_, err := common.Int64(cli.Do("del", e.Key))
+					_, err := common.Int64(rr.Client.Do("del", e.Key))
 					if err != nil {
 						return fmt.Errorf("del exist key error : key(%s), error(%w)", e.Key, err)
 					}
 				case "ignore":
-					if config.Get().Output.KeyExistsLog {
+					if rr.KeyExistsLog {
 						log.Warnf("output key exist, ignore it : %s", e.Key)
 					}
 				case "error":
@@ -74,12 +82,12 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 			}
 		}
 
-		err = restoreBigRdbEntry(cli, e)
+		err = restoreBigRdbEntry(rr.Client, e)
 		if err != nil {
 			return err
 		}
 		if e.ExpireAt != 0 {
-			r, err := common.Int64(cli.Do("pexpire", e.Key, ttlms))
+			r, err := common.Int64(rr.Client.Do("pexpire", e.Key, ttlms))
 			if err != nil && r != 1 {
 				return fmt.Errorf("expire key error : key(%s), error(%w)", e.Key, err)
 			}
@@ -88,7 +96,7 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 	}
 
 	params := []interface{}{e.Key, ttlms, e.DumpValue()}
-	if util.VersionGE(config.Get().Output.Redis.Version, "5", util.VersionMajor) {
+	if util.VersionGE(rr.RedisVersion, "5", util.VersionMajor) {
 		if e.IdleTime != 0 {
 			params = append(params, "IDLETIME")
 			params = append(params, e.IdleTime)
@@ -99,21 +107,21 @@ func RestoreRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 		}
 	}
 RESTORE:
-	s, err := common.String(cli.Do("restore", params...))
+	s, err := common.String(rr.Client.Do("restore", params...))
 	if err != nil {
 		/*The reply value of busykey in 2.8 kernel is "target key name is busy",
 		  but in 4.0 kernel is "BUSYKEY Target key name already exists"*/
 		if strings.Contains(err.Error(), "Target key name is busy") ||
 			strings.Contains(err.Error(), "BUSYKEY Target key name already exists") {
-			switch config.Get().Output.KeyExists {
+			switch rr.KeyExists {
 			case "replace":
-				if config.Get().Output.KeyExistsLog {
+				if rr.KeyExistsLog {
 					log.Infof("replace key: %s", e.Key)
 				}
 				params = append(params, "REPLACE")
 				goto RESTORE
 			case "ignore":
-				if config.Get().Output.KeyExistsLog {
+				if rr.KeyExistsLog {
 					log.Warnf("output key exist, ignore it : %s", e.Key)
 				}
 			case "error":
@@ -121,7 +129,7 @@ RESTORE:
 			}
 		} else if strings.Contains(err.Error(), "Bad data format") { // cluster.c:restoreCommand
 			log.Warn(err, " try to restoreBigRdbEntry")
-			if err := restoreBigRdbEntry(cli, e); err != nil {
+			if err := restoreBigRdbEntry(rr.Client, e); err != nil {
 				return err
 			}
 		} else {

@@ -15,21 +15,23 @@ import (
 
 type Loader struct {
 	*RdbReader
-	crc                hash.Hash64
-	db                 uint32
-	lastEntry          *BinEntry
-	logger             log.Logger
-	targetRedisVersion string
-	rdbVersion         int64
+	crc        hash.Hash64
+	db         uint32
+	lastEntry  *BinEntry
+	logger     log.Logger
+	rdbVersion int64
+	options    rdbParseOptions
 }
 
-func NewLoader(r io.Reader, targetRedisVersion string) *Loader {
+func NewLoader(r io.Reader, options ...RdbParseOption) *Loader {
 	l := &Loader{
-		logger:             log.WithLogger(config.LogModuleName("[RdbLoader] ")),
-		targetRedisVersion: targetRedisVersion,
+		logger: log.WithLogger(config.LogModuleName("[RdbLoader] ")),
 	}
 	l.crc = digest.New()
 	l.RdbReader = NewRdbReader(io.TeeReader(r, l.crc))
+	for _, opt := range options {
+		opt(&l.options)
+	}
 	return l
 }
 

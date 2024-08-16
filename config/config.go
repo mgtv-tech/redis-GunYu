@@ -15,35 +15,41 @@ import (
 )
 
 var (
-	cfg *Config
+	syncCfg *SyncConfig
+	rdbCfg  *RdbCmdConfig
+	logCfg  *LogConfig
 )
 
 func init() {
-	cfg = &Config{}
+	syncCfg = &SyncConfig{}
 }
 
-func Get() *Config {
-	return cfg
+func GetSyncerConfig() *SyncConfig {
+	return syncCfg
 }
 
-type Config struct {
+func GetRdbCmdConfig() *RdbCmdConfig {
+	return rdbCfg
+}
+
+type SyncConfig struct {
 	Input   *InputConfig
 	Output  *OutputConfig
 	Channel *ChannelConfig
-	Filter  FilterConfig
+
 	Cluster *ClusterConfig
 	Log     *LogConfig   `yaml:"log"`
 	Server  ServerConfig `yaml:"server"`
 }
 
-func (c *Config) GetLog() *LogConfig {
+func (c *SyncConfig) GetLog() *LogConfig {
 	if c == nil {
 		return nil
 	}
 	return c.Log
 }
 
-func (c *Config) fix() error {
+func (c *SyncConfig) fix() error {
 	type fixInter interface {
 		fix() error
 	}
@@ -62,12 +68,12 @@ func (c *Config) fix() error {
 	}
 
 	if c.Output.Redis.Type == RedisTypeCluster {
-		if c.Output.TargetDb == -1 || c.Output.TargetDb == 0 {
-			c.Filter.DbBlacklist = []int{}
+		if c.Output.Replay.TargetDb == -1 || c.Output.Replay.TargetDb == 0 {
+			c.Output.Filter.DbBlacklist = []int{}
 		} else {
 			return newConfigError("redis is cluster, but targetdb is not 0")
 		}
-		for _, db := range c.Output.TargetDbMap {
+		for _, db := range c.Output.Replay.TargetDbMap {
 			if db != 0 {
 				return newConfigError("redis is cluster, but targetdb is not 0 : %d", db)
 			}
@@ -237,8 +243,21 @@ func (sc *StorerConfig) fix() error {
 	return err
 }
 
+func cloneBoolPointer(vp *bool) *bool {
+	if vp == nil {
+		return nil
+	}
+	v := *vp
+	return &v
+}
+
 type OutputConfig struct {
-	Redis                  *RedisConfig
+	Redis  *RedisConfig
+	Replay ReplayConfig
+	Filter FilterConfig
+}
+
+type ReplayConfig struct {
 	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint" default:"true"`
 	ReplaceHashTag         bool          `yaml:"replaceHashTag"`
 	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
@@ -266,6 +285,11 @@ func (of *OutputConfig) fix() error {
 	if err := of.Redis.fix(); err != nil {
 		return err
 	}
+
+	return of.Replay.fix()
+}
+
+func (of *ReplayConfig) fix() error {
 	if of.TargetDbCfg == nil {
 		of.TargetDb = -1
 	} else {
@@ -333,7 +357,6 @@ func (of *OutputConfig) fix() error {
 	if of.Stats.LogInterval < time.Second {
 		of.Stats.LogInterval = time.Second * 5
 	}
-
 	return nil
 }
 
@@ -391,21 +414,21 @@ type LogConfig struct {
 }
 
 func LogModuleName(prefix string) string {
-	if cfg == nil || cfg.Log == nil || cfg.Log.ModuleName == nil {
+	if logCfg == nil || logCfg.ModuleName == nil {
 		return prefix
 	}
-	if *cfg.Log.ModuleName {
+	if *logCfg.ModuleName {
 		return prefix
 	}
 	return ""
 }
 
 func SetLogLevel(l zapcore.Level) {
-	cfg.Log.level = l
+	logCfg.level = l
 }
 
 func GetLogLevel() zapcore.Level {
-	return cfg.Log.level
+	return logCfg.level
 }
 
 func (lc *LogConfig) fix() error {
@@ -427,15 +450,15 @@ func (lc *LogConfig) fix() error {
 	return nil
 }
 
-func InitConfig(path string) error {
+func InitSyncerConfig(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if err = yaml.Unmarshal(data, cfg); err != nil {
+	if err = yaml.Unmarshal(data, syncCfg); err != nil {
 		return err
 	}
-	if err = cfg.fix(); err != nil {
+	if err = syncCfg.fix(); err != nil {
 		return err
 	}
 	return nil
