@@ -35,6 +35,9 @@ func runCmd() error {
 		cmder = cmd.NewSyncerCmd()
 		gracefullTimeout = config.GetSyncerConfig().Server.GracefullStopTimeout
 	case "rdb":
+		if config.GetFlag().ConfigPath != "" {
+			panicIfError(config.InitRdbConfig(config.GetFlag().ConfigPath))
+		}
 		cmder = cmd.NewRdbCmd()
 	case "aof":
 		cmder = cmd.NewAofCmd()

@@ -214,3 +214,97 @@ func (r *RdbReader) closeRdb() error {
 func (r *RdbReader) Size() int64 {
 	return r.size
 }
+
+func (r *RdbReader) GetVersion() (string, error) {
+	if r.reader == nil {
+		return "", errors.New("rdb file is not opened")
+	}
+
+	// save initial read location
+	startPos, err := r.reader.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return "", err
+	}
+
+	// reset to the beginning of the file
+	_, err = r.reader.Seek(0, io.SeekStart)
+	if err != nil {
+		return "", err
+	}
+
+	signature := make([]byte, 5)
+	_, err = io.ReadFull(r.reader, signature)
+	if err != nil {
+		return "", err
+	}
+	if string(signature) != "REDIS" {
+		return "", errors.New("invalid rdb file signature")
+	}
+
+	// skip RDB version
+	versionBytes := make([]byte, 4)
+	_, err = io.ReadFull(r.reader, versionBytes)
+	if err != nil {
+		return "", err
+	}
+
+	// read AUX field
+	buf := make([]byte, 1)
+	for {
+		_, err := io.ReadFull(r.reader, buf)
+		if err != nil {
+			return "", err
+		}
+		if buf[0] == 0xFA { // AUX字段操作码
+			keyLenBuf := make([]byte, 1)
+			_, err := io.ReadFull(r.reader, keyLenBuf)
+			if err != nil {
+				return "", err
+			}
+			keyLen := int(keyLenBuf[0])
+			key := make([]byte, keyLen)
+			_, err = io.ReadFull(r.reader, key)
+			if err != nil {
+				return "", err
+			}
+			if string(key) == "redis-ver" {
+				valLenBuf := make([]byte, 1)
+				_, err := io.ReadFull(r.reader, valLenBuf)
+				if err != nil {
+					return "", err
+				}
+				valLen := int(valLenBuf[0])
+				val := make([]byte, valLen)
+				_, err = io.ReadFull(r.reader, val)
+				if err != nil {
+					return "", err
+				}
+				// restore initial read position
+				if _, err := r.reader.Seek(startPos, io.SeekStart); err != nil {
+					return "", err
+				}
+				return string(val), nil
+			} else {
+				// Ignore other AUX fields
+				valLenBuf := make([]byte, 1)
+				_, err := io.ReadFull(r.reader, valLenBuf)
+				if err != nil {
+					return "", err
+				}
+				_, err = r.reader.Seek(int64(int(valLenBuf[0])), io.SeekCurrent)
+				if err != nil {
+					return "", err
+				}
+			}
+		} else {
+			// If it is not an AUX field opcode, move the position forward by one byte
+			_, err = r.reader.Seek(-1, io.SeekCurrent)
+			if err != nil {
+				return "", err
+			}
+			break
+		}
+	}
+
+	return "", errors.New("version number not found in aux fields")
+}
