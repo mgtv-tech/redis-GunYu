@@ -16,6 +16,7 @@ If command is sync, `redisGunYu` supports below APIs.
     - [Sync Status Information](#sync-status-information)
     - [Sync Configuration Information](#sync-configuration-information)
     - [Full Sync](#full-sync)
+    - [Hand over leadership](#hand-over-leadership)
   - [Recycle Local Cache](#recycle-local-cache)
   - [Observability](#observability)
     - [Prometheus Metrics API](#prometheus-metrics-api)
@@ -133,6 +134,19 @@ For example
 # Force full synchronization of the two source Redis nodes 127.0.0.1:16302 and 127.0.0.1:16310; and clear the data in the corresponding target Redis node (execute flushdb)
 curl -XPOST 'http://http_server:port/syncer/fullsync?inputs=127.0.0.1:16302,127.0.0.1:16310&flushdb=yes'
 ```
+
+
+
+### Hand over leadership 
+
+You can use this API to transfer synchronization responsibility(leadership) from one `redisGunYu` node to another when `redisGunYu` is deployed in cluster mode.
+
+```
+curl -XPOST 'http://http_server:port/syncer/handover?inputs=inputs' 
+```
+URL, query parameters:
+- inputs: The source Redis IP and port that need to be fully synchronized. If all source nodes need to be fully synchronized, write "inputs=all". If there are multiple source IP+port, separate them with commas. The specific IP+port can be obtained through the `http://http_server:port/syncer/status` API.
+
 
 
 
