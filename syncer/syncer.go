@@ -374,6 +374,7 @@ func (s *syncer) runFollower() error {
 	s.guard.RUnlock()
 
 	s.updateStateMetric()
+	syncDelayGauge.Set(0, s.cfg.Input.Address())
 
 	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
 
