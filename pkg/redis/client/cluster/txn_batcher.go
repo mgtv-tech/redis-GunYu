@@ -21,6 +21,10 @@ func (tb *txnBatcher) joinError(err error) error {
 	return err
 }
 
+func (tb *txnBatcher) Release() {
+	// @TODO
+}
+
 func (tb *txnBatcher) Len() int {
 	return len(tb.cmds)
 }

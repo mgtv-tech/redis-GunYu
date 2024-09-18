@@ -46,6 +46,7 @@ type Options struct {
 
 	HandleMoveError bool
 	HandleAskError  bool
+	SupportMultiDb  bool
 
 	logger log.Logger
 }
@@ -83,6 +84,11 @@ type Cluster struct {
 	logger          log.Logger
 
 	safeRand *util.SafeRand
+
+	supportMultiDb bool
+	selectDb       atomic.Int32
+
+	//batcherPool sync.Pool
 }
 
 type updateMesg struct {
@@ -107,6 +113,16 @@ func NewCluster(options *Options) (*Cluster, error) {
 		logger:          log.WithLogger(config.LogModuleName("[redis cluster] ")),
 		safeRand:        util.NewSafeRand(time.Now().Unix()),
 	}
+
+	// cluster.batcherPool = sync.Pool{
+	// 	New: func() any {
+	// 		return &Batch{
+	// 			cluster: cluster,
+	// 			batches: make([]nodeBatch, 0),
+	// 			index:   make([]int, 0),
+	// 		}
+	// 	},
+	// }
 
 	errList := make([]error, 0)
 	for i := range options.StartNodes {
@@ -137,6 +153,14 @@ func NewCluster(options *Options) (*Cluster, error) {
 
 	return nil, fmt.Errorf("NewCluster: no valid node in %v, error list: %v",
 		options.StartNodes, errList)
+}
+
+func (cluster *Cluster) SelectDb(db int) {
+	cluster.selectDb.Store(int32(db))
+}
+
+func (cluster *Cluster) CurrentDb() int {
+	return int(cluster.selectDb.Load())
 }
 
 func (cluster *Cluster) checkIdleConns() {
@@ -259,7 +283,7 @@ func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd stri
 }
 
 func (cluster *Cluster) NewBatcher() common.CmdBatcher {
-	return cluster.NewBatch()
+	return cluster.GetBatch()
 }
 
 // Close cluster connection, any subsequent method call will fail.
@@ -287,7 +311,13 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 			return nil, fmt.Errorf("PING: %w", err)
 		}
 	case "SELECT":
-		// no need to put "select 0" in cluster
+		if cluster.supportMultiDb {
+			n, err := strconv.Atoi(util.BytesToString(args[0].([]byte)))
+			if err != nil {
+				return nil, fmt.Errorf("SELECT %s : %v", args[0].([]byte), err)
+			}
+			cluster.SelectDb(n)
+		}
 		return nil, nil
 	case "MGET":
 		return nil, fmt.Errorf("%s not supported", cmd)
@@ -588,6 +618,7 @@ func (cluster *Cluster) update(node *redisNode) error {
 				keepAlive:    cluster.keepAlive,
 				aliveTime:    cluster.aliveTime,
 				password:     cluster.password,
+				cluster:      cluster,
 			}
 		}
 

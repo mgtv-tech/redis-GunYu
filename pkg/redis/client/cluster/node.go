@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
@@ -47,6 +48,8 @@ type redisNode struct {
 	password string
 
 	accessTime atomic.Int64
+
+	cluster *Cluster
 }
 
 func (node *redisNode) releaseIdleConns() {
@@ -184,12 +187,39 @@ func (node *redisNode) shutdown() {
 	}
 
 	node.closed = true
+	node.cluster = nil
 }
 
 func (node *redisNode) do(cmd string, args ...interface{}) (interface{}, error) {
 	conn, err := node.getConn()
 	if err != nil {
 		return fmt.Sprintf("ECONNTIMEOUT: %v", err), nil
+	}
+
+	// @TODO create dedicated connections for different database?
+	if node.cluster.supportMultiDb {
+		cdb := node.cluster.CurrentDb()
+		if conn.getDb() != cdb {
+			err = conn.send("SELECT", cdb)
+			if err != nil {
+				conn.shutdown()
+				return nil, err
+			}
+			if err = conn.flush(); err != nil {
+				conn.shutdown()
+				return nil, err
+			}
+			reply, err := conn.receive()
+			if err != nil {
+				conn.shutdown()
+				return nil, err
+			}
+			if err = common.StringIsOk(reply, err); err != nil {
+				conn.shutdown()
+				return nil, fmt.Errorf("SELECT %d : %v", cdb, err)
+			}
+			conn.setDb(cdb)
+		}
 	}
 
 	if err = conn.send(cmd, args...); err != nil {

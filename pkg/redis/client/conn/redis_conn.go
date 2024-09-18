@@ -92,6 +92,10 @@ func (r *RedisConn) Close() error {
 	return nil
 }
 
+func (r *RedisConn) ClusterMultiDb() bool {
+	return false
+}
+
 func (r *RedisConn) RedisType() config.RedisType {
 	return config.RedisTypeStandalone
 }
@@ -208,6 +212,10 @@ type batcher struct {
 	conn    *RedisConn
 	cmds    []string
 	cmdArgs [][]interface{}
+}
+
+func (tb *batcher) Release() {
+
 }
 
 func (tb *batcher) Put(cmd string, args ...interface{}) error {

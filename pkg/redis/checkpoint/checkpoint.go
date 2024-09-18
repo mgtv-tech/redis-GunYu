@@ -70,7 +70,7 @@ func GetAllCheckpointHash(cli client.Redis) ([]string, error) {
 }
 
 func getDbMap(cli client.Redis) (map[int32]int64, error) {
-	if cli.RedisType() == config.RedisTypeCluster {
+	if cli.RedisType() == config.RedisTypeCluster && !cli.ClusterMultiDb() {
 		return map[int32]int64{0: 0}, nil
 	}
 
@@ -257,11 +257,17 @@ func UpdateCheckpoint(outCli client.Redis, localCheckpoint string, ids []string)
 			Offset:  -1,
 			Version: config.Version,
 		}
+		db := 0
 		if len(cpName) > 0 { // restore old checkpoint
-			cpKv, _, err = GetCheckpoint(outCli, cpName, ids)
+			cpKv, db, err = GetCheckpoint(outCli, cpName, ids)
 			if err != nil {
 				return err
 			}
+		}
+
+		err = redis.SelectDB(outCli, uint32(db))
+		if err != nil {
+			return err
 		}
 
 		oldId := cpKv.RunId

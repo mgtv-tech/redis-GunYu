@@ -20,6 +20,7 @@ type ClusterRedis struct {
 	batcher  *cluster.Batch
 	cfg      config.RedisConfig
 	logger   log.Logger
+	options  *cluster.Options
 }
 
 type reply struct {
@@ -27,6 +28,7 @@ type reply struct {
 	err    error
 }
 
+// it is not thread safe
 func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 	options := &cluster.Options{
 		StartNodes:  cfg.Addresses,
@@ -42,6 +44,7 @@ func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 	if cfg.GetClusterOptions() != nil {
 		options.HandleAskError = cfg.GetClusterOptions().HandleAskErr
 		options.HandleMoveError = cfg.GetClusterOptions().HandleMoveErr
+		options.SupportMultiDb = cfg.GetClusterOptions().SupportMultiDb
 	}
 	cc, err := cluster.NewCluster(options)
 	if err != nil {
@@ -52,6 +55,7 @@ func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
 		recvChan: make(chan reply, RecvChanSize),
 		cfg:      cfg,
 		logger:   log.WithLogger(config.LogModuleName("[Redis cluster] ")),
+		options:  options,
 	}, nil
 }
 
@@ -97,6 +101,10 @@ func (cc *ClusterRedis) NewBatcher() common.CmdBatcher {
 	return cc.client.NewBatcher()
 }
 
+func (cr *ClusterRedis) ReleaseBatcher(b common.CmdBatcher) {
+
+}
+
 // @TODO
 // multi/exec : if slots are crossing, doesn't return error
 func (cc *ClusterRedis) Send(cmd string, args ...interface{}) error {
@@ -114,7 +122,7 @@ func (cc *ClusterRedis) SendAndFlush(cmd string, args ...interface{}) error {
 // not thread safe
 func (cc *ClusterRedis) getBatcher() *cluster.Batch {
 	if cc.batcher == nil {
-		cc.batcher = cc.client.NewBatch()
+		cc.batcher = cc.client.GetBatch()
 	}
 	return cc.batcher
 }
@@ -143,6 +151,10 @@ func (cc *ClusterRedis) BufioReader() *bufio.Reader {
 
 func (cc *ClusterRedis) BufioWriter() *bufio.Writer {
 	return nil
+}
+
+func (cc *ClusterRedis) ClusterMultiDb() bool {
+	return cc.options.SupportMultiDb
 }
 
 // send batcher and put the return into recvChan

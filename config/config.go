@@ -530,8 +530,9 @@ func (rc *RedisConfig) SetMigrating(m bool) {
 }
 
 type RedisClusterOptions struct {
-	HandleMoveErr bool `yaml:"handleMoveErr" default:"true"`
-	HandleAskErr  bool `yaml:"handleAskErr" default:"true"`
+	HandleMoveErr  bool `yaml:"handleMoveErr" default:"true"`
+	HandleAskErr   bool `yaml:"handleAskErr" default:"true"`
+	SupportMultiDb bool `yaml:"supportMultiDb" default:"false"`
 }
 
 func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {

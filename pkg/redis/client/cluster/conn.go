@@ -38,6 +38,16 @@ type redisConn struct {
 
 	// Scratch space for formatting integer and float.
 	numScratch [40]byte
+
+	db atomic.Int32
+}
+
+func (conn *redisConn) setDb(db int) {
+	conn.db.Store(int32(db))
+}
+
+func (conn *redisConn) getDb() int {
+	return int(conn.db.Load())
 }
 
 func (conn *redisConn) auth(password string) (err error) {
