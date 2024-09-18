@@ -45,7 +45,7 @@ func ParseKeyspace(content []byte) (map[int32]int64, error) {
 }
 
 func SelectDB(c client.Redis, db uint32) error {
-	if c.RedisType() == config.RedisTypeCluster {
+	if c.RedisType() == config.RedisTypeCluster && !c.ClusterMultiDb() {
 		return nil
 	}
 	err := c.SendAndFlush("select", db)

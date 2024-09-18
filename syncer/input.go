@@ -492,6 +492,7 @@ func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConf
 				_, err := cli.Do("SET", testKey, val)
 				if err != nil {
 					ri.logger.Warnf("checkSyncDelay, set testkey : addr(%s), error(%v)", ri.cfg.Address(), err)
+					break
 				}
 				wait.Sleep(1 * time.Second)
 			}

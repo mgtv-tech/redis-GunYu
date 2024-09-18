@@ -34,25 +34,38 @@ type Batch struct {
 type nodeBatch struct {
 	node *redisNode
 	cmds []nodeCommand
+	conn *redisConn
 
 	err  error
 	done chan int
 }
 
 type nodeCommand struct {
-	cmd   string
-	args  []interface{}
-	reply interface{}
-	err   error
+	cmd     string
+	args    []interface{}
+	reply   interface{}
+	err     error
+	db      int
+	noReply bool
 }
 
 // NewBatch create a new batch to pack mutiple commands.
-func (cluster *Cluster) NewBatch() *Batch {
+func (cluster *Cluster) GetBatch() *Batch {
 	return &Batch{
 		cluster: cluster,
 		batches: make([]nodeBatch, 0),
 		index:   make([]int, 0),
 	}
+	//return cluster.batcherPool.Get().(*Batch)
+}
+
+// func (cluster *Cluster) PutBatch(b *Batch) {
+// 	cluster.batcherPool.Put(b)
+// }
+
+func (tb *Batch) Release() {
+	// @TODO compute size of args?
+	// tb.cluster.PutBatch(tb)
 }
 
 func (tb *Batch) joinError(err error) error {
@@ -60,9 +73,16 @@ func (tb *Batch) joinError(err error) error {
 	return err
 }
 
+func (batch *Batch) Put(cmd string, args ...interface{}) error {
+	if batch.cluster.supportMultiDb {
+		return batch.put2(cmd, args...)
+	}
+	return batch.put(cmd, args...)
+}
+
 // Put add a redis command to batch, DO NOT put MGET/MSET/MSETNX.
 // it ignores multi/exec transaction
-func (batch *Batch) Put(cmd string, args ...interface{}) error {
+func (batch *Batch) put(cmd string, args ...interface{}) error {
 
 	switch strings.ToUpper(cmd) {
 	case "KEYS":
@@ -115,6 +135,82 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 	return nil
 }
 
+// Put add a redis command to batch, DO NOT put MGET/MSET/MSETNX.
+// it ignores multi/exec transaction
+func (batch *Batch) put2(cmd string, args ...interface{}) error {
+
+	switch strings.ToUpper(cmd) {
+	case "KEYS":
+		nodes := batch.cluster.getAllNodes()
+
+		for i, node := range nodes {
+			batch.batches = append(batch.batches,
+				nodeBatch{
+					node: node,
+					cmds: []nodeCommand{{cmd: cmd, args: args}},
+					done: make(chan int)})
+			batch.index = append(batch.index, i)
+		}
+		return nil
+	}
+
+	node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
+	if err != nil {
+		err = fmt.Errorf("run ChooseNodeWithCmd error : %w", err)
+		return batch.joinError(err)
+	}
+	if node == nil {
+		return nil
+	}
+	cmdDb := batch.cluster.CurrentDb()
+
+	var i int
+	for i = 0; i < len(batch.batches); i++ {
+		batchNode := &batch.batches[i]
+		if batchNode.node == node {
+			prevCmd := &batchNode.cmds[len(batchNode.cmds)-1]
+			if prevCmd.db != cmdDb {
+				batchNode.cmds = append(batchNode.cmds,
+					nodeCommand{cmd: "SELECT", args: []interface{}{cmdDb}, db: prevCmd.db, noReply: true})
+				batch.index = append(batch.index, i)
+			}
+			batchNode.cmds = append(batchNode.cmds,
+				nodeCommand{cmd: cmd, args: args, db: cmdDb})
+			batch.index = append(batch.index, i)
+			break
+		}
+	}
+
+	if i == len(batch.batches) {
+		if batch.cluster.transactionEnable && len(batch.batches) == 1 {
+			return batch.joinError(common.ErrCrossSlots)
+		}
+		conn, err := node.getConn()
+		if err != nil {
+			return err
+		}
+
+		nb := nodeBatch{
+			node: node,
+			done: make(chan int),
+			conn: conn,
+		}
+
+		cdb := conn.getDb()
+		if cdb != cmdDb {
+			nb.cmds = append(nb.cmds, nodeCommand{cmd: "SELECT", args: []interface{}{cmdDb}, db: cdb, noReply: true})
+			batch.index = append(batch.index, i)
+		}
+
+		nb.cmds = append(nb.cmds, nodeCommand{cmd: cmd, args: args, db: cmdDb})
+
+		batch.batches = append(batch.batches, nb)
+		batch.index = append(batch.index, i)
+	}
+
+	return nil
+}
+
 func (batch *Batch) GetBatchSize() int {
 	if batch == nil || batch.index == nil {
 		return 0
@@ -154,8 +250,10 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 		if bat.batches[i].err != nil {
 			return nil, bat.batches[i].err
 		}
-		replies = append(replies, bat.batches[i].cmds[0].reply)
-		bat.batches[i].cmds = bat.batches[i].cmds[1:]
+		if !bat.batches[i].cmds[0].noReply {
+			replies = append(replies, bat.batches[i].cmds[0].reply)
+			bat.batches[i].cmds = bat.batches[i].cmds[1:]
+		}
 	}
 
 	return replies, nil
@@ -168,11 +266,15 @@ func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
 }
 
 func (bat *Batch) doBatch(batch *nodeBatch) {
-	conn, err := batch.node.getConn()
-	if err != nil {
-		batch.err = err
-		batch.done <- 1
-		return
+	var err error
+	conn := batch.conn
+	if conn == nil {
+		conn, err = batch.node.getConn()
+		if err != nil {
+			batch.err = err
+			batch.done <- 1
+			return
+		}
 	}
 
 	exec := util.OpenCircuitExec{}

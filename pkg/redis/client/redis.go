@@ -27,6 +27,7 @@ type Redis interface {
 
 	// for cluster
 	IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{})
+	ClusterMultiDb() bool
 }
 
 func NewRedis(cfg config.RedisConfig) (Redis, error) {
