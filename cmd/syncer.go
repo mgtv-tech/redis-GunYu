@@ -119,9 +119,8 @@ func (sc *SyncerCmd) Run() error {
 					config.GetSyncerConfig().Output.Redis.SetMigrating(true)
 				}
 			}
-			sc.waitCloser.Sleep(1 * time.Second)
-			continue
 		}
+		sc.waitCloser.Sleep(1 * time.Second)
 	}
 
 	sc.waitCloser.Close(err)
@@ -474,9 +473,9 @@ func (sc *SyncerCmd) run() error {
 		err := cli.Register(runWait.Context(), sc.registerKey, ipForPeer)
 		if err != nil {
 			runWait.Close(err)
-			return err
+		} else {
+			sc.runCluster(runWait, cli, cfgs)
 		}
-		sc.runCluster(runWait, cli, cfgs)
 	}
 
 	// @TODO should remove directories of stale runID
