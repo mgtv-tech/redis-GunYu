@@ -556,6 +556,7 @@ func (ri *RedisInput) sendOutput(wait usync.WaitCloser, reader *store.Reader) {
 
 // @TODO call stop
 func (ri *RedisInput) Stop() error {
+	ri.logger.Debugf("Stop")
 	ri.wait.Close(nil)
 	return nil
 }

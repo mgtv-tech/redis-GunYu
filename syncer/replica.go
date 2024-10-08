@@ -126,6 +126,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 		})
 		if err != nil {
 			err = fmt.Errorf("server handshake : startPoint(%v), error(%v)", sp, err)
+			rl.logger.Errorf("%v", err)
 			return rl.handleError(stream, err, pb.SyncResponse_FAULT, "internal error", "")
 		} else {
 			rl.logger.Infof("server handshake : startPoint(%v), follower(%s:%d)", sp, followerRunId, followerOffset)
@@ -136,6 +137,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 	if inputRunIds[0] != followerRunId {
 		// @TODO a corner case : replica get a newer run id, master is stale
 		err := fmt.Errorf("run id is stale : input_run_ids(%v), replica_run_id(%s)", inputRunIds, followerRunId)
+		rl.logger.Errorf("%v", err)
 		return rl.handleError(stream, err, pb.SyncResponse_ERROR, "internal error", "")
 	}
 
@@ -148,6 +150,7 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 			Offset: sp.Offset,
 		})
 		if err != nil {
+			rl.logger.Errorf("%v", err)
 			return err
 		}
 		return ErrLeaderHandover
@@ -186,6 +189,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 		Meta:   &pb.SyncResponse_Meta{Aof: reader.IsAof()},
 		Offset: reader.Left(), Size: reader.Size(),
 	}); err != nil {
+		rl.logger.Errorf("%v", err)
 		return rl.handleError(stream, err, pb.SyncResponse_FAULT, err.Error(), "")
 	}
 
@@ -210,6 +214,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 					Data: buf,
 				})
 			}
+			rl.logger.Errorf("%v", err)
 			return rl.handleError(stream, err, pb.SyncResponse_FAULT, "reader error", "")
 		}
 
@@ -218,6 +223,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 			Code: pb.SyncResponse_CONTINUE, Offset: offset + int64(n), Size: int64(n),
 			Data: buf,
 		}); err != nil {
+			rl.logger.Errorf("%v", err)
 			return rl.handleError(stream, err, pb.SyncResponse_FAULT, "reader error", "")
 		}
 		offset += int64(n)
@@ -231,7 +237,6 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 // follower
 
 type ReplicaFollower struct {
-	id           int
 	wait         usync.WaitCloser
 	logger       log.Logger
 	inputAddress string
@@ -243,8 +248,7 @@ type ReplicaFollower struct {
 
 func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
 	replica := &ReplicaFollower{
-		id:           id,
-		logger:       log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%d)] ", id))),
+		logger:       log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%s)] ", inputAddress))),
 		wait:         usync.NewWaitCloser(nil),
 		channel:      channel,
 		leader:       leader,
