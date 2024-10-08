@@ -295,13 +295,21 @@ func (s *syncer) run() error {
 				err = s.runFollower()
 			}
 			if err != nil {
-				//s.logger.Errorf("run error : %v", err)
+				s.logger.Errorf("run error : %v", err)
 				s.guard.Lock()
 				s.state = SyncerStateStop
 				wait := s.wait
 				s.guard.Unlock()
 				wait.Close(err)
+			} else {
+				s.guard.Lock()
+				wait := s.wait
+				s.guard.Unlock()
+				if wait.IsClosed() {
+					return wait.Error()
+				}
 			}
+			s.logger.Debugf("run state : %s", state.String())
 		case SyncerStatePause:
 			s.guard.Lock()
 			waitC := s.pauseWait
@@ -325,6 +333,8 @@ func (s *syncer) run() error {
 }
 
 func (s *syncer) runLeader() error {
+	s.logger.Debugf("runLeader")
+
 	output, err := s.newOutput()
 	if err != nil {
 		return err
@@ -365,6 +375,7 @@ func (s *syncer) runLeader() error {
 }
 
 func (s *syncer) runFollower() error {
+	s.logger.Debugf("runFollower")
 
 	s.guard.RLock()
 	leader := s.slaveOf

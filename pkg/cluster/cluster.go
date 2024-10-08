@@ -12,6 +12,16 @@ var (
 
 type ClusterRole int
 
+func (c ClusterRole) String() string {
+	if c == RoleLeader {
+		return "leader"
+	} else if c == RoleFollower {
+		return "follower"
+	} else {
+		return "candidate"
+	}
+}
+
 const (
 	RoleCandidate ClusterRole = iota
 	RoleFollower  ClusterRole = iota
