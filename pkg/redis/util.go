@@ -599,6 +599,15 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		if err != nil {
 			return err
 		}
+
+		// `RedisClusterShard.Get(Slave)` always return first slave node.
+		// Replicas of redisGunYu communicate with address of redis, so it is best to keep addresses consistent.
+		for _, shard := range shards {
+			sort.Slice(shard.Slaves, func(i, j int) bool {
+				return shard.Slaves[i].Address < shard.Slaves[j].Address
+			})
+		}
+
 		redisCfg.SetClusterShards(shards)
 
 		// migration

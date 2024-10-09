@@ -164,11 +164,13 @@ func (a *dataSetAof) Close() {
 		return
 	}
 	a.mux.Lock()
-	defer a.mux.Unlock()
-	if a.writer != nil {
-		a.writer.Close()
+	writer := a.writer
+	readers := a.readers
+	a.mux.Unlock()
+	if writer != nil {
+		writer.Close()
 	}
-	for _, r := range a.readers {
+	for _, r := range readers {
 		r.Close()
 	}
 }
@@ -178,9 +180,10 @@ func (a *dataSetAof) CloseWriter() {
 		return
 	}
 	a.mux.Lock()
-	defer a.mux.Unlock()
-	if a.writer != nil {
-		a.writer.Close()
+	writer := a.writer
+	a.mux.Unlock()
+	if writer != nil {
+		writer.Close()
 	}
 }
 
@@ -309,19 +312,22 @@ func (ds *dataSet) InRange(offset int64) bool {
 
 func (ds *dataSet) Close() {
 	ds.mux.Lock()
-	defer ds.mux.Unlock()
-	if ds.rdb != nil {
-		ds.rdb.Close()
+	rdb := ds.rdb
+	aof := ds.aofSegs
+	ds.mux.Unlock()
+	if rdb != nil {
+		rdb.Close()
 	}
-	for _, a := range ds.aofSegs {
+	for _, a := range aof {
 		a.Close()
 	}
 }
 
 func (ds *dataSet) CloseAofWriter() {
 	ds.mux.Lock()
-	defer ds.mux.Unlock()
-	for _, a := range ds.aofSegs {
+	aof := ds.aofSegs
+	ds.mux.Unlock()
+	for _, a := range aof {
 		a.Close()
 	}
 }

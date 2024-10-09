@@ -101,26 +101,29 @@ func (sc *SyncerCmd) Run() error {
 		}
 		if errors.Is(err, syncer.ErrQuit) {
 			break
-		} else if errors.Is(err, syncer.ErrRestart) {
-			sc.logger.Infof("syncer restart : err(%v)", err)
-			fixErr := util.RetryLinearJitter(sc.waitCloser.Context(), func() error {
-				return sc.fixConfig()
-			}, 60, time.Second*3, 0.3) // a long consensus time for redis cluster
-			if fixErr != nil {
-				err = errors.Join(fixErr, err)
-				break
+		} else if errors.Is(err, syncer.ErrRedisTypologyChanged) {
+			// move :
+			//  transaction mode :
+			//  non-transaction mode :
+			// ask :
+			if errors.Is(err, common.ErrAsk) {
+				config.GetSyncerConfig().Output.Redis.SetMigrating(true)
 			}
-			if errors.Is(err, syncer.ErrRedisTypologyChanged) {
-				// move :
-				//  transaction mode :
-				//  non-transaction mode :
-				// ask :
-				if errors.Is(err, common.ErrAsk) {
-					config.GetSyncerConfig().Output.Redis.SetMigrating(true)
-				}
+		}
+
+		// a random duration to wait redis cluster nodes to reach a consistent state
+		sc.waitCloser.Sleep(2 * time.Second)
+
+		fixErr := util.RetryLinearJitter(sc.waitCloser.Context(), func() error {
+			err := sc.fixConfig()
+			if err != nil {
+				sc.logger.Errorf("fixConfig error : %v", err)
 			}
-			sc.waitCloser.Sleep(1 * time.Second)
-			continue
+			return err
+		}, 1800, time.Second*3, 0.3) // a long consensus time for redis cluster
+		if fixErr != nil {
+			err = errors.Join(fixErr, err)
+			break
 		}
 	}
 
@@ -474,9 +477,9 @@ func (sc *SyncerCmd) run() error {
 		err := cli.Register(runWait.Context(), sc.registerKey, ipForPeer)
 		if err != nil {
 			runWait.Close(err)
-			return err
+		} else {
+			sc.runCluster(runWait, cli, cfgs)
 		}
-		sc.runCluster(runWait, cli, cfgs)
 	}
 
 	// @TODO should remove directories of stale runID
@@ -518,7 +521,17 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 		cfg := tmp
 		usync.SafeGo(func() {
 			defer runWait.WgDone()
-			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName, cfg.Input.Address())
+
+			sc.logger.Infof("start syncer : %v", cfg)
+			defer sc.logger.Infof("stop syncer : %v", cfg)
+
+			shardKey := cfg.Input.Address()
+			shard := cfg.Input.GetClusterShard(cfg.Input.Address())
+			if shard != nil {
+				shardKey = shard.Master.Address
+			}
+
+			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName, shardKey)
 			elect := cli.NewElection(runWait.Context(), key, config.GetSyncerConfig().Server.ListenPeer)
 			role := cluster.RoleCandidate
 
@@ -526,10 +539,12 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				if role == cluster.RoleCandidate {
 					newRole, err := sc.clusterCampaign(runWait.Context(), elect)
 					if err != nil {
+						sc.logger.Errorf("campaign error : key(%s), err(%v)", key, err)
 						runWait.Close(syncer.ErrRestart)
 						break
 					} else {
 						role = newRole
+						sc.logger.Infof("campaign : key(%s), new_role(%s)", key, newRole.String())
 					}
 					continue
 				}
@@ -561,7 +576,7 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				}, func(i interface{}) { syncerWait.Close(fmt.Errorf("panic : %v", i)) })
 
 				// ticker
-				sc.clusterTicker(syncerWait, role, elect, cfg.Input.Address())
+				sc.clusterTicker(syncerWait, role, elect, cfg.Input.Address(), key)
 
 				// wait
 				sy.Stop()
@@ -606,10 +621,6 @@ func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect cluster.Election
 	ctx, cancel := context.WithTimeout(ctx, config.GetSyncerConfig().Cluster.LeaseRenewInterval)
 	defer cancel()
 	newRole, err := elect.Campaign(ctx)
-	sc.logger.Debugf("campaign : newRole(%v), error(%v)", newRole, err)
-	if err != nil {
-		sc.logger.Errorf("campaign : newRole(%v), error(%v)", newRole, err)
-	}
 	return newRole, err
 }
 
@@ -623,7 +634,7 @@ func (sc *SyncerCmd) clusterRenew(ctx context.Context, elect cluster.Election) e
 	return err
 }
 
-func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect cluster.Election, input string) {
+func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRole, elect cluster.Election, input, key string) {
 	if wait.IsClosed() {
 		return
 	}
@@ -641,16 +652,18 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 				err := util.Retry(func() error {
 					return sc.clusterRenew(wait.Context(), elect)
 				}, 2)
-				sc.logger.Debugf("renew : %v", err)
 				if err != nil {
+					sc.logger.Errorf("renew error : key(%s), err(%v)", key, err)
 					return false, err
 				}
 			} else if role == cluster.RoleFollower {
 				role, err := sc.clusterCampaign(wait.Context(), elect)
 				if err != nil {
+					sc.logger.Errorf("campaign error : key(%s), err(%v)", key, err)
 					return false, err
 				}
 				if role == cluster.RoleLeader {
+					sc.logger.Infof("campaign : key(%s), new_role(%s)", key, role.String())
 					roleChangeCounter.Inc(input)
 					return true, nil
 				}
@@ -834,13 +847,13 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 	watchIn, watchOut, txnMode bool) {
 
-	prevInRedisCfg := config.GetSyncerConfig().Input.Redis
-	prevOutRedisCfg := config.GetSyncerConfig().Output.Redis
+	prevInRedisCfg := config.GetSyncerConfig().Input.Redis.Clone()
+	prevOutRedisCfg := config.GetSyncerConfig().Output.Redis.Clone()
 	allShards := config.GetSyncerConfig().Input.Mode != config.InputModeStatic
 	syncFrom := config.GetSyncerConfig().Input.SyncFrom
 	interval := config.GetSyncerConfig().Server.CheckRedisTypologyTicker
 
-	sc.logger.Debugf("cronjob, check typology of redis cluster : input(%s), output(%s), watch(%v, %v), ticker(%s), txnMode(%v)", prevInRedisCfg.Address(), prevOutRedisCfg.Address(), watchIn, watchOut, interval, txnMode)
+	sc.logger.Infof("cronjob, check typology of redis cluster : input(%v), output(%v), watch(%v, %v), ticker(%s), txnMode(%v)", prevInRedisCfg.Addresses, prevOutRedisCfg.Addresses, watchIn, watchOut, interval, txnMode)
 
 	util.CronWithCtx(wait.Context(), interval, func(ctx context.Context) {
 		defer util.RecoverCallback(func(e interface{}) { wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("panic : %v", e))) })
@@ -866,6 +879,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 	syncFrom config.SelNodeStrategy, replayTransaction bool) bool {
 
 	prevInSelNodes := prevInRedisCfg.SelNodes(allShards, syncFrom)
+	preMasterNodes := prevInRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 	prevOutSelNodes := prevOutRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 	var inRedisCfg, outRedisCfg *config.RedisConfig
 	restart := false
@@ -889,30 +903,35 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				reason = fmt.Sprintf("the numbers of input nodes were changed : previous(%d), now(%d)", len(prevInSelNodes), len(inSelNodes))
 				return false
 			}
-			if syncFrom == config.SelNodeStrategyMaster {
-				for _, a := range inSelNodes {
-					find := false
-					for _, b := range prevInSelNodes {
-						if a.Address() == b.Address() {
-							find = true
-							break
-						}
-					}
-					if !find {
-						restart = true
-						reason = fmt.Sprintf("input nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
-						return false
+
+			// check master, master IP is used for redis locker in `runCluster` function.
+			inSelMasters := inRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
+			for _, a := range inSelMasters {
+				masterChanged := true
+				for _, b := range preMasterNodes {
+					if a.Address() == b.Address() {
+						masterChanged = false
 					}
 				}
-			} else {
+				if masterChanged {
+					restart = true
+					reason = fmt.Sprintf("master changed, master(%v)", a.Address())
+					return false
+				}
+			}
+
+			for _, a := range inSelNodes {
+				find := false
 				for _, b := range prevInSelNodes {
-					// @TODO restart if node is changed, e.g. syncFrom is prefer_slave and now it is a master
-					node := inRedisCfg.FindNode(b.Address())
-					if node == nil {
-						reason = fmt.Sprintf("input nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
-						restart = true
-						return false
+					if a.Address() == b.Address() {
+						find = true
+						break
 					}
+				}
+				if !find {
+					restart = true
+					reason = fmt.Sprintf("input nodes were changed : previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
+					return false
 				}
 			}
 		}

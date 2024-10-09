@@ -127,13 +127,14 @@ func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ApiService_SyncServer) 
 	addr := req.GetNode().GetAddress()
 	sy := sc.getSyncer(addr)
 	if sy.sync == nil || sy.wait.IsClosed() {
-		return status.Error(codes.Unavailable, "syncer is not running")
+		return status.Error(codes.Unavailable, fmt.Sprintf("syncer(%s) is not running", addr))
 	}
 	sy.wait.WgAdd(1)
 	defer sy.wait.WgDone()
 
 	err := sy.sync.ServiceReplica(req, stream)
 	if err != nil {
+		sc.logger.Errorf("Sync error : addr(%s), err(%v)", addr, err)
 		if errors.Is(err, syncer.ErrBreak) { // restart or quit
 			sc.getRunWait().Close(err) // stop all syncers
 		} else if errors.Is(err, syncer.ErrRole) {
