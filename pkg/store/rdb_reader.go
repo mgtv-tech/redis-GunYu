@@ -214,3 +214,7 @@ func (r *RdbReader) closeRdb() error {
 func (r *RdbReader) Size() int64 {
 	return r.size
 }
+
+func (r *RdbReader) GetReader() *os.File {
+	return r.reader
+}

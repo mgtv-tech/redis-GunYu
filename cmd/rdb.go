@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"io"
 	"os"
 	"sync/atomic"
@@ -109,6 +110,16 @@ func (rc *RdbCmd) Load(rdbPath string, cfg *config.RdbCmdLoad) error {
 	err = redis.FixVersion(cfg.Redis)
 	if err != nil {
 		return err
+	}
+	if err != nil {
+		log.Warnf("failed to get version from target redis, instead get version from rdb!")
+		redisVersion, err := rdb.ParseRdbVersion(rdbRd.GetReader())
+		if err != nil {
+			log.Errorf("redis get version from rdb error : error(%v)", err)
+			return err
+		}
+		log.Infof("redis rdb version : %s", redisVersion)
+		cfg.Redis.Version = redisVersion
 	}
 	if err = redis.FixTopology(cfg.Redis); err != nil {
 		return err

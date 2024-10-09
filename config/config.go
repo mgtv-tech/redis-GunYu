@@ -22,6 +22,7 @@ var (
 
 func init() {
 	syncCfg = &SyncConfig{}
+	rdbCfg = &RdbCmdConfig{}
 }
 
 func GetSyncerConfig() *SyncConfig {
@@ -459,6 +460,20 @@ func InitSyncerConfig(path string) error {
 		return err
 	}
 	if err = syncCfg.fix(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func InitRdbConfig(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err = yaml.Unmarshal(data, rdbCfg); err != nil {
+		return err
+	}
+	if err = rdbCfg.fix(); err != nil {
 		return err
 	}
 	return nil

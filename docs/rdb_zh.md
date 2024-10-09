@@ -37,7 +37,7 @@ action: load
 rdbPath: /tmp/test.rdb
 load:
   redis:
-    addresses: 127.0.0.1:6379,127.0.0.1:6479
+    addresses: [127.0.0.1:6379,127.0.0.1:6479]
     type: cluster
   filter:
     dbBlacklist: 1
