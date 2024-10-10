@@ -273,6 +273,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 				}
 				rd.rdb = rr
 				rd.reader = reader
+				rd.closedCb = append(rd.closedCb, piper.Close)
 				rd.size = rdb.Size()
 				rd.left = left
 				rd.logger = log.WithLogger(config.LogModuleName("[Reader(rdb)] "))
@@ -294,6 +295,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 	rd.left = offset
 	rd.aof = rr
 	rd.reader = reader
+	rd.closedCb = append(rd.closedCb, piper.Close)
 	rd.size = -1
 	rd.logger = log.WithLogger(config.LogModuleName("[Reader(aof)] "))
 
@@ -405,8 +407,6 @@ func (s *Storer) GetAofWritter(r io.Reader, offset int64) (*AofWriter, error) {
 }
 
 func (s *Storer) lastSeg() int64 {
-	s.mux.Lock()
-	defer s.mux.Unlock()
 	return s.getDataSet().LastAofSeg()
 }
 
