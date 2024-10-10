@@ -769,7 +769,11 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 			}
 			if !exist && total == deleted {
 				err = checkpoint.DelCheckpointHash(cli, runId)
-				sc.logger.Log(err, "delete runId from checkpoint hash error : runId(%s), err(%v)", runId, err)
+				if err == nil {
+					sc.logger.Infof("delete runId from checkpoint hash : runId(%s), err(%v)", runId)
+				} else {
+					sc.logger.Errorf("delete runId from checkpoint hash error : runId(%s), err(%v)", runId, err)
+				}
 			}
 		}
 	}

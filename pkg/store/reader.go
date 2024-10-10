@@ -10,13 +10,14 @@ import (
 )
 
 type Reader struct {
-	rdb    *RdbReader
-	aof    *AofRotateReader
-	reader *bufio.Reader
-	size   int64
-	runId  string
-	left   int64
-	logger log.Logger
+	rdb      *RdbReader
+	aof      *AofRotateReader
+	reader   *bufio.Reader
+	size     int64
+	runId    string
+	left     int64
+	logger   log.Logger
+	closedCb []func() error
 }
 
 func NewReader(reader *bufio.Reader, rdb *RdbReader, aof *AofRotateReader,
@@ -77,4 +78,10 @@ func (r *Reader) IoReader() *bufio.Reader {
 
 func (r *Reader) IsAof() bool {
 	return r.aof != nil
+}
+
+func (r *Reader) Close() {
+	for _, cb := range r.closedCb {
+		cb()
+	}
 }

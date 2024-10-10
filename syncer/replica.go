@@ -497,6 +497,7 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ApiService_S
 	rdbWait.Close(writer.Wait(rdbWait.Context()))
 	writer.Close()
 	rdbWait.WgWait()
+	piper.Close()
 	return rdbWait.Error()
 }
 
