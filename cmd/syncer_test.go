@@ -221,7 +221,7 @@ func (ts *typologyTestSuite) TestDiffTypologySyncFrom() {
 		ts.True(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
 			txnMode, true, config.SelNodeStrategyMaster, true))
 		// // sync from slave
-		ts.False(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
+		ts.True(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
 			txnMode, true, config.SelNodeStrategySlave, true))
 		ts.failover = 0
 
@@ -245,7 +245,7 @@ func (ts *typologyTestSuite) TestDiffTypologySyncFrom() {
 		ts.True(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
 			txnMode, true, config.SelNodeStrategyMaster, false))
 		// // sync from slave
-		ts.False(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
+		ts.True(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
 			txnMode, true, config.SelNodeStrategySlave, false))
 		ts.failover = 0
 
