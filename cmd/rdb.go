@@ -109,9 +109,6 @@ func (rc *RdbCmd) Load(rdbPath string, cfg *config.RdbCmdLoad) error {
 
 	err = redis.FixVersion(cfg.Redis)
 	if err != nil {
-		return err
-	}
-	if err != nil {
 		log.Warnf("failed to get version from target redis, instead get version from rdb!")
 		redisVersion, err := rdb.ParseRdbVersion(rdbRd.GetReader())
 		if err != nil {
