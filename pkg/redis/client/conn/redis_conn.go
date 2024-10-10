@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	ReaderBufferSize = 4 * 1024 * 1024
-	WriterBufferSize = 2 * 1024 * 1024
+	ReaderBufferSize = 512 * 1024
+	WriterBufferSize = 1 * 1024 * 1024
 )
 
 type RedisConn struct {

@@ -409,7 +409,7 @@ func (rf *ReplicaFollower) preSync(leaderSp StartPoint) (sp StartPoint, err erro
 	// check gap
 	gap := leaderSp.Offset - sp.Offset
 	if gap > 0 {
-		if gap > 100*1024*1024 { // @TODO gap < 0, truncate extra data
+		if gap > 10*1024*1024 { // @TODO gap < 0, truncate extra data
 			if err = rf.channel.DelRunId(sp.RunId); err != nil {
 				err = errors.Join(ErrRestart, err)
 				return
@@ -456,7 +456,7 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ApiService_S
 	rf.logger.Infof("start to sync rdb from leader : offset(%d), size(%d)", resp.GetOffset(), resp.GetSize())
 	rdbSize := resp.GetSize()
 	rdbWait := usync.NewWaitCloserFromParent(rf.wait, nil)
-	piper, pipew := pipe.NewSize(1024 * 1024 * 10)
+	piper, pipew := pipe.NewSize(1024 * 1024 * 1)
 	reader := bufio.NewReaderSize(piper, 1024*64)
 	writer, err := rf.channel.NewRdbWriter(reader, left, rdbSize)
 	if err != nil {
@@ -520,7 +520,7 @@ func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ApiService_S
 	rf.logger.Infof("start to sync aof from leader : offset(%d)", resp.GetOffset())
 
 	aofWait := usync.NewWaitCloserFromParent(rf.wait, nil)
-	piper, pipew := pipe.NewSize(1024 * 1024)
+	piper, pipew := pipe.NewSize(512 * 1024)
 	reader := bufio.NewReaderSize(piper, 1024*64)
 	writer, err := rf.channel.NewAofWritter(reader, resp.GetOffset())
 	if err != nil {
@@ -562,6 +562,7 @@ func (rf *ReplicaFollower) aofSync(followerSp StartPoint, stream pb.ApiService_S
 	aofWait.Close(writer.Wait(aofWait.Context()))
 	writer.Close()
 	aofWait.WgWait()
+	piper.Close()
 	return errors.Join(writer.Close(), aofWait.Error())
 }
 

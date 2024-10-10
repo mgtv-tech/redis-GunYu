@@ -39,7 +39,7 @@ func NewStorer(id string, baseDir string, maxSize, logSize int64, flush config.F
 		baseDir:     baseDir,
 		maxSize:     maxSize,
 		logSize:     logSize,
-		readBufSize: 10 * 1024 * 1024,
+		readBufSize: 1024 * 1024,
 		closer:      usync.NewWaitCloser(nil),
 		logger:      log.WithLogger(config.LogModuleName(fmt.Sprintf("[Storer(%s)] ", id))),
 		dataSet:     newDataSet(nil, nil),
