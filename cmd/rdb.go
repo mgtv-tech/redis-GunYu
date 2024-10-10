@@ -97,8 +97,9 @@ func (rc *RdbCmd) Print(rdbPath string, cfg *config.RdbCmdPrint) error {
 
 func (rc *RdbCmd) Load(rdbPath string, cfg *config.RdbCmdLoad) error {
 
-	readBufSize := 10 * 1024 * 1024
+	readBufSize := 2 * 1024 * 1024
 	piper, pipew := pipe.NewSize(readBufSize)
+	defer piper.Close()
 	buf := bufio.NewReaderSize(piper, readBufSize)
 
 	rdbRd, err := store.NewRdbReaderFromFile(pipew, rdbPath, false)
