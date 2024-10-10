@@ -31,7 +31,7 @@ type Flags struct {
 
 type RdbCmdConfig struct {
 	Action  string
-	RdbPath string
+	RdbPath string       `yaml:"rdbPath"`
 	Print   RdbCmdPrint
 	Load    RdbCmdLoad
 }
@@ -115,7 +115,7 @@ func LoadFlags() error {
 			return err
 		}
 		logCfg = syncCfg.Log
-	} else if flagVar.Cmd == "rdb" {
+	} else if flagVar.Cmd == "rdb"  && len(flagVar.ConfigPath) == 0 {
 		rdbCfg = &tmpRdbCfg
 		FlagsSetToStruct(rdbCfg)
 		if err := rdbCfg.fix(); err != nil {
