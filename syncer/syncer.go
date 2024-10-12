@@ -313,7 +313,7 @@ func (s *syncer) run() error {
 				s.guard.Lock()
 				wait := s.wait
 				s.guard.Unlock()
-				if wait.IsClosed() {
+				if s.getState() != SyncerStatePause && wait.IsClosed() {
 					return wait.Error()
 				}
 			}
