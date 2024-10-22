@@ -15,8 +15,10 @@ type etcdCluster struct {
 }
 
 func NewEtcdCluster(ctx context.Context, cfg config.EtcdConfig) (Cluster, error) {
+	subCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
+	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{
-		Context:              ctx,
+		Context:              subCtx,
 		Endpoints:            cfg.Endpoints,
 		AutoSyncInterval:     cfg.AutoSyncInterval,
 		DialTimeout:          cfg.DialTimeout,
