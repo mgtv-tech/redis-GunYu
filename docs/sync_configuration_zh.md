@@ -92,6 +92,7 @@ output配置如下：
     - flush ： 
     - replace ： 
   - maxProtoBulkLen ： 协议最大的缓存区大小，参考redis配置`proto-max-bulk-len`，默认是512MiB
+  - targetDbMap : DB映射，map结构，如将DB 0同步到DB1， DB2同步到DB3，`{"targetDbMap":{"0":1,"2":3}}`
   - targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步
   - batchCmdCount ： 批量同步命令的数量，将batchCmdCount数量的命令打包同步，默认100
   - batchTicker ： 批量同步命令的等待时间，最多等待batchTicker再进行打包同步，默认10ms

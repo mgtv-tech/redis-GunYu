@@ -89,6 +89,7 @@ The output configuration is as follows:
     - flush:
     - replace:
   - maxProtoBulkLen: Maximum size of the protocol's buffer, referring to the Redis configuration `proto-max-bulk-len`. The default is 512 MiB.
+  - targetDbMap : DB mapping, map structure, e.g., syncing DB0 to DB1, DB2 to DB3， `{"targetDbMap":{"0":1,"2":3}}`
   - targetDb: Which database will be synced. The default value is -1, it is all database of input redis.
   - batchCmdCount: Number of commands for batching(default: 100).
   - batchTicker: Waiting time for batching(default: 10ms).
