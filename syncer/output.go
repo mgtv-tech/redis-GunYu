@@ -192,6 +192,7 @@ type RedisOutputConfig struct {
 	KeepaliveTicker        time.Duration      `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int                `yaml:"replayRdbParallel"`
 	ReplayRdbEnableRestore bool               `yaml:"replayRdbEnableRestore" default:"true"`
+	ReplayPipeline         bool               `yaml:"replayPipeline"`
 	UpdateCheckpointTicker time.Duration      `yaml:"updateCheckpointTicker"`
 	Stats                  config.OutputStats `yaml:"stats"`
 
@@ -596,7 +597,7 @@ func (ro *RedisOutput) sendAof(ctx context.Context, runId string, reader *bufio.
 	// } else {
 	// 	err = ro.sendCmds(replayQuit, conn, runId, sendBuf)
 	// }
-	err = ro.sendCmdsBatch(replayQuit, conn, runId, sendBuf, ro.cfg.CanTransaction)
+	err = ro.sendCmdsBatch(replayQuit, conn, runId, sendBuf, ro.cfg.CanTransaction, ro.cfg.ReplayPipeline)
 
 	replayQuit.Close(err)
 	return replayQuit.Error()
@@ -937,7 +938,7 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 		if isTransaction || shouldUpdateCP {
 			needBatch = true
 		}
-		batcher := conn.NewBatcher()
+		batcher := conn.NewBatcher(false)
 
 		if needBatch {
 			batcher.Put("multi")
@@ -1117,7 +1118,7 @@ func (ro *RedisOutput) checkReplies(replies []interface{}) error {
 }
 
 func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Redis, runId string,
-	sendBuf chan cmdExecution, transactionMode bool) error {
+	sendBuf chan cmdExecution, transactionMode bool, isPipeline bool) error {
 
 	var queuedByteSize uint64
 	var txnStatus txnStatus // transaction status
@@ -1152,9 +1153,60 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		transactionLabel = "yes"
 	}
 
-	sendFuncOnce := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
+	type cmdBatcher struct {
+		bt         common.CmdBatcher
+		cmdCounter uint
+		offset     uint
+		delayNs    int64
+	}
+	var pipeline chan *cmdBatcher
 
-		batcher := conn.NewBatcher()
+	if isPipeline {
+		pipeline = make(chan *cmdBatcher, 2)
+		handleError := func(bat *cmdBatcher, err error) {
+			if errors.Is(err, common.ErrMove) || errors.Is(err, common.ErrAsk) || errors.Is(err, common.ErrCrossSlots) {
+				// @TODO split cmdQueue to different slots for executing,
+				if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
+					err = handleDirectError(err)
+				}
+				ro.logger.Errorf("send error : error(%v), offset(%d)", err, bat.offset)
+			}
+			failCounter.Add(float64(bat.cmdCounter), ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
+			replayWait.Close(err)
+		}
+
+		usync.SafeGo(func() {
+			var bat *cmdBatcher
+			for {
+				select {
+				case bat = <-pipeline:
+				case <-replayWait.Done():
+					return
+				}
+				rets, err := bat.bt.Receive()
+				if err != nil {
+					handleError(bat, err)
+					return
+				}
+
+				err = ro.checkReplies(rets)
+				if err != nil {
+					handleError(bat, err)
+					return
+				}
+				if bat.delayNs > 0 {
+					syncDelayGauge.Set(float64(time.Now().UnixNano()-bat.delayNs), ro.cfg.InputName)
+				}
+				succCounter.Add(float64(bat.cmdCounter), ro.cfg.InputName)
+				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
+				ackOffsetGauge.Set(float64(bat.offset), ro.cfg.InputName)
+			}
+		}, func(i interface{}) { replayWait.Close(fmt.Errorf("panic : %v", i)) })
+	}
+
+	sendFuncOnce := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
+		batcher := conn.NewBatcher(isPipeline)
 		cmdCounter := uint(0)
 
 		if shouldInTransaction {
@@ -1196,9 +1248,12 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			return nil
 		}
 
-		rets, err := batcher.Exec()
-		if delayNs > 0 {
-			syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
+		var err error
+		var rets []interface{}
+		if isPipeline {
+			err = batcher.Dispatch()
+		} else {
+			rets, err = batcher.Exec()
 		}
 
 		if err != nil {
@@ -1212,16 +1267,32 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
 		ro.sendCounterAdd(uint(cmdCounter))
 
-		err = ro.checkReplies(rets)
-		if err != nil {
-			failCounter.Add(float64(cmdCounter), ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
-			return err
-		}
+		if isPipeline {
+			select {
+			case pipeline <- &cmdBatcher{
+				bt:         batcher,
+				cmdCounter: cmdCounter,
+				offset:     uint(lastOffset),
+				delayNs:    delayNs,
+			}:
+			case <-replayWait.Context().Done():
+				return replayWait.Error()
+			}
+		} else {
+			err = ro.checkReplies(rets)
+			if err != nil {
+				failCounter.Add(float64(cmdCounter), ro.cfg.InputName)
+				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
+				return err
+			}
+			if delayNs > 0 {
+				syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
+			}
 
-		succCounter.Add(float64(cmdCounter), ro.cfg.InputName)
-		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
-		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
+			succCounter.Add(float64(cmdCounter), ro.cfg.InputName)
+			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
+			ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
+		}
 
 		if uint(len(cmdQueue)) > ro.cfg.BatchCmdCount*2 { // avoid occuping huge memory
 			cmdQueue = make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
@@ -1240,6 +1311,9 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			if err == nil {
 				return err
 			}
+			if replayWait.IsClosed() {
+				return err
+			}
 			maxRetries++
 
 			if errors.Is(err, common.ErrMove) || errors.Is(err, common.ErrAsk) || errors.Is(err, common.ErrCrossSlots) {
@@ -1254,6 +1328,12 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				err = handleDirectError(err)
 				ro.logger.Errorf("send error : error(%v), offset(%d)", err, lastOffset)
 				return err
+			} else if isPipeline {
+				if maxRetries < 3 { // retry 3 times, avoid restarting syncer immediately if batch contains a migrating key
+					replayWait.Sleep(1 * time.Second)
+					continue
+				}
+				ro.logger.Errorf("send error : error(%v), offset(%d)", err, lastOffset)
 			}
 			return err
 		}

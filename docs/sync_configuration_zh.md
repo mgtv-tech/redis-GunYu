@@ -100,6 +100,7 @@ output配置如下：
   - replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
   - updateCheckpointTicker ： 默认1秒
   - keepaliveTicker ： 默认3秒，保持心跳时间间隔
+  - enableAofPipeline : 开启pipeline的方式回放命令。发送命令和接收回复在不同的线程，能加快数据同步速度，但也可能造成数据不一致。例如：发送命令A、B到redis，如果A执行失败，B执行成功，那么另一个线程接收到A执行失败时可能B已经执行完了，而同步的偏移量已经记录成B的了，那A数据就丢失了。谨慎开启。
 
 
 #### filter配置

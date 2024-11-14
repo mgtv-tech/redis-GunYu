@@ -93,8 +93,8 @@ func (cc *ClusterRedis) Do(cmd string, args ...interface{}) (interface{}, error)
 	return cc.client.Do(cmd, args...)
 }
 
-func (cc *ClusterRedis) NewBatcher() common.CmdBatcher {
-	return cc.client.NewBatcher()
+func (cc *ClusterRedis) NewBatcher(pipeline bool) common.CmdBatcher {
+	return cc.client.NewBatcher(pipeline)
 }
 
 // @TODO

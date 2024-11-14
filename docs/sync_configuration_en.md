@@ -97,7 +97,7 @@ The output configuration is as follows:
   - replayRdbParallel: Number of threads used for replaying RDB. The default is the CPU count multiplied by 4.
   - updateCheckpointTicker: Default: 1 second.
   - keepaliveTicker: Default: 3 seconds. Interval for keeping the heartbeat.
-
+  - enableAofPipeline : Replay commands in a pipeline. Send command and receive reply in different threads, while it can speed up data synchronization, may lead to data inconsistency. Enable this feature with caution.
 
 
 #### Filter configuration

@@ -1,17 +1,3 @@
-// Copyright 2015 Joel Wu
-//
-// Licensed under the Apache License, Version 2.0 (the "License"): you may
-// not use this file except in compliance with the License. You may obtain
-// a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-// License for the specific language governing permissions and limitations
-// under the License.
-
 package redis
 
 import (
@@ -23,48 +9,65 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
-// Batch pack multiple commands, which should be supported by Do method.
-type Batch struct {
-	cluster *Cluster
-	batches []nodeBatch
-	index   []int
-	err     error
+type batchPipeline struct {
+	nodeConns map[*redisNode]*redisConn
+	cluster   *Cluster
 }
 
-type nodeBatch struct {
-	node *redisNode
-	cmds []nodeCommand
-
-	err  error
-	done chan int
-
-	conn *redisConn
-}
-
-type nodeCommand struct {
-	cmd   string
-	args  []interface{}
-	reply interface{}
-	err   error
-}
-
-// NewBatch create a new batch to pack mutiple commands.
-func (cluster *Cluster) NewBatch() *Batch {
-	return &Batch{
-		cluster: cluster,
-		batches: make([]nodeBatch, 0),
-		index:   make([]int, 0),
+func (bp *batchPipeline) NewBatcher() common.CmdBatcher {
+	return &batch2{
+		cluster:  bp.cluster,
+		pipeline: bp,
+		batches:  make([]nodeBatch, 0),
+		index:    make([]int, 0),
 	}
 }
 
-func (tb *Batch) joinError(err error) error {
+func (bp *batchPipeline) getConn(node *redisNode) (*redisConn, error) {
+	c, ok := bp.nodeConns[node]
+	if ok {
+		if !c.isClosed() {
+			return c, nil
+		}
+	}
+
+	c, err := node.getConn()
+	if err != nil {
+		return nil, err
+	}
+
+	bp.nodeConns[node] = c
+	return c, nil
+}
+
+func (bp *batchPipeline) closeConn(conn *redisConn) {
+	conn.shutdown()
+}
+
+func (bp *batchPipeline) Close() {
+	for _, c := range bp.nodeConns {
+		if !c.isClosed() {
+			c.shutdown()
+		}
+	}
+}
+
+type batch2 struct {
+	pipeline *batchPipeline
+	cluster  *Cluster
+	batches  []nodeBatch
+	index    []int
+	err      error
+}
+
+func (tb *batch2) joinError(err error) error {
 	tb.err = errors.Join(tb.err, err)
 	return err
 }
 
 // Put add a redis command to batch, DO NOT put MGET/MSET/MSETNX.
 // it ignores multi/exec transaction
-func (batch *Batch) Put(cmd string, args ...interface{}) error {
+func (batch *batch2) Put(cmd string, args ...interface{}) error {
 
 	switch strings.ToUpper(cmd) {
 	case "KEYS":
@@ -117,7 +120,7 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 	return nil
 }
 
-func (batch *Batch) GetBatchSize() int {
+func (batch *batch2) GetBatchSize() int {
 	if batch == nil || batch.index == nil {
 		return 0
 	}
@@ -125,7 +128,7 @@ func (batch *Batch) GetBatchSize() int {
 	return len(batch.index)
 }
 
-func (batch *Batch) Len() int {
+func (batch *batch2) Len() int {
 	ll := 0
 	for _, b := range batch.batches {
 		ll += len(b.cmds)
@@ -133,8 +136,56 @@ func (batch *Batch) Len() int {
 	return ll
 }
 
-func (bat *Batch) Exec() ([]interface{}, error) {
+func (bat *batch2) Exec() ([]interface{}, error) {
+	return nil, common.ErrUnsupported
+}
 
+func (bat *batch2) Dispatch() error {
+	if bat.err != nil {
+		return bat.err
+	}
+
+	if bat == nil || bat.batches == nil || len(bat.batches) == 0 {
+		return nil
+	}
+
+	for i := range bat.batches {
+		go bat.doBatch(&bat.batches[i])
+	}
+
+	for i := range bat.batches {
+		<-bat.batches[i].done
+	}
+	return nil
+}
+
+func (bat *batch2) doBatch(batch *nodeBatch) {
+	conn, err := bat.pipeline.getConn(batch.node)
+	if err != nil {
+		batch.err = err
+		batch.done <- 1
+		return
+	}
+
+	exec := util.OpenCircuitExec{}
+
+	for i := range batch.cmds {
+		exec.Do(func() error { return conn.send(batch.cmds[i].cmd, batch.cmds[i].args...) })
+	}
+
+	err = exec.Do(func() error { return conn.flush() })
+	if err != nil {
+		batch.err = err
+		bat.pipeline.closeConn(conn)
+		batch.done <- 1
+		return
+	}
+	batch.conn = conn
+
+	batch.done <- 1
+}
+
+func (bat *batch2) Receive() ([]interface{}, error) {
 	if bat.err != nil {
 		return nil, bat.err
 	}
@@ -144,7 +195,7 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 	}
 
 	for i := range bat.batches {
-		go bat.doBatch(&bat.batches[i])
+		go bat.receiveReply(&bat.batches[i])
 	}
 
 	for i := range bat.batches {
@@ -163,33 +214,8 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 	return replies, nil
 }
 
-// RunBatch execute commands in batch simutaneously. If multiple commands are
-// directed to the same node, they will be merged and sent at once using pipeling.
-func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
-	return bat.Exec()
-}
-
-func (bat *Batch) doBatch(batch *nodeBatch) {
-	conn, err := batch.node.getConn()
-	if err != nil {
-		batch.err = err
-		batch.done <- 1
-		return
-	}
-
-	exec := util.OpenCircuitExec{}
-
-	for i := range batch.cmds {
-		exec.Do(func() error { return conn.send(batch.cmds[i].cmd, batch.cmds[i].args...) })
-	}
-
-	err = exec.Do(func() error { return conn.flush() })
-	if err != nil {
-		batch.err = err
-		conn.shutdown()
-		batch.done <- 1
-		return
-	}
+func (bat *batch2) receiveReply(batch *nodeBatch) {
+	conn := batch.conn
 
 	for i := range batch.cmds {
 		reply, err := conn.receive()
@@ -198,7 +224,7 @@ func (bat *Batch) doBatch(batch *nodeBatch) {
 				continue
 			}
 			batch.err = err
-			conn.shutdown()
+			bat.pipeline.closeConn(conn)
 			batch.done <- 1
 			return
 		}
@@ -207,7 +233,7 @@ func (bat *Batch) doBatch(batch *nodeBatch) {
 		// 这个cmd没有执行成功，那么后面的可能已经成功了。如果直接断开，则会造成上层以为都失败了。
 		if err != nil {
 			batch.err = err
-			conn.shutdown()
+			bat.pipeline.closeConn(conn)
 			batch.done <- 1
 			return
 		}
@@ -215,14 +241,5 @@ func (bat *Batch) doBatch(batch *nodeBatch) {
 		batch.cmds[i].reply, batch.cmds[i].err = reply, err
 	}
 
-	batch.node.releaseConn(conn)
 	batch.done <- 1
-}
-
-func (bat *Batch) Receive() ([]interface{}, error) {
-	return nil, common.ErrUnsupported
-}
-
-func (bat *Batch) Dispatch() error {
-	return common.ErrUnsupported
 }

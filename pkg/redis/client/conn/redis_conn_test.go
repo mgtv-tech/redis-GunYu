@@ -38,7 +38,7 @@ func TestBatcher(t *testing.T) {
 	assert.Nil(t, err)
 
 	t.Run("", func(t *testing.T) {
-		batcher := conn.NewBatcher()
+		batcher := conn.NewBatcher(false)
 		batcher.Put("set", "a", 1)
 		batcher.Put("set", "a", 2)
 		rets, err := batcher.Exec()
