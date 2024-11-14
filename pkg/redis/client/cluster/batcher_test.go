@@ -19,13 +19,13 @@ func TestBatcherKeysCmd(t *testing.T) {
 	}
 
 	cluster := newRedisNodeCluster(t)
-	bb := cluster.NewBatcher()
+	bb := cluster.NewBatcher(false)
 	for k, v := range cases {
 		bb.Put("SET", k, v)
 	}
 	bb.Exec()
 
-	bb = cluster.NewBatcher()
+	bb = cluster.NewBatcher(false)
 	bb.Put("KEYS", "aa*")
 
 	res, err := bb.Exec()
@@ -51,7 +51,7 @@ func TestBatcher(t *testing.T) {
 	cluster := newRedisNodeCluster(t)
 
 	t.Run("", func(t *testing.T) {
-		bb := cluster.NewBatcher()
+		bb := cluster.NewBatcher(false)
 		bb.Put("multi")
 		bb.Put("SET", "aa", 1)
 		bb.Put("SET", "aa", 2)
@@ -71,7 +71,7 @@ func TestBatcher(t *testing.T) {
 	})
 
 	t.Run("", func(t *testing.T) {
-		bb := cluster.NewBatcher()
+		bb := cluster.NewBatcher(false)
 		bb.Put("SET", "aa", 1)
 		bb.Put("SET", "aa", 2)
 		bb.Put("SET", "bb", 3)

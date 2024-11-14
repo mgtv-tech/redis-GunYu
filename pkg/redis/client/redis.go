@@ -23,7 +23,7 @@ type Redis interface {
 	RedisType() config.RedisType
 	Addresses() []string
 
-	NewBatcher() common.CmdBatcher
+	NewBatcher(pipeline bool) common.CmdBatcher
 
 	// for cluster
 	IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{})

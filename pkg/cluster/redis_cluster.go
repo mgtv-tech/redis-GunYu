@@ -85,7 +85,7 @@ func (c *redisCluster) Register(ctx context.Context, serviceName string, instanc
 }
 
 func (c *redisCluster) Discover(ctx context.Context, serviceName string) ([]string, error) {
-	bb := c.redisCli.NewBatcher()
+	bb := c.redisCli.NewBatcher(false)
 	bb.Put("KEYS", serviceName+"*")
 	replies, err := bb.Exec()
 	if err != nil {

@@ -20,8 +20,9 @@ var (
 )
 
 type redisConn struct {
-	c net.Conn
-	t time.Time
+	closed atomic.Bool
+	c      net.Conn
+	t      time.Time
 
 	br *bufio.Reader
 	bw *bufio.Writer
@@ -65,7 +66,13 @@ func (conn *redisConn) auth(password string) (err error) {
 }
 
 func (conn *redisConn) shutdown() {
-	conn.c.Close()
+	if conn.closed.CompareAndSwap(false, true) {
+		conn.c.Close()
+	}
+}
+
+func (conn *redisConn) isClosed() bool {
+	return conn.closed.Load()
 }
 
 func (conn *redisConn) send(cmd string, args ...interface{}) error {

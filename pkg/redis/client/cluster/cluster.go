@@ -54,8 +54,9 @@ type Options struct {
 // cache and update cluster info, and execute all kinds of commands.
 // Multiple goroutines may invoke methods on a cluster simutaneously.
 type Cluster struct {
-	slots [kClusterSlots]*redisNode
-	nodes map[string]*redisNode
+	slots    [kClusterSlots]*redisNode
+	nodes    map[string]*redisNode
+	pipeline *batchPipeline
 
 	connTimeout  time.Duration
 	readTimeout  time.Duration
@@ -106,6 +107,10 @@ func NewCluster(options *Options) (*Cluster, error) {
 		handleAskError:  options.HandleAskError,
 		logger:          log.WithLogger(config.LogModuleName("[redis cluster] ")),
 		safeRand:        util.NewSafeRand(time.Now().Unix()),
+	}
+	cluster.pipeline = &batchPipeline{
+		nodeConns: make(map[*redisNode]*redisConn),
+		cluster:   cluster,
 	}
 
 	errList := make([]error, 0)
@@ -258,7 +263,10 @@ func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd stri
 	panic("unreachable")
 }
 
-func (cluster *Cluster) NewBatcher() common.CmdBatcher {
+func (cluster *Cluster) NewBatcher(pipeline bool) common.CmdBatcher {
+	if pipeline {
+		return cluster.pipeline.NewBatcher()
+	}
 	return cluster.NewBatch()
 }
 
@@ -270,6 +278,7 @@ func (cluster *Cluster) Close() {
 	if cluster.closed.CompareAndSwap(false, true) {
 		close(cluster.closeCh)
 		close(cluster.updateList)
+		cluster.pipeline.Close()
 		for addr, node := range cluster.nodes {
 			node.shutdown()
 			delete(cluster.nodes, addr)

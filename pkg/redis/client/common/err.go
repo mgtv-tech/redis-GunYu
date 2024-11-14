@@ -8,6 +8,7 @@ var (
 	ErrConnTimeout = errors.New("conn timeout")
 	ErrUnknown     = errors.New("unknown")
 	ErrCrossSlots  = errors.New("cross slots")
+	ErrUnsupported = errors.New("unsupported")
 )
 
 // redis resp protocol data type.
