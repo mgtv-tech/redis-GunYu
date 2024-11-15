@@ -117,5 +117,7 @@ func (s *SliceBuffer) ReadUint16() uint16 {
 
 func (s *SliceBuffer) ReadUint24() uint32 {
 	bb := s.Slice(3)
-	return binary.LittleEndian.Uint32(bb)
+	newBb := make([]byte, 4)
+	copy(newBb, bb)
+	return binary.LittleEndian.Uint32(newBb)
 }
