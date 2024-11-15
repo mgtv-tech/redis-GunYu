@@ -117,5 +117,10 @@ func (s *SliceBuffer) ReadUint16() uint16 {
 
 func (s *SliceBuffer) ReadUint24() uint32 {
 	bb := s.Slice(3)
-	return binary.LittleEndian.Uint32(bb)
+	return Uint24(bb)
+}
+
+func Uint24(b []byte) uint32 {
+	_ = b[2] // bounds check hint to compiler; see golang.org/issue/14808
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16
 }
