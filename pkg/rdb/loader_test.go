@@ -497,6 +497,18 @@ func (ts *hashTestSuite) TestHashRdb8() {
 	ts.hash(expData, longStrs, RdbTypeHash)
 }
 
+func (ts *hashTestSuite) TestHincrby() {
+	ts.redisVersion = "4.0"
+	// hincrby k2 f1 44467
+	ts.rdbDumpData = "524544495330303038fa0972656469732d76657205342e302e38fa0a72656469732d62697473c040fa056374696d65c201ab3667fa08757365642d6d656dc2083f6b14fa0e7265706c2d73747265616d2d6462c000fa077265706c2d69642862663430326136396562316334373461626231613732633335333335616266316434323561303564fa0b7265706c2d6f6666736574c2a7631c00fa0c616f662d707265616d626c65c000fe00fb01000d026b3214140000000e00000002000002663104f0b3ad00ffff0000000000000000"
+	entries := ts.decodeHexRdb(ts.rdbDumpData, 1)
+	entry := entries["k2"]
+	ts.Equal(RdbTypeHashZiplist, entry.ObjectParser.RdbType())
+	kvs := ts.entryToMap(entry)
+	ts.Equal(1, len(kvs))
+	ts.Equal("44467", kvs["f1"])
+}
+
 func (ts *hashTestSuite) hash(hexData string, vals []interface{}, rdbType int) {
 	ts.Run("hash", func() {
 		key := "test_hash_key"
