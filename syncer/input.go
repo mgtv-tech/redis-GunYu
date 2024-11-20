@@ -474,30 +474,28 @@ func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConf
 	if testKey == "" {
 		return
 	}
-	timeout := config.GetSyncerConfig().Server.GracefullStopTimeout
 	cfg.Type = cfg.Otype
 
-	usync.SafeGo(func() {
-		for !wait.IsClosed() {
-			// @TODO
-			// leader should check every node
-			cli, err := client.NewRedis(cfg)
+	var cli client.Redis
+	var err error
+
+	util.CronWithCtx(wait.Context(), 1*time.Second, func(ctx context.Context) {
+		if cli == nil {
+			cli, err = client.NewRedis(cfg)
 			if err != nil {
 				ri.logger.Errorf("checkSyncDelay, new redis : addr(%s), error(%v)", ri.cfg.Address(), err)
-				wait.Sleep(timeout)
-				continue
+				return
 			}
-			for !wait.IsClosed() {
-				val := fmt.Sprintf("%s_%d", cfg.Address(), time.Now().UnixNano())
-				_, err := cli.Do("SET", testKey, val)
-				if err != nil {
-					ri.logger.Warnf("checkSyncDelay, set testkey : addr(%s), error(%v)", ri.cfg.Address(), err)
-				}
-				wait.Sleep(1 * time.Second)
-			}
-			cli.Close()
 		}
-	}, nil)
+
+		val := fmt.Sprintf("%s_%d", cfg.Address(), time.Now().UnixNano())
+		_, err = cli.Do("SET", testKey, val)
+		if err != nil {
+			ri.logger.Warnf("checkSyncDelay, set testkey : addr(%s), error(%v)", ri.cfg.Address(), err)
+			cli.Close()
+			cli = nil
+		}
+	})
 }
 
 var (
