@@ -49,7 +49,7 @@ type nodeCommand struct {
 }
 
 // NewBatch create a new batch to pack mutiple commands.
-func (cluster *Cluster) NewBatch() *Batch {
+func (cluster *Cluster) NewBatch() common.CmdBatcher {
 	return &Batch{
 		cluster: cluster,
 		batches: make([]nodeBatch, 0),
@@ -165,7 +165,7 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 
 // RunBatch execute commands in batch simutaneously. If multiple commands are
 // directed to the same node, they will be merged and sent at once using pipeling.
-func (cluster *Cluster) RunBatch(bat *Batch) ([]interface{}, error) {
+func (cluster *Cluster) RunBatch(bat common.CmdBatcher) ([]interface{}, error) {
 	return bat.Exec()
 }
 
