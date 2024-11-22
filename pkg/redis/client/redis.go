@@ -33,5 +33,9 @@ func NewRedis(cfg config.RedisConfig) (Redis, error) {
 	if cfg.IsCluster() {
 		return NewRedisCluster(cfg)
 	}
-	return conn.NewRedisConn(cfg)
+	cli, err := conn.NewRedisConn(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return cli, nil
 }

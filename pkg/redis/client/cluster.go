@@ -17,7 +17,7 @@ var (
 type ClusterRedis struct {
 	client   *cluster.Cluster
 	recvChan chan reply
-	batcher  *cluster.Batch
+	batcher  common.CmdBatcher
 	cfg      config.RedisConfig
 	logger   log.Logger
 }
@@ -112,7 +112,7 @@ func (cc *ClusterRedis) SendAndFlush(cmd string, args ...interface{}) error {
 }
 
 // not thread safe
-func (cc *ClusterRedis) getBatcher() *cluster.Batch {
+func (cc *ClusterRedis) getBatcher() common.CmdBatcher {
 	if cc.batcher == nil {
 		cc.batcher = cc.client.NewBatch()
 	}
