@@ -365,9 +365,9 @@
             "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
           },
           "editorMode": "code",
-          "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"})",
+          "expr": "min(redisGunYu_output_sync_delay{cluster=\"$cluster\"})",
           "instant": false,
-          "legendFormat": "max",
+          "legendFormat": "min",
           "range": true,
           "refId": "A"
         }
@@ -1764,7 +1764,7 @@
                 "uid": "b3d757f9-8c24-49df-9bbb-dec14602a13a"
               },
               "editorMode": "code",
-              "expr": "max(redisGunYu_output_sync_delay{cluster=\"$cluster\"}) by(input) ",
+              "expr": "min(redisGunYu_output_sync_delay{cluster=\"$cluster\"}) by(input) ",
               "instant": false,
               "legendFormat": "__auto",
               "range": true,
