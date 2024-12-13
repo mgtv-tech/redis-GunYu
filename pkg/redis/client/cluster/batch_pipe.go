@@ -141,12 +141,12 @@ func (bat *batch2) Exec() ([]interface{}, error) {
 }
 
 func (bat *batch2) Dispatch() error {
-	if bat.err != nil {
-		return bat.err
-	}
-
 	if bat == nil || bat.batches == nil || len(bat.batches) == 0 {
 		return nil
+	}
+
+	if bat.err != nil {
+		return bat.err
 	}
 
 	for i := range bat.batches {
@@ -156,10 +156,22 @@ func (bat *batch2) Dispatch() error {
 	for i := range bat.batches {
 		<-bat.batches[i].done
 	}
+
+	for i := range bat.batches {
+		if bat.batches[i].err != nil {
+			return bat.batches[i].err
+		}
+	}
+
 	return nil
 }
 
 func (bat *batch2) doBatch(batch *nodeBatch) {
+	defer util.RecoverCallback(func(e interface{}) {
+		batch.err = fmt.Errorf("panic : %v", e)
+		batch.done <- 1
+	})
+
 	conn, err := bat.pipeline.getConn(batch.node)
 	if err != nil {
 		batch.err = err
@@ -214,8 +226,24 @@ func (bat *batch2) Receive() ([]interface{}, error) {
 	return replies, nil
 }
 
+var (
+	ErrNoConnection = errors.New("no connection")
+)
+
 func (bat *batch2) receiveReply(batch *nodeBatch) {
+	defer util.RecoverCallback(func(e interface{}) {
+		batch.err = fmt.Errorf("panic : %v", e)
+		batch.done <- 1
+	})
+
 	conn := batch.conn
+
+	if conn == nil {
+		batch.err = ErrNoConnection
+		bat.pipeline.closeConn(conn)
+		batch.done <- 1
+		return
+	}
 
 	for i := range batch.cmds {
 		reply, err := conn.receive()
