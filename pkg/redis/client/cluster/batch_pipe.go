@@ -4,13 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type batchPipeline struct {
-	nodeConns map[*redisNode]*redisConn
+	nodeConns sync.Map
 	cluster   *Cluster
 }
 
@@ -24,8 +25,9 @@ func (bp *batchPipeline) NewBatcher() common.CmdBatcher {
 }
 
 func (bp *batchPipeline) getConn(node *redisNode) (*redisConn, error) {
-	c, ok := bp.nodeConns[node]
+	cc, ok := bp.nodeConns.Load(node)
 	if ok {
+		c := cc.(*redisConn)
 		if !c.isClosed() {
 			return c, nil
 		}
@@ -36,7 +38,7 @@ func (bp *batchPipeline) getConn(node *redisNode) (*redisConn, error) {
 		return nil, err
 	}
 
-	bp.nodeConns[node] = c
+	bp.nodeConns.Store(node, c)
 	return c, nil
 }
 
@@ -45,11 +47,13 @@ func (bp *batchPipeline) closeConn(conn *redisConn) {
 }
 
 func (bp *batchPipeline) Close() {
-	for _, c := range bp.nodeConns {
+	bp.nodeConns.Range(func(key, value any) bool {
+		c := value.(*redisConn)
 		if !c.isClosed() {
 			c.shutdown()
 		}
-	}
+		return true
+	})
 }
 
 type batch2 struct {
@@ -198,12 +202,12 @@ func (bat *batch2) doBatch(batch *nodeBatch) {
 }
 
 func (bat *batch2) Receive() ([]interface{}, error) {
-	if bat.err != nil {
-		return nil, bat.err
-	}
-
 	if bat == nil || bat.batches == nil || len(bat.batches) == 0 {
 		return []interface{}{}, nil
+	}
+
+	if bat.err != nil {
+		return nil, bat.err
 	}
 
 	for i := range bat.batches {
