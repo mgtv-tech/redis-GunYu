@@ -109,8 +109,7 @@ func NewCluster(options *Options) (*Cluster, error) {
 		safeRand:        util.NewSafeRand(time.Now().Unix()),
 	}
 	cluster.pipeline = &batchPipeline{
-		nodeConns: make(map[*redisNode]*redisConn),
-		cluster:   cluster,
+		cluster: cluster,
 	}
 
 	errList := make([]error, 0)
