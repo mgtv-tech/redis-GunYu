@@ -158,6 +158,8 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		ro.outFilter.InsertPrefixKeyWhiteList(keyFilter.PrefixKeyWhitelist)
 	}
 
+	syncDelayGauge.Set(float64(0), ro.cfg.InputName)
+
 	slotFilter := cfg.Filter.SlotFilter
 	if slotFilter != nil {
 		ro.outFilter.InsertSlotWhiteList(slotFilter.KeySlotWhitelist)
