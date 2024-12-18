@@ -29,6 +29,15 @@ func NewEtcdCluster(ctx context.Context, cfg config.EtcdConfig) (Cluster, error)
 	if err != nil {
 		return nil, err
 	}
+
+	// test availability of etcd
+	ctx2, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
+	defer cancel()
+	_, err = cli.KV.Get(ctx2, "test")
+	if err != nil {
+		return nil, err
+	}
+
 	sess, err := concurrency.NewSession(cli, concurrency.WithTTL(cfg.Ttl))
 	if err != nil {
 		cli.Close()
