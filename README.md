@@ -85,7 +85,7 @@ Comparison of redis-GunYu with several top-tranking tools based on product requi
 | Supports different sharding between source and target | No | Yes | No | Yes |
 | Topology changes | No | No | No | Yes |
 | High availability | No | No | Yes | Yes |
-| Data consistency | Eventual | Weak | Weak | Eventual (same sharding) + Weak (different sharding) |
+| Data consistency | Eventual | Weak | Weak/Strong | Eventual (same sharding) + Weak (different sharding) |
 
 ## Technical Implementation
 
