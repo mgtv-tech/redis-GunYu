@@ -5,10 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"io"
 	"os"
 	"sync/atomic"
+
+	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/io/pipe"
@@ -56,6 +57,19 @@ func (rc *RdbCmd) Run() error {
 }
 
 func (rc *RdbCmd) Print(rdbPath string, cfg *config.RdbCmdPrint) error {
+
+	output := os.Stdout
+	if len(cfg.Output) > 0 {
+		f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_RDWR, 0755)
+		if err != nil {
+			return err
+		}
+		output = f
+		defer output.Close()
+	}
+	os.Stdout = output
+	defer os.Stdout.Sync()
+
 	file, err := os.OpenFile(rdbPath, os.O_RDONLY, 0777)
 	if err != nil {
 		return err
@@ -74,21 +88,19 @@ func (rc *RdbCmd) Print(rdbPath string, cfg *config.RdbCmdPrint) error {
 				}
 				return e.Err
 			}
-			fmt.Printf("db(%d), key(%s), value(%s)\n", e.DB, e.Key, e.Value())
-			if cfg.ToCmd {
-				e.ObjectParser.ExecCmd(func(cmd string, args ...interface{}) error {
-					params := []interface{}{}
-					for _, arg := range args {
-						switch tt := arg.(type) {
-						case []byte:
-							params = append(params, string(tt))
-						default:
-							params = append(params, tt)
-						}
-					}
-					fmt.Println("\t", cmd, params)
-					return nil
-				})
+			if len(e.Key) == 0 || e.ObjectParser == nil {
+				continue
+			}
+
+			if !cfg.NoLogKey || !cfg.NoLogValue {
+				otype := rdb.RdbObjectTypeToString(e.ObjectParser.Type())
+				if cfg.NoLogKey {
+					fmt.Printf("{\"db\":%d, \"val\":\"%s\", \"ttl\":%d, \"type\":\"%s\"}\n", e.DB, e.Value(), e.ExpireAt, otype)
+				} else if cfg.NoLogValue {
+					fmt.Printf("{\"db\":%d, \"key\":\"%s\", \"ttl\":%d, \"type\":\"%s\"}\n", e.DB, e.Key, e.ExpireAt, otype)
+				} else {
+					fmt.Printf("{\"db\":%d, \"key\":\"%s\", \"val\":\"%s\", \"ttl\":%d, \"type\":\"%s\"}\n", e.DB, e.Key, e.Value(), e.ExpireAt, otype)
+				}
 			}
 		case <-rc.ctx.Done():
 			return rc.ctx.Err()

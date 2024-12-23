@@ -15,6 +15,14 @@ const (
 	RdbObjectAux      = iota
 )
 
+var (
+	rdbObjectMap = []string{"string", "list", "set", "zset", "hash", "stream", "module", "function", "aux"}
+)
+
+func RdbObjectTypeToString(tp int) string {
+	return rdbObjectMap[tp]
+}
+
 const (
 	RdbTypeString  = 0
 	RdbTypeList    = 1
