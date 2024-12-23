@@ -12,7 +12,9 @@ Translations: [English](README.md) | [简体中文](README_ZH.md)
   - [Overview](#overview)
   - [Features](#features)
     - [Real-time Data Synchronization](#real-time-data-synchronization)
-    - [Load RDB into redis](#load-rdb-into-redis)
+    - [RDB](#rdb)
+      - [Load RDB into redis](#load-rdb-into-redis)
+      - [Parse RDB](#parse-rdb)
     - [Other Features](#other-features)
   - [Product Comparison](#product-comparison)
   - [Technical Implementation](#technical-implementation)
@@ -66,9 +68,16 @@ The feature matrix of `redis-GunYu` for real-time synchronization
   - Redis topology: Real-time monitoring of topology changes in the source and target Redis (e.g., adding/removing nodes, master-slave switch, etc.), to change consistency strategies and adjust other functional strategies
 
 
-### Load RDB into redis
+### RDB
 
-Load a RDB file to a running redis server or cluster. Refers to [RDB](rdb_en.md)
+#### Load RDB into redis
+
+Load a RDB file to a running redis server or cluster. Refers to [RDB](docs/rdb_en.md)
+
+
+#### Parse RDB
+
+Parse RDB file and write to stdout or file. Refers to [RDB](docs/rdb_en.md)
 
 
 ### Other Features
