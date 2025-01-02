@@ -61,9 +61,9 @@ demo:
 
 .PHONY: allos
 allos:
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".darwin-amd64" main.go
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".darwin-arm64" main.go
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".linux-amd64" main.go
-	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".win-amd64" main.go
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".darwin-amd64" main.go
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".darwin-arm64" main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".linux-amd64" main.go
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(GCFLAGS) -o $(BINARY_NAME)".win-amd64" main.go
 	@echo -e "\033[32mbuild $(BINARY_NAME) successfully\033[0m"
 
