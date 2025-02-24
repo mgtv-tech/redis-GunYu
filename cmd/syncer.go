@@ -525,17 +525,34 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 			sc.logger.Infof("start syncer : %v", cfg)
 			defer sc.logger.Infof("stop syncer : %v", cfg)
 
-			shardKey := cfg.Input.Address()
 			shard := cfg.Input.GetClusterShard(cfg.Input.Address())
-			if shard != nil {
-				shardKey = shard.Master.Address
+			if shard == nil {
+				sc.logger.Errorf("shard is null : %s", cfg.Input.Address())
+				runWait.Close(syncer.ErrRestart)
+				return
 			}
+			shardKey := shard.Master.Address
 
 			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName, shardKey)
 			elect := cli.NewElection(runWait.Context(), key, config.GetSyncerConfig().Server.ListenPeer)
 			role := cluster.RoleCandidate
 
 			for !runWait.IsClosed() {
+
+				// check master address
+				shardKeyRole, err := redis.GetRedisRoleOnline(&cfg.Input, shardKey)
+				if err != nil {
+					sc.logger.Errorf("get redis role error : key(%s), error(%v)", shardKey, err)
+					runWait.Close(syncer.ErrRestart)
+					return
+				}
+				if shardKeyRole != config.RedisRoleMaster {
+					sc.logger.Errorf("role is not master : key(%s), role(%v)", shardKey, shardKeyRole)
+					runWait.Close(syncer.ErrRedisTypologyChanged)
+					return
+				}
+
+				// campaign
 				if role == cluster.RoleCandidate {
 					newRole, err := sc.clusterCampaign(runWait.Context(), elect)
 					if err != nil {
@@ -545,6 +562,9 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 					} else {
 						role = newRole
 						sc.logger.Infof("campaign : key(%s), new_role(%s)", key, newRole.String())
+					}
+					if role == cluster.RoleCandidate {
+						runWait.Sleep(1 * time.Second)
 					}
 					continue
 				}
@@ -581,7 +601,7 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				// wait
 				sy.Stop()
 				syncerWait.WgWait()
-				err := syncerWait.Error()
+				err = syncerWait.Error()
 				if role == cluster.RoleLeader {
 					ctx, cancel := context.WithTimeout(context.Background(), config.GetSyncerConfig().Server.GracefullStopTimeout)
 					terr := elect.Resign(ctx)
@@ -610,6 +630,8 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 					} else if errors.Is(err, syncer.ErrBreak) {
 						runWait.Close(err)
 						return
+					} else {
+						time.Sleep(1 * time.Second)
 					}
 				}
 			}

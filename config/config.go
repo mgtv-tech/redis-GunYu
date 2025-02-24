@@ -110,7 +110,7 @@ type ServerConfig struct {
 
 func (sc *ServerConfig) fix() error {
 	if sc.CheckRedisTypologyTicker == 0 {
-		sc.CheckRedisTypologyTicker = 30 * time.Second // 30 seconds
+		sc.CheckRedisTypologyTicker = 10 * time.Second // 30 seconds
 	} else if sc.CheckRedisTypologyTicker < 1*time.Second {
 		sc.CheckRedisTypologyTicker = 1 * time.Second // 1 second
 	}

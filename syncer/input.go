@@ -124,13 +124,14 @@ func (ri *RedisInput) SetChannel(ch Channel) {
 	ri.channel = ch
 }
 
-func (ri *RedisInput) rdbLimiterAcquire(wait usync.WaitChannel) {
+func (ri *RedisInput) rdbLimiterAcquire(wait usync.WaitChannel) bool {
 	limiter := config.GetSyncerConfig().Input.RdbLimiter()
 	select {
 	case <-wait:
-		return
+		return false
 	case limiter <- struct{}{}:
 	}
+	return true
 }
 
 func (ri *RedisInput) rdbLimiterRelease() {
@@ -151,7 +152,9 @@ func (ri *RedisInput) setRunIds(ids []string) {
 
 func (ri *RedisInput) fetchInput(wait usync.WaitCloser) (outSp StartPoint) {
 	// RDB concurrency limit
-	ri.rdbLimiterAcquire(wait.Done())
+	if !ri.rdbLimiterAcquire(wait.Done()) {
+		return
+	}
 
 	// for input redis, shouldn't reconnect to redis if encounters error or connection is broken
 	redisCli, err := ri.newRedisConn(wait.Context())

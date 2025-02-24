@@ -436,6 +436,30 @@ func GetAllClusterShard(cli client.Redis, version string) ([]*config.RedisCluste
 	}
 }
 
+func GetRedisRoleOnline(redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
+	cli, err := client.NewRedis(*redisCfg)
+
+	// fix addresses
+	if err != nil {
+		err = errors.Errorf("GetRedisRoleOnline : new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
+		return config.RedisRoleSlave, err
+	}
+	defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
+
+	// fix shards and slots
+	shards, err := GetAllClusterShard(cli, redisCfg.Version)
+	if err != nil {
+		return config.RedisRoleSlave, err
+	}
+
+	for _, shard := range shards {
+		if shard.Master.Address == address {
+			return config.RedisRoleMaster, nil
+		}
+	}
+	return config.RedisRoleSlave, nil
+}
+
 func GetAllClusterShard7(cli client.Redis) ([]*config.RedisClusterShard, error) {
 	ret, err := cli.Do("cluster", "shards")
 	if err != nil {
