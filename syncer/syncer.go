@@ -361,6 +361,8 @@ func (s *syncer) runLeader() error {
 
 	leader.Start()
 
+	inputStateGauge.Set(0, s.cfg.Input.Address(), "leader")
+
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
@@ -394,6 +396,8 @@ func (s *syncer) runFollower() error {
 	syncDelayGauge.Set(0, s.cfg.Input.Address())
 
 	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
+
+	inputStateGauge.Set(0, s.cfg.Input.Address(), "follower")
 
 	wait.WgAdd(1)
 	usync.SafeGo(func() {

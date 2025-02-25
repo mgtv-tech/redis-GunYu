@@ -333,10 +333,10 @@ func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.Standalone
 	var aofWriter *store.AofWriter
 	var err error
 	if isFullSync { // create writers before start readers
-		inputStateGauge.Set(1, ri.inputAddr)
+		inputStateGauge.Set(1, ri.inputAddr, "leader")
 		rdbWriter, err = ri.channel.NewRdbWriter(redisCli.Client().BufioReader(), offset, rdbSize)
 	} else {
-		inputStateGauge.Set(2, ri.inputAddr)
+		inputStateGauge.Set(2, ri.inputAddr, "leader")
 		aofWriter, err = ri.channel.NewAofWritter(redisCli.Client().BufioReader(), offset)
 	}
 	if err != nil {
@@ -507,15 +507,15 @@ var (
 		Namespace: config.AppName,
 		Subsystem: "input",
 		Name:      "input_sync",
-		Labels:    []string{"input"},
+		Labels:    []string{"input", "role"},
 	})
 )
 
 func (ri *RedisInput) run() error {
 	ri.fsm.Reset()
 
-	inputStateGauge.Set(0, ri.inputAddr)
-	defer inputStateGauge.Set(0, ri.inputAddr)
+	inputStateGauge.Set(0, ri.inputAddr, "leader")
+	defer inputStateGauge.Set(0, ri.inputAddr, "leader")
 
 	// @TODO should wait for all goroutines to exit. sync/async IO,
 	runScope := usync.NewWaitCloserFromParent(ri.wait, nil)
