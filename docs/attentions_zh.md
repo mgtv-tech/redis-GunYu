@@ -31,6 +31,13 @@ redis兼容性，请见[测试文档](test_zh.md#版本兼容测试)
 - cluster
 
 
+**EVALSHA ： redis 5以下的版本，若源redis未开启AOF，则EVALSHA命令可能会有问题**
+
+如果源redis没有开启AOF，且目标redis没有缓存lua脚本，则源redis执行的EVALSHA命令，无法在目标集群执行。   
+为了避免这种问题，请开启源redis的AOF或者升级redis。
+
+
+
 ## 全量同步
 
 `redisGunYu`全量同步RDB到目标端前，不会对目标端数据进行清理，而是直接回放RDB数据，这样就会存在目标端数据比源端多。

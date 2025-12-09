@@ -30,6 +30,13 @@ The following commands are not supported:
 - cluster
 
 
+**EVALSHA: In Redis 4, if AOF is not enabled on the source Redis, the EVALSHA command may fail**
+
+If AOF is disabled on the source Redis and the target Redis does not have the Lua script cached, then an EVALSHA command executed on the source Redis cannot be executed on the target Redis.
+To avoid this issue, please enable AOF on the source Redis or upgrade Redis.
+
+
+
 ## Full Synchronization
 
 Before `redisGunYu` fully synchronizes the RDB to the target node, it will not clean up the data on the target node, but will directly replay the RDB data. This means that the data on the target node may be more than the source node.
