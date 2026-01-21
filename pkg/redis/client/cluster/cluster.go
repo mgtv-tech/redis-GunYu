@@ -205,7 +205,7 @@ func (cluster *Cluster) IterateNodes(result func(string, interface{}, error), cm
 // See README.md for more details.
 // See full redis command list: http://www.redis.io/commands
 func (cluster *Cluster) Do(cmd string, args ...interface{}) (interface{}, error) {
-	node, err := cluster.ChooseNodeWithCmd(cmd, args...)
+	_, node, err := cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
 		return nil, fmt.Errorf("run ChooseNodeWithCmd failed[%w]", err)
 	}
@@ -285,102 +285,115 @@ func (cluster *Cluster) Close() {
 	}
 }
 
-func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*redisNode, error) {
+func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (int16, *redisNode, error) {
+	var slot int16
 	var node *redisNode
 	var err error
 
 	switch strings.ToUpper(cmd) {
 	case "PING", "CLUSTER":
 		if node, err = cluster.getRandomNode(); err != nil {
-			return nil, fmt.Errorf("PING: %w", err)
+			return -1, nil, fmt.Errorf("PING: %w", err)
 		}
+		slot = -1
 	case "SELECT":
 		// no need to put "select 0" in cluster
-		return nil, nil
+		return -1, nil, nil
 	case "MGET":
-		return nil, fmt.Errorf("%s not supported", cmd)
+		return -1, nil, fmt.Errorf("%s not supported", cmd)
 	case "MSET":
 		fallthrough
 	case "MSETNX":
 		if len(args) == 0 {
-			return nil, fmt.Errorf("args is empty")
+			return -1, nil, fmt.Errorf("args is empty")
 		}
 
 		// check all keys hash to the same slot
 		for i := 0; i < len(args); i += 2 {
 			curNode, err := cluster.getNodeByKey(args[i])
 			if err != nil {
-				return nil, fmt.Errorf("get node of parameter[%v] failed[%w]", args[i], err)
+				return -1, nil, fmt.Errorf("get node of parameter[%v] failed[%w]", args[i], err)
 			}
 
 			if i == 0 {
 				node = curNode
 			} else if node != curNode {
-				return nil, fmt.Errorf("all keys in the mset/msetnx script should be hashed into the same node, "+
+				return -1, nil, fmt.Errorf("all keys in the mset/msetnx script should be hashed into the same node, "+
 					"current key[%v] node[%v] != previous_node[%v]", args[i], curNode.address, node.address)
 			}
 		}
 	case "MULTI":
 		cluster.transactionEnable = true // @TODO move to node
+		slot = -1
 	case "EXEC":
 		cluster.transactionEnable = false
 		cluster.transactionNode = nil
+		slot = -1
 	case "EVAL":
 		fallthrough
 	case "EVALSHA":
 		// check key
 		if len(args) < 1 {
-			return nil, fmt.Errorf("illgal eval parameter: [%v]", args)
+			return -1, nil, fmt.Errorf("illgal eval parameter: [%v]", args)
 		}
 		nr, err := strconv.Atoi(string(args[1].([]byte)))
 		if err != nil {
-			return nil, fmt.Errorf("parse count[%v] failed[%w]", string(args[1].([]byte)), err)
+			return -1, nil, fmt.Errorf("parse count[%v] failed[%w]", string(args[1].([]byte)), err)
 		}
 		if nr <= 0 {
-			return nil, fmt.Errorf("lua key number[%v] shouldn't <= 0", nr)
+			return -1, nil, fmt.Errorf("lua key number[%v] shouldn't <= 0", nr)
 		}
 
-		var slot uint16
+		var evalslot uint16
 		for i := 0; i < nr; i++ {
 			curSlot, err := GetSlot(args[2+i])
 			if err != nil {
-				return nil, fmt.Errorf("get slot of parameter[%v] failed[%w]", args[2+i], err)
+				return -1, nil, fmt.Errorf("get slot of parameter[%v] failed[%w]", args[2+i], err)
 			}
 
 			if i == 0 {
-				slot = curSlot
-			} else if slot != curSlot {
-				return nil, fmt.Errorf("all keys in the lua script should be hashed into the same slot")
+				evalslot = curSlot
+			} else if evalslot != curSlot {
+				return -1, nil, fmt.Errorf("all keys in the lua script should be hashed into the same slot")
 			}
 		}
 
 		node, err = cluster.getNodeByKey(args[2])
 		if err != nil {
-			return nil, fmt.Errorf("get node by key failed: %w", err)
+			return -1, nil, fmt.Errorf("get node by key failed: %w", err)
 		}
+		tmpSlot, err := GetSlot(args[2])
+		if err != nil {
+			return -1, nil, fmt.Errorf("get slot by key failed: %w", err)
+		}
+		slot = int16(tmpSlot)
 
 	default:
 		if len(args) < 1 {
-			return nil, fmt.Errorf("Put: no key found in args")
+			return -1, nil, fmt.Errorf("Put: no key found in args")
 		}
 
 		node, err = cluster.getNodeByKey(args[0])
 		if err != nil {
-			return nil, fmt.Errorf("Put: %w", err)
+			return -1, nil, fmt.Errorf("Put: %w", err)
 		}
-
+		tmpSlot, err := GetSlot(args[0])
+		if err != nil {
+			return -1, nil, fmt.Errorf("get slot err: %w", err)
+		}
+		slot = int16(tmpSlot)
 		if cluster.transactionEnable {
 			if cluster.transactionNode == nil {
 				cluster.transactionNode = node
 			} else if cluster.transactionNode != node {
 				ckey, _ := key(args[0])
-				return nil, errors.Join(common.ErrCrossSlots, fmt.Errorf("transaction command[%s] key[%s] not hashed in the same node: current[%s], previous[%s]",
+				return -1, nil, errors.Join(common.ErrCrossSlots, fmt.Errorf("transaction command[%s] key[%s] not hashed in the same node: current[%s], previous[%s]",
 					cmd, ckey, node.address, cluster.transactionNode.address))
 			}
 		}
 	}
 
-	return node, err
+	return slot, node, err
 }
 
 func (cluster *Cluster) handleMove(node *redisNode, replyMsg, cmd string, args []interface{}) (interface{}, error) {

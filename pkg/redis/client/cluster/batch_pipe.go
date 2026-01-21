@@ -88,7 +88,7 @@ func (batch *batch2) Put(cmd string, args ...interface{}) error {
 		return nil
 	}
 
-	node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
+	_, node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
 		err = fmt.Errorf("run ChooseNodeWithCmd error : %w", err)
 		return batch.joinError(err)

@@ -26,7 +26,7 @@ func (tb *txnBatcher) Len() int {
 }
 
 func (tb *txnBatcher) Put(cmd string, args ...interface{}) error {
-	node, err := tb.cluster.ChooseNodeWithCmd(cmd, args...)
+	_, node, err := tb.cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
 		return tb.joinError(fmt.Errorf("run ChooseNodeWithCmd error : %w", err))
 	}

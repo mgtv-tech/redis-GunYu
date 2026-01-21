@@ -205,6 +205,17 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		}
 	})
 
+	syncerGroup.POST("print-cmd-to-target", func(ctx *gin.Context) {
+		// 修改配置，是否将输出到目标的命令打印到日志
+		cfg := config.GetSyncerConfig()
+		enable := ctx.Query("enable")
+		if enable == "yes" || enable == "true" || enable == "1" {
+			cfg.Input.PrintCmdToTarget = true
+		} else if enable == "no" || enable == "false" || enable == "0" {
+			cfg.Input.PrintCmdToTarget = false
+		}
+	})
+
 	syncerGroup.POST("restart", func(ctx *gin.Context) {
 		sc.getRunWait().Close(errors.Join(context.Canceled, syncer.ErrRestart))
 	})
@@ -319,6 +330,12 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 	flushCmd := ginCtx.Query("flushCommand") // devops may rename flushdb command
 	if flushCmd == "" {
 		flushCmd = "flushdb"
+	}
+
+	if config.SkipReplyRdb == true {
+		sc.logger.Infof("skip reply rdb is enabled,flushdb is not allowed")
+		ginCtx.AbortWithError(http.StatusBadRequest, errors.New("skip reply rdb is set"))
+		return
 	}
 
 	followers := []string{}

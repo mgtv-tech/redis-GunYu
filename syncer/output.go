@@ -407,6 +407,11 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
 	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.ReplayRdbParallel)
+	// 跳过rdb回放，直接将checkpoint写入目标端
+	if config.SkipReplyRdb {
+		ro.logger.Infof("Skipping RDB replay for runId: %s", reader.RunId())
+		return ro.setCheckpoint(pctx, reader.RunId(), reader.Left(), config.Version)
+	}
 
 	ctx, cancel := context.WithCancel(pctx)
 	defer cancel()
@@ -652,6 +657,10 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 	}
 
 	syncDelayTestkey := []byte(ro.cfg.SyncDelayTestKey)
+	inTransaction := false                         // 标记是否在处理MULTI-EXEC块
+	shouldIgnore := false                          // 标记事务是否应该被忽略
+	transactionCommands := make([]cmdExecution, 0) // 存储事务中的命令
+	filterCnt := 0                                 // 当filter的checkpoint达到50000时，打印一次日志,减少日志输出
 
 	decoder := client.NewDecoder(reader)
 
@@ -680,8 +689,67 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		}
 		aofCmdCounter.Inc(ro.cfg.InputName)
 
-		// filter db, filter command, filter key
+		// filter loop, filter db, filter command, filter key
 		if sCmd != "ping" {
+			// filter loop
+			// 如果出现multi命令，标记为事务开始
+			if strings.EqualFold(sCmd, "multi") {
+				inTransaction = true
+				shouldIgnore = false
+				transactionCommands = transactionCommands[:0] // 清空之前的事务命令
+				continue
+			} else if strings.EqualFold(sCmd, "exec") {
+				if filterCnt > 50000 {
+					ro.logger.Infof("Contains Filter Checkpoint Key: %s,ignore transaction...", config.FilterCheckpointKey)
+					filterCnt = 0
+				}
+				inTransaction = false
+				if shouldIgnore {
+					transactionCommands = transactionCommands[:0] // 清空事务命令列表
+					continue
+				}
+
+				// 直接发送不包含checkpoint标签的transactionCommands中的命令
+				for _, cmd := range transactionCommands {
+					select {
+					case sendBuf <- cmd:
+					case <-replayQuit.Context().Done():
+						return nil
+					}
+				}
+				transactionCommands = transactionCommands[:0] // 清空事务命令列表
+				continue
+			}
+			if inTransaction {
+				// 检查事务中的命令是否包含 CHECKPOINT 关键字
+				if bytes.Contains(bytes.Join(argv, []byte{' '}), []byte(config.FilterCheckpointKey)) {
+					shouldIgnore = true
+					filterCnt++
+					continue
+				}
+				// 过滤filter的命令
+				if ro.outFilter.FilterCmd(sCmd) {
+					ro.filterCounterAdd(1)
+					continue
+				}
+				// 过滤filter中的key
+				newArgv, reject = ro.outFilter.FilterCmdKey(sCmd, argv)
+				if reject {
+					ro.filterCounterAdd(1)
+					continue
+				}
+				data := make([]interface{}, 0, len(newArgv))
+				for _, item := range newArgv {
+					data = append(data, item)
+				}
+				transactionCommands = append(transactionCommands, cmdExecution{
+					Cmd:    sCmd,
+					Args:   data,
+					Offset: startOffset + incrOffset,
+					Db:     currentDB,
+				})
+				continue
+			}
 			if strings.EqualFold(sCmd, "select") {
 				if len(argv) != 1 {
 					err = fmt.Errorf("syncer(%s) : select command len(args) is %d", ro.cfg.InputName, len(argv))
@@ -1103,19 +1171,20 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 
 func (ro *RedisOutput) checkReplies(replies []interface{}) error {
 	if len(replies) == 0 {
-		return fmt.Errorf("replies is empmty")
+		return fmt.Errorf("replies is empty")
 	}
-	// for _, rpl := range replies {
-	// 	switch tt := rpl.(type) {
-	// 	case []interface{}:
-	// 		err := ro.checkReplies(tt)
-	// 		if err != nil {
-	// 			return err
-	// 		}
-	// 	case string:
-	// 	case common.RedisError:
-	// 	}
-	// }
+	for _, rpl := range replies {
+		switch tt := rpl.(type) {
+		case []interface{}:
+			err := ro.checkReplies(tt)
+			if err != nil {
+				return err
+			}
+		case common.RedisError:
+			ro.logger.Errorf("reply is not ok : %s", tt)
+			return fmt.Errorf("reply is not ok : %s", tt)
+		}
+	}
 	return nil
 }
 
@@ -1217,6 +1286,20 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 
 		delayNs := int64(0)
 		for _, ce := range cmdQueue {
+			if config.GetSyncerConfig().Input.PrintCmdToTarget {
+				if len(ce.Args) > 0 && !bytes.EqualFold(ce.Args[0].([]byte), []byte(config.GetSyncerConfig().Input.SyncDelayTestKey)) {
+					argsStr := make([]string, len(ce.Args))
+					for i, arg := range ce.Args {
+						switch v := arg.(type) {
+						case []byte:
+							argsStr[i] = string(v)
+						default:
+							argsStr[i] = fmt.Sprintf("%v", v)
+						}
+					}
+					ro.logger.Infof("Print cmd to target: [%s %s]", ce.Cmd, strings.Join(argsStr, " "))
+				}
+			}
 			batcher.Put(ce.Cmd, ce.Args...)
 			cmdCounter++
 			if ce.syncDelayNs > 0 {

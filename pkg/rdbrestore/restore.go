@@ -68,9 +68,9 @@ func (rr *RdbReplay) Replay(e *rdb.BinEntry) (err error) {
 					if rr.KeyExistsLog {
 						log.Infof("replace key: %s", e.Key)
 					}
-					_, err := common.Int64(rr.Client.Do("del", e.Key))
+					err := delKeyWithSlotTag(rr.Client, e.Key)
 					if err != nil {
-						return fmt.Errorf("del exist key error : key(%s), error(%w)", e.Key, err)
+						return fmt.Errorf("del exist key with slot tag error : key(%s), error(%w)", e.Key, err)
 					}
 				case "ignore":
 					if rr.KeyExistsLog {
@@ -158,33 +158,74 @@ func restoreBigRdbEntry(cli client.Redis, e *rdb.BinEntry) (err error) {
 		return fmt.Errorf("parser is nil : key(%s)", e.Key)
 	}
 
-	count := 0
+	// 其他数据类型使用batcher，让batcher自动处理MULTI...EXEC和slot标签
+	batcher := cli.NewBatcher(false)
+
+	// 收集所有数据命令到batcher中（batcher会自动添加事务和slot标签）
+	cmdCount := 0
 	e.ObjectParser.ExecCmd(func(cmd string, args ...interface{}) error {
-		err = cli.Send(cmd, args...)
+		err := batcher.Put(cmd, args...)
 		if err != nil {
-			return err
+			return fmt.Errorf("add command to batcher failed : key(%s), cmd(%s), error(%w)", e.Key, cmd, err)
 		}
-		count++
-		if count == 100 {
-			err = flushAndCheckReply(cli, count)
-			if err != nil {
-				return err
-			}
-			count = 0
-		}
+		cmdCount++
 		return nil
 	})
-	return flushAndCheckReply(cli, count)
-}
 
-func flushAndCheckReply(cli client.Redis, count int) error {
-	// @TODO
-	cli.Flush()
-	for j := 0; j < count; j++ {
-		_, err := cli.Receive()
-		if err != nil {
-			return fmt.Errorf("flush redis client error : %v", err)
+	if cmdCount == 0 {
+		// 没有命令需要执行，直接返回
+		return nil
+	}
+
+	// 执行所有命令（batcher会自动处理MULTI...EXEC事务和slot标签）
+	results, err := batcher.Exec()
+	if err != nil {
+		return fmt.Errorf("exec batcher failed : key(%s), error(%w)", e.Key, err)
+	}
+
+	// 检查执行结果
+	if len(results) == 0 {
+		return fmt.Errorf("no results from batcher : key(%s)", e.Key)
+	}
+
+	// 检查结果中是否有错误
+	for i, result := range results {
+		if err, isErr := result.(error); isErr {
+			return fmt.Errorf("batcher command %d failed : key(%s), error(%w)", i, e.Key, err)
 		}
 	}
+
+	return nil
+}
+
+// delKeyWithSlotTag 执行带slot标签的DEL操作，用于避免回环
+func delKeyWithSlotTag(cli client.Redis, key []byte) error {
+	// 使用batcher，让它自动处理MULTI...EXEC事务和slot标签
+	batcher := cli.NewBatcher(false)
+
+	// 添加DEL命令（batcher会自动包装成事务并添加slot标签）
+	err := batcher.Put("DEL", key)
+	if err != nil {
+		return fmt.Errorf("add DEL to batcher failed : key(%s), error(%w)", key, err)
+	}
+
+	// 执行命令（batcher自动处理事务）
+	results, err := batcher.Exec()
+	if err != nil {
+		return fmt.Errorf("exec del batcher failed : key(%s), error(%w)", key, err)
+	}
+
+	// 检查执行结果
+	if len(results) == 0 {
+		return fmt.Errorf("no results from del batcher : key(%s)", key)
+	}
+
+	// 检查结果中是否有错误
+	for i, result := range results {
+		if err, isErr := result.(error); isErr {
+			return fmt.Errorf("del batcher command %d failed : key(%s), error(%w)", i, key, err)
+		}
+	}
+
 	return nil
 }

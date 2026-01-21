@@ -153,12 +153,16 @@ func withPrefixTag(prefix, tag string) string {
 }
 
 type InputConfig struct {
-	Redis              *RedisConfig
-	RdbParallel        int `yaml:"rdbParallel"`
-	rdbParallelLimiter chan struct{}
-	Mode               InputMode       `yaml:"mode"`
-	SyncFrom           SelNodeStrategy `yaml:"syncFrom"`
-	SyncDelayTestKey   string          `yaml:"syncDelayTestKey"`
+	Redis               *RedisConfig
+	RdbParallel         int `yaml:"rdbParallel"`
+	rdbParallelLimiter  chan struct{}
+	Mode                InputMode       `yaml:"mode"`
+	SyncFrom            SelNodeStrategy `yaml:"syncFrom"`
+	SyncDelayTestKey    string          `yaml:"syncDelayTestKey"`
+	SyncCheckPointKey   string          `yaml:"syncCheckPointKey"`
+	FilterCheckPointKey string          `yaml:"filterCheckPointKey"`
+	SkipReplyRdb        bool            `yaml:"skipReplyRdb" default:"false"`
+	PrintCmdToTarget    bool            `yaml:"printCmdToTarget" default:"false"`
 }
 
 func (ic *InputConfig) fix() error {

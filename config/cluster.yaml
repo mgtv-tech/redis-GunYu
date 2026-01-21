@@ -10,6 +10,15 @@ input:
   mode: dynamic
   syncDelayTestKey: redis-GunYu-syncDelay-testKey
   syncFrom: prefer_slave
+  # checkpoint
+  syncCheckPointKey: redis-GunYu-Checkpoint-ClusterAAA
+  filterCheckPointKey: redis-GunYu-Checkpoint-ClusterBBB
+  # 是否跳过回放RDB文件. 默认为false。建立连接后,直接使用aof进行增量同步生成checkpoint，该参数用于配置双向同步时，忽略回放RDB文件。
+  skipReplyRdb: false
+  # 用于将目标段执行的命令记录到日志文件中，以便后续分析
+  # 开启 curl -XPOST http://127.0.0.1:18000/syncer/print-cmd-to-target?enable=1
+  # 关闭 curl -XPOST http://127.0.0.1:18000/syncer/print-cmd-to-target?enable=0
+  printCmdToTarget: false
 channel:
   storer:
     dirPath: /tmp/redisgunyu-cluster

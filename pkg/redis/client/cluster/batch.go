@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
@@ -27,8 +28,13 @@ import (
 type Batch struct {
 	cluster *Cluster
 	batches []nodeBatch
-	index   []int
+	index   []indexEntry
 	err     error
+}
+
+type indexEntry struct {
+	nodeBatchIndex int
+	commandIndex   int
 }
 
 type nodeBatch struct {
@@ -53,7 +59,7 @@ func (cluster *Cluster) NewBatch() common.CmdBatcher {
 	return &Batch{
 		cluster: cluster,
 		batches: make([]nodeBatch, 0),
-		index:   make([]int, 0),
+		index:   make([]indexEntry, 0),
 	}
 }
 
@@ -76,12 +82,12 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 					node: node,
 					cmds: []nodeCommand{{cmd: cmd, args: args}},
 					done: make(chan int)})
-			batch.index = append(batch.index, i)
+			batch.index = append(batch.index, indexEntry{i, 0})
 		}
 		return nil
 	}
 
-	node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
+	slot, node, err := batch.cluster.ChooseNodeWithCmd(cmd, args...)
 	if err != nil {
 		err = fmt.Errorf("run ChooseNodeWithCmd error : %w", err)
 		return batch.joinError(err)
@@ -94,10 +100,21 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 	var i int
 	for i = 0; i < len(batch.batches); i++ {
 		if batch.batches[i].node == node {
-			batch.batches[i].cmds = append(batch.batches[i].cmds,
-				nodeCommand{cmd: cmd, args: args})
-
-			batch.index = append(batch.index, i)
+			var bcmd []nodeCommand
+			if slot >= 0 {
+				bcmd = []nodeCommand{
+					{cmd: "multi", args: nil},
+					{cmd: cmd, args: args},
+					{cmd: "set", args: []interface{}{digest.SlotKey[uint16(slot)], "-1"}},
+					{cmd: "exec", args: nil},
+				}
+			} else {
+				bcmd = []nodeCommand{
+					{cmd: cmd, args: args},
+				}
+			}
+			batch.batches[i].cmds = append(batch.batches[i].cmds, bcmd...)
+			batch.index = append(batch.index, indexEntry{i, len(batch.batches[i].cmds) - len(bcmd)})
 			break
 		}
 	}
@@ -106,12 +123,25 @@ func (batch *Batch) Put(cmd string, args ...interface{}) error {
 		if batch.cluster.transactionEnable && len(batch.batches) == 1 {
 			return batch.joinError(common.ErrCrossSlots)
 		}
+		var bcmd []nodeCommand
+		if slot >= 0 {
+			bcmd = []nodeCommand{
+				{cmd: "multi", args: nil},
+				{cmd: cmd, args: args},
+				{cmd: "set", args: []interface{}{digest.SlotKey[uint16(slot)], "-1"}},
+				{cmd: "exec", args: nil},
+			}
+		} else {
+			bcmd = []nodeCommand{
+				{cmd: cmd, args: args},
+			}
+		}
 		batch.batches = append(batch.batches,
 			nodeBatch{
 				node: node,
-				cmds: []nodeCommand{{cmd: cmd, args: args}},
+				cmds: bcmd,
 				done: make(chan int)})
-		batch.index = append(batch.index, i)
+		batch.index = append(batch.index, indexEntry{i, 0})
 	}
 
 	return nil
@@ -146,20 +176,26 @@ func (bat *Batch) Exec() ([]interface{}, error) {
 	for i := range bat.batches {
 		go bat.doBatch(&bat.batches[i])
 	}
-
+	var batchErrors []error
 	for i := range bat.batches {
 		<-bat.batches[i].done
+		if bat.batches[i].err != nil {
+			batchErrors = append(batchErrors, bat.batches[i].err)
+		}
+	}
+	// 如果有任何错误发生，则返回第一个遇到的错误
+	if len(batchErrors) > 0 {
+		return nil, batchErrors[0]
 	}
 
 	var replies []interface{}
-	for _, i := range bat.index {
-		if bat.batches[i].err != nil {
-			return nil, bat.batches[i].err
+	for _, batch := range bat.batches {
+		for _, cmd := range batch.cmds {
+			if cmd.reply != nil {
+				replies = append(replies, cmd.reply)
+			}
 		}
-		replies = append(replies, bat.batches[i].cmds[0].reply)
-		bat.batches[i].cmds = bat.batches[i].cmds[1:]
 	}
-
 	return replies, nil
 }
 

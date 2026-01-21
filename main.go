@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	"github.com/mgtv-tech/redis-GunYu/cmd"
 	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
@@ -32,6 +35,85 @@ func runCmd() error {
 			panicIfError(config.InitSyncerConfig(config.GetFlag().ConfigPath))
 		}
 		panicIfError(log.InitLog(*config.GetSyncerConfig().Log))
+		if config.GetSyncerConfig().Input.SyncCheckPointKey == "" || config.GetSyncerConfig().Input.FilterCheckPointKey == "" {
+			panicIfError(fmt.Errorf("sync checkpoint key or filter checkpoint key is empty"))
+		} else {
+			if config.GetSyncerConfig().Input.SkipReplyRdb {
+				config.SkipReplyRdb = true
+			}
+			config.CheckpointKey = config.GetSyncerConfig().Input.SyncCheckPointKey
+			config.CheckpointKeyHashKey = config.GetSyncerConfig().Input.SyncCheckPointKey + "-hash"
+			config.FilterCheckpointKey = config.GetSyncerConfig().Input.FilterCheckPointKey
+			if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeCluster {
+				digest.SlotKey = make(map[uint16]string)
+				isRewriteFile := false
+				slotKeyFile := filepath.Join(filepath.Dir(config.GetFlag().ConfigPath), "slot-key.txt")
+				f, err := os.OpenFile(slotKeyFile, os.O_RDONLY, 0666)
+				defer f.Close()
+				if err != nil {
+					if os.IsNotExist(err) {
+						log.Infof("slot-key file not exist, generate slot-key,please wait......")
+						f, err = os.OpenFile(slotKeyFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+						if err != nil {
+							panicIfError(fmt.Errorf("open file error: %v", err))
+						}
+						for i := 0; i < digest.KClusterSlots; i++ {
+							slot := uint16(i)
+							key := digest.GenerateKeyForSlot(config.CheckpointKey, slot)
+							digest.SlotKey[slot] = key
+							f.WriteString(fmt.Sprintf("%d:%s\n", slot, key))
+						}
+					} else {
+						log.Errorf("open file error: %v", err)
+					}
+				} else {
+					//从文件中读取slot-key
+					for {
+						var slot uint16
+						var key string
+						_, err := fmt.Fscanf(f, "%d:%s\n", &slot, &key)
+						if err != nil {
+							if err.Error() == "EOF" {
+								break
+							} else {
+								log.Errorf("read slot-key error: %v", err)
+							}
+						}
+						// 判断前缀是否是checkpoint的前缀
+						if !strings.HasPrefix(key, config.CheckpointKey) {
+							log.Errorf("slot-key(%s) not start with checkpoint(%s)", key, config.CheckpointKey)
+							key = digest.GenerateKeyForSlot(config.CheckpointKey, slot)
+							isRewriteFile = true
+						}
+						digest.SlotKey[slot] = key
+					}
+				}
+				// 判断是否有slot-key没有生成
+				if len(digest.SlotKey) != digest.KClusterSlots {
+					log.Infof("slot-key not generate all, generate the rest keys")
+					isRewriteFile = true
+					for i := 0; i < digest.KClusterSlots; i++ {
+						slot := uint16(i)
+						if _, ok := digest.SlotKey[slot]; !ok {
+							key := digest.GenerateKeyForSlot(config.CheckpointKey, slot)
+							digest.SlotKey[slot] = key
+						}
+					}
+				}
+				if isRewriteFile {
+					log.Infof("rewrite slot-key file")
+					f, err = os.OpenFile(slotKeyFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+					if err != nil {
+						panicIfError(fmt.Errorf("open file error: %v", err))
+					}
+
+					for slot, key := range digest.SlotKey {
+						f.WriteString(fmt.Sprintf("%d:%s\n", slot, key))
+					}
+				}
+			}
+
+		}
 		cmder = cmd.NewSyncerCmd()
 		gracefullTimeout = config.GetSyncerConfig().Server.GracefullStopTimeout
 	case "rdb":

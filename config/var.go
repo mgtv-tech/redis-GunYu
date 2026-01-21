@@ -15,9 +15,15 @@ var (
 )
 
 var (
-	StartTime   string
-	Version     = "1"
-	RdbPipeSize = 1024
+	StartTime            string
+	Version              = "1"
+	RdbPipeSize          = 1024
+	CheckpointKey        string
+	CheckpointKeyHashKey string
+	FilterCheckpointKey  string
+
+	// 是否跳过回放RDB文件. 默认为false。建立连接后,直接使用aof进行增量同步生成checkpoint，该参数仅用于配置双向同步时，忽略回放RDB文件。
+	SkipReplyRdb = false
 )
 
 const (
@@ -33,8 +39,8 @@ const (
 	TypeSync    = "sync"
 	TypeRump    = "rump"
 
-	CheckpointKey        = "redis-gunyu-checkpoint"
-	CheckpointKeyHashKey = "redis-gunyu-checkpoint-hash"
+	//CheckpointKey        = "redis-gunyu-checkpoint"
+	//CheckpointKeyHashKey = "redis-gunyu-checkpoint-hash"
 
 	NamespacePrefixKey = "/redis-gunyu"
 
@@ -335,7 +341,7 @@ func (d *DoubleSliceUint16) String() string {
 	return "doublesliceuint16"
 }
 
-//for flag ex: [0,1000],[1005,1006],[1995]
+// for flag ex: [0,1000],[1005,1006],[1995]
 func (d *DoubleSliceUint16) Set(value string) error {
 	value = strings.Trim(value, "[]")
 	slicesStr := strings.Split(value, "],[")
