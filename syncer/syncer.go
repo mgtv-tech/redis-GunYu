@@ -491,12 +491,15 @@ func (s *syncer) runFollower() error {
 	output.SetChannel(s.channel)
 	outFollower := NewOutputFollower(s.cfg.Input.Address(), output)
 
-	s.guard.RLock()
+	s.guard.Lock()
 	s.state = SyncerStateRun
+	// Clear stale leader pointers when follower is active.
+	s.leader = nil
+	s.outLeader = nil
 	s.output = output
 	s.outFollow = outFollower
 	wait := s.wait
-	s.guard.RUnlock()
+	s.guard.Unlock()
 
 	s.updateStateMetric()
 	syncDelayGauge.Set(0, s.cfg.Input.Address())
@@ -544,9 +547,9 @@ func (s *syncer) runFollower() error {
 }
 
 func (s *syncer) IsLeader() bool {
-	s.guard.Lock()
-	defer s.guard.Unlock()
-	return s.leader != nil
+	s.guard.RLock()
+	defer s.guard.RUnlock()
+	return s.role == SyncerRoleLeader && s.leader != nil
 }
 
 func (s *syncer) newOutput() (*RedisOutput, error) {

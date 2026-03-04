@@ -836,7 +836,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 
 	syncDelayTestkey := []byte(ro.cfg.SyncDelayTestKey)
 	inTransaction := false                         // 标记是否在处理MULTI-EXEC块
-	shouldIgnore := false                          // 标记事务是否应该被忽略
+	shouldIgnore := false                          // 标记事务是否应整包丢弃（用于回环过滤）
 	transactionCommands := make([]cmdExecution, 0) // 存储事务中的命令
 	filterCnt := 0                                 // 当filter的checkpoint达到50000时，打印一次日志,减少日志输出
 
@@ -883,7 +883,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 				inTransaction = false
 				if shouldIgnore {
-					transactionCommands = transactionCommands[:0] // 清空事务命令列表
+					transactionCommands = transactionCommands[:0] // 命中过滤标记则整包事务丢弃
 					continue
 				}
 

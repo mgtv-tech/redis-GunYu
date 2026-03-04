@@ -17,6 +17,7 @@ package redis
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,12 +411,23 @@ func (cluster *Cluster) handleMove(node *redisNode, replyMsg, cmd string, args [
 	// cluster has changed, inform update routine
 	cluster.inform(node)
 
-	newNode, err := cluster.getNodeByAddr(fields[2])
+	newNode, tmpNode, err := cluster.resolveNodeByAddr(fields[2])
 	if err != nil {
 		return nil, fmt.Errorf("handleMove: %w", err)
 	}
+	if tmpNode != nil {
+		defer tmpNode.shutdown()
+	}
 
-	return newNode.do(cmd, args...)
+	ret, err := newNode.do(cmd, args...)
+	if err != nil {
+		return nil, err
+	}
+	if tmpNode != nil {
+		// Best-effort topology refresh after using a temporary redirect node.
+		cluster.inform(tmpNode)
+	}
+	return ret, nil
 }
 
 func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []interface{}) (interface{}, error) {
@@ -424,9 +436,12 @@ func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []
 		return nil, fmt.Errorf("handleAsk: invalid response \"%s\"", replyMsg)
 	}
 
-	newNode, err := cluster.getNodeByAddr(fields[2])
+	newNode, tmpNode, err := cluster.resolveNodeByAddr(fields[2])
 	if err != nil {
 		return nil, fmt.Errorf("handleAsk: %w", err)
+	}
+	if tmpNode != nil {
+		defer tmpNode.shutdown()
 	}
 
 	conn, err := newNode.getConn()
@@ -456,6 +471,10 @@ func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []
 	}
 
 	newNode.releaseConn(conn)
+	if tmpNode != nil {
+		// Best-effort topology refresh after using a temporary redirect node.
+		cluster.inform(tmpNode)
+	}
 
 	return reply, nil
 }
@@ -518,9 +537,12 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 	// cluster change, inform back routine to update
 	cluster.inform(randomNode)
 
-	newNode, err := cluster.getNodeByAddr(fields[2])
+	newNode, tmpNode, err := cluster.resolveNodeByAddr(fields[2])
 	if err != nil {
 		return nil, fmt.Errorf("handleConnTimeout: %w", err)
+	}
+	if tmpNode != nil {
+		defer tmpNode.shutdown()
 	}
 
 	if ret, err := newNode.do(cmd, args...); err != nil {
@@ -530,6 +552,10 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 		return nil, fmt.Errorf("node moves from [%v] to [%v] but still failed[%v]", node.address,
 			newNode.address, err)
 	} else {
+		if tmpNode != nil {
+			// Best-effort topology refresh after using a temporary redirect node.
+			cluster.inform(tmpNode)
+		}
 		return ret, nil
 	}
 }
@@ -687,6 +713,47 @@ func (cluster *Cluster) getNodeByAddr(addr string) (*redisNode, error) {
 	}
 
 	return node, nil
+}
+
+func (cluster *Cluster) resolveNodeByAddr(addr string) (*redisNode, *redisNode, error) {
+	if node, err := cluster.getNodeByAddr(addr); err == nil {
+		return node, nil, nil
+	}
+
+	// Fallback: a MOVED/ASK reply might carry a different host representation
+	// (e.g. 127.0.0.1 vs announced IP). If port matches uniquely, reuse that node.
+	_, dstPort, err := net.SplitHostPort(addr)
+	if err == nil {
+		cluster.rwLock.RLock()
+		var matched *redisNode
+		for naddr, n := range cluster.nodes {
+			_, p, spErr := net.SplitHostPort(naddr)
+			if spErr != nil || p != dstPort {
+				continue
+			}
+			if matched != nil && matched != n {
+				matched = nil
+				break
+			}
+			matched = n
+		}
+		cluster.rwLock.RUnlock()
+		if matched != nil {
+			return matched, nil, nil
+		}
+	}
+
+	// Last resort: build a temporary node to honor the redirect immediately.
+	tmp := &redisNode{
+		address:      addr,
+		connTimeout:  cluster.connTimeout,
+		readTimeout:  cluster.readTimeout,
+		writeTimeout: cluster.writeTimeout,
+		keepAlive:    cluster.keepAlive,
+		aliveTime:    cluster.aliveTime,
+		password:     cluster.password,
+	}
+	return tmp, tmp, nil
 }
 
 func (cluster *Cluster) getAllNodes() []*redisNode {

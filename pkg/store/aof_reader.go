@@ -230,13 +230,14 @@ func (r *AofRotateReader) tryReadNextFile(offset int64) error {
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.logger.Errorf("stat file error : file(%s), err(%v)", filepath, err)
-			return nil
+			return err
 		}
 		return err
 	}
 	err = r.closeAof()
 	if err != nil {
 		r.logger.Errorf("close error : %v", err)
+		return err
 	}
 	return r.openFile(offset)
 }
@@ -279,7 +280,15 @@ func (r *AofRotateReader) read(buf []byte) (n int, err error) {
 	for err == io.EOF && !r.wait.IsClosed() {
 		// new aof?
 		if r.left != r.aof.lastSeg() {
-			r.tryReadNextFile(r.right)
+			if err = r.tryReadNextFile(r.right); err != nil {
+				// The next segment may already be GC-ed while reader lags behind.
+				// Return explicitly so upper layer can recreate reader from latest valid offset.
+				if os.IsNotExist(err) {
+					r.logger.Warnf("next aof segment missing, trigger reader rebuild : left(%d), right(%d), lastSeg(%d)",
+						r.left, r.right, r.aof.lastSeg())
+				}
+				return 0, err
+			}
 		}
 		time.Sleep(time.Millisecond * 10)
 		n, err = r.file.Read(buf)

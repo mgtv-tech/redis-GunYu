@@ -122,52 +122,94 @@
 ### 阶段2：Input 高可用（依赖阶段1）
 
 **目标**：Input 实现 Leader/Follower，保障源端采集连续性。
+**前置依赖**：阶段2的 Leader/Follower 高可用能力依赖 `meta.redis`（Sentinel 托管）作为协调与 checkpoint 元数据基座；未配置 `meta.redis` 不进入 HA 验收。
 
 **工作量**：4-6天  
 **风险**：中
 
-#### 任务2.1：ReplicaLeader 适配 Redis checkpoint
+#### [x] 任务2.1：ReplicaLeader 适配 Redis checkpoint
 - **文件**：`syncer/replica.go`
+- **进展**：
+  - 已注入 `meta.redis` 到 `ReplicaLeader`
+  - leader 握手起点已支持与 `meta.redis checkpoint` 对齐（同 runId 取更大 offset）
 
-#### 任务2.2：ReplicaFollower 适配 Redis checkpoint
+#### [x] 任务2.2：ReplicaFollower 适配 Redis checkpoint
 - **文件**：`syncer/replica.go`
+- **进展**：
+  - 已注入 `meta.redis` 到 `ReplicaFollower`
+  - follower 预同步阶段已支持读取 `meta.redis checkpoint`（只读），接管前对齐起点
 
-#### 任务2.3：checkpoint 同步策略
+#### [x] 任务2.3：checkpoint 同步策略
 - Leader 负责写 `meta.redis`
 - Follower 只读并在接管后接续写入
 - 暂停控制仅作用于 Output；Input 不做暂停操作（避免采集中断）
+- **进展**：
+  - 现状已满足：Input Leader 持续写 `meta.redis`，Follower 在 replica 链路只读 checkpoint
+  - 已完成接管场景验收：leader 故障后 follower 接管为 leader，并以 checkpoint 连续点位恢复
 
-#### 任务2.4：验收测试
+#### [x] 任务2.4：验收测试
 - Leader 故障接管
 - 接管后偏移连续性
+- **进展**：
+  - 已完成定向编译校验：`go test ./syncer ./cmd -run Test^$ -count=1`
+  - 已完成运行态实测：杀死 leader 实例（18012）后，B 侧接管为全 leader（7004/7005/7006）
+  - 接管后 `RedisInput psync` 日志显示 checkpoint 与 local/reply 连续（示例：7004 `checkpoint=1363014 -> reply=1363595`）
 
 **完成标准**：
-- [ ] Input 侧故障切换可用
-- [ ] 接管前后 checkpoint 连续
+- [x] Input 侧故障切换可用
+- [x] 接管前后 checkpoint 连续
 
 ---
 
 ### 阶段3：Output 高可用（依赖阶段1）
 
 **目标**：Output 实现 Leader/Follower，保障回放连续性。
+**前置依赖**：阶段3的 Leader/Follower 高可用能力依赖 `meta.redis`（Sentinel 托管）提供统一协调基座；同时 Output checkpoint 仍写入目标端 Redis。
 
 **工作量**：8-11天  
 **风险**：高
 
-#### 任务3.1：实现 OutputLeader / OutputFollower
+#### [x] 任务3.1：实现 OutputLeader / OutputFollower
 - **文件**：`syncer/output_leader.go`、`syncer/output_follower.go`
+- **进展（首版）**：
+  - 已落地 `OutputLeader` 回放主路径骨架（含连续失败红线）
+  - 已落地 `OutputFollower` standby骨架（当前不回放、不写checkpoint）
+  - 已接入 `syncer.runLeader/runFollower` 生命周期
 
-#### 任务3.2：Output checkpoint 协调
+#### [x] 任务3.2：Output checkpoint 协调
 - 仅 Leader 写 `目标端 Redis checkpoint`
 - Follower 接管后通过 CAS/epoch 防止覆盖
+- **进展（第一版）**：
+  - 已在 Output Leader 启动时申请 `leader_epoch`（目标端 `INCR`）
+  - 已在 checkpoint 写入链路增加 Lua CAS/Fencing（旧epoch写入被拒绝）
+  - 已在日志增加 epoch/token 可观测信息，便于演练排障
+- **进展（第二版）**：
+  - `OutputFollower` 已支持接管触发（standby -> active）
+  - follower 侧收到 handover 信号后会触发 output takeover，并申请新 epoch
 
-#### 任务3.3：验收测试
+#### [x] 任务3.3：验收测试
 - 回放不中断
 - 切换后无大范围重复/回退
+- **进展（第一轮）**：
+  - 已执行 handover 注入与重启收敛演练（单实例环境）
+  - 已验证 `leader_epoch` 单调递增（基线 `57` -> 演练后 `67`）
+  - 当时受限：测试环境无多实例选主器；该限制已由第二轮双实例演练补齐
+- **进展（第二轮）**：
+  - 已执行双实例演练（A=leader、B=follower），并对 A 注入全分片 handover
+  - 观测到 B 侧完成接管并成为 leader（A 状态清空，B 全分片 `Role=leader, State=run`）
+  - 目标端 checkpoint `leader_epoch` 在切换后继续单调前进（`181/171/160 -> 182/172/161`）
 
 **完成标准**：
-- [ ] Output 故障切换可用
-- [ ] checkpoint 写入单主语义明确
+- [x] Output 故障切换可用
+- [x] checkpoint 写入单主语义明确
+
+#### 阶段2/3仅剩清单（状态对齐）
+- [x] 阶段2任务2.1：ReplicaLeader 适配 Redis checkpoint
+- [x] 阶段2任务2.2：ReplicaFollower 适配 Redis checkpoint
+- [x] 阶段2任务2.3：checkpoint 同步策略落地与收敛
+- [x] 阶段2任务2.4：验收测试（故障接管与checkpoint连续性）
+- 结论：阶段2与阶段3主任务已闭环完成，当前无阶段内遗漏。
+- 说明：后续待办主要在阶段4（故障切换与一致性收敛）及阶段5（按 Slot Checkpoint）。
 
 ---
 
@@ -193,9 +235,159 @@
 - 各场景恢复时间
 - 数据一致性抽样比对
 
+#### 阶段4可直接执行验收脚本清单（含故障注入命令）
+
+**统一前置**（每轮先执行）：
+- 启动双实例：
+  - `go run . -cmd sync -conf config/cluster2-runtime-a.yaml`
+  - `go run . -cmd sync -conf config/cluster2-runtime-b.yaml`
+- 状态确认：
+  - `powershell -Command "Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18012/syncer/status | % Content"`
+  - `powershell -Command "Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18013/syncer/status | % Content"`
+- 记录基线：
+  - 记录当前 leader 所在实例、`psync` 日志中的 `local/checkpoint/reply`、目标端 `__leader_epoch`。
+
+**脚本 S4-1：进程崩溃（Input/Output 同进程）**
+- 注入命令：
+  - `powershell -Command "Get-NetTCPConnection -LocalPort 18012 -State Listen | % { taskkill /PID $_.OwningProcess /F }"`
+- 观测命令：
+  - `powershell -Command "Start-Sleep -Seconds 8; 'A=' + (try {(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18012/syncer/status).Content} catch {'DOWN'}); 'B=' + (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18013/syncer/status).Content"`
+  - 在 B 实例日志查：`campaign ... new_role(leader)`、`RedisInput ... psync ... checkpoint(...)`
+- 通过标准：
+  - 存活实例完成接管；`psync` 中 checkpoint 不回退；恢复后持续推进。
+
+**脚本 S4-2：网络分区（本机防火墙模拟）**
+- 注入命令：
+  - `powershell -Command "New-NetFirewallRule -DisplayName 'GY-DENY-18012-IN' -Direction Inbound -Action Block -LocalPort 18012 -Protocol TCP"`
+  - `powershell -Command "New-NetFirewallRule -DisplayName 'GY-DENY-18012-OUT' -Direction Outbound -Action Block -RemotePort 18012 -Protocol TCP"`
+- 恢复命令：
+  - `powershell -Command "Remove-NetFirewallRule -DisplayName 'GY-DENY-18012-IN'"`
+  - `powershell -Command "Remove-NetFirewallRule -DisplayName 'GY-DENY-18012-OUT'"`
+- 观测重点：
+  - 分区期间 follower 出现 `Unavailable/connection error`，随后重新选主并收敛。
+- 通过标准：
+  - 分区解除后角色稳定；checkpoint 连续；无长时间双主。
+
+**脚本 S4-3：Sentinel 切主（meta.redis）**
+- 注入命令：
+  - `go run ./tools/redis_admin -addr 127.0.0.1:26379 -cmd SENTINEL -a1 failover -a2 mymaster`
+  - 说明：当前本地 Sentinel 未启用 `requirepass`，不传 `-pass`；若启用鉴权再补 `-pass/-user`。
+- 观测命令：
+  - 日志查：`sentinel discovered master`、`sentinel connect success`
+  - 运行态查：`/syncer/status` 持续 `run`
+- 通过标准：
+  - 切主后 checkpoint 读写不中断；实例不因 sentinel 切主退出。
+
+**脚本 S4-4：目标端短暂不可用（仅 Output 压测）**
+- 注入命令（示例阻断目标集群端口）：
+  - `powershell -Command "1..6 | % { New-NetFirewallRule -DisplayName ('GY-DENY-800' + $_) -Direction Outbound -Action Block -RemotePort (8000 + $_) -Protocol TCP }"`
+- 恢复命令：
+  - `powershell -Command "1..6 | % { Remove-NetFirewallRule -DisplayName ('GY-DENY-800' + $_) }"`
+- 观测重点：
+  - Output 出现重试日志；Input 仍持续落地；恢复后 Output 从 checkpoint 继续回放。
+- 通过标准：
+  - 无不可恢复退出；恢复后延迟收敛，checkpoint 单调推进。
+
+**脚本 S4-5：一致性抽样比对（最小闭环）**
+- 样本写入（源端）：
+  - `go run ./tools/redis_admin -cluster -addr 127.0.0.1:7001 -pass EPBQMMNnprXsXCZ6wsnZ -cmd SET -a1 stage4:key:1 -a2 v1`
+  - `go run ./tools/redis_admin -cluster -addr 127.0.0.1:7001 -pass EPBQMMNnprXsXCZ6wsnZ -cmd HSET -a1 stage4:hash:1 -a2 f1 -a3 v1`
+- 目标抽样：
+  - `go run ./tools/redis_admin -cluster -addr 127.0.0.1:8001 -pass EPBQMMNnprXsXCZ6wsnZ -cmd GET -a1 stage4:key:1`
+  - `go run ./tools/redis_admin -cluster -addr 127.0.0.1:8001 -pass EPBQMMNnprXsXCZ6wsnZ -cmd HGET -a1 stage4:hash:1 -a2 f1`
+- 专项说明（7006/high 分片）：
+  - 验证高分片时，样本 key 必须先确认 `slot ∈ [10923,16383]`，避免“写入命中其他分片”造成误判。
+- 通过标准：
+  - 故障前后抽样值一致；允许 at-least-once 下短窗口重复写，但不允许回退丢失。
+
+**脚本 S4-6：源端/目标端 Redis 切换不影响同步（新增）**
+- 目标：
+  - 源端 Redis 拓扑切换（主从切换/slot owner 变更）后，Input 可自动续传，不中断长期同步；
+  - 目标端 Redis 拓扑切换后，Output 可自动恢复写入，不出现不可恢复中断。
+- 注入命令（示例）：
+  - 源端切换：对源端集群对应主节点执行 `CLUSTER FAILOVER`（或等价主从切换操作）
+  - 目标端切换：对目标端集群对应主节点执行 `CLUSTER FAILOVER`（或等价主从切换操作）
+  - 若使用 Sentinel 托管 standalone，执行 `SENTINEL failover <masterName>`
+- 观测重点：
+  - 源端切换后：`RedisInput psync`/拓扑刷新日志连续，无长时间停滞，`input_cp(meta.redis)` 单调；
+  - 目标端切换后：Output 重连/重试后恢复发送，`output_cp(目标端)` 单调，无不可恢复错误；
+  - 切换前后：抽样 key 最终收敛，允许短窗口 at-least-once 重放，不允许长期缺失。
+- 通过标准：
+  - 源端切换与目标端切换分别通过；同步任务保持 `run`；
+  - checkpoint 不回退（允许短窗口重复写但需可观测）；
+  - 60s~120s 观测窗口内抽样一致性恢复。
+
+**验收记录模板（每轮必填）**：
+- 场景编号、注入时间、恢复时间、RTO、是否出现双主、checkpoint 是否单调、抽样一致性结果、异常日志摘要、是否涉及源端切换/目标端切换。
+
+#### 阶段4第一轮实测记录（已执行）
+- `S4-1` 进程崩溃：
+  - 注入：终止 `18013`（当时 leader 实例）
+  - 结果：`18012` 接管为全 leader（7004/7005/7006）
+  - RTO：约 `10637ms`
+  - 证据：`campaign ... new_role(leader)`；`RedisInput psync` 中 `checkpoint/local/reply` 连续（无回退）
+- `S4-3` Sentinel 切主：
+  - 注入：`SENTINEL failover mymaster`
+  - 结果：实例保持 `run`，日志持续出现 `sentinel discovered master` / `sentinel connect success`
+  - 备注：本地 Sentinel 无鉴权，首次携带 `-pass` 会报 `ERR Client sent AUTH, but no password is set`，改为无密码命令后通过
+- `S4-2` 网络分区（第一轮）：
+  - 注入：按脚本阻断 `18012` 入/出方向端口（本机双实例同宿主）
+  - 结果：本轮未触发角色变化（A 持续 leader、B 持续 follower），判定为“注入未生效到选主链路”
+  - 原因判断：本机回环流量与当前选主/续租路径未被该规则有效隔离（该轮结果不计入通过）
+  - 下一轮修正：改为阻断单实例到协调后端（Redis 700x/Sentinel 2637x）的出站连通，或改跨主机演练
+- `S4-2` 网络分区（第二轮）：
+  - 注入：按 leader 进程路径定向阻断到 `7001-7006/26379-26381/8001-8006` 出站连通
+  - 结果：仍未触发角色变化（`TAKEOVER=NO`，A 持续 leader、B 持续 follower）
+  - 结论：单机同宿主条件下，当前防火墙注入无法稳定命中“选主链路分区”语义；该项需跨主机或网络设备级隔离继续验证
+- `S4-4` 目标端短暂不可用（第一轮）：
+  - 注入：阻断目标端端口 `8001-8006` 出站（约16s），随后恢复
+  - 结果：实例持续 `run`；Input 未中断；Output 在注入窗口出现 checkpoint 停滞，恢复后继续单调推进
+  - 证据：`RedisOutput set checkpoint` 在注入期多次重复同 offset，恢复后 offset 继续增长（如 `7005: 200402 -> 200743 -> 201084 -> 201534 -> 201875 -> 202325 -> 202666`）
+  - 结论：符合“目标端短暂不可用时，Output重试且恢复后可继续回放”的预期
+- `S4-5` 一致性抽样比对（第一轮）：
+  - 方法：源端批量写入 `SET/HSET` 并覆盖到最终值（`v2-*`），目标端 60s 轮询收敛
+  - 结果：未在 60s 内全部收敛（`S4-5 FAIL`）
+  - 复查：30s 后仍存在部分键缺失（示例：`stage4:s5:diag:key:3`、`stage4:s5:diag:hash:1` 在目标端 `nil`）
+  - 结论：一致性抽样未通过，需进入问题定位（优先排查 Output 过滤/回放链路对普通 key/hash 的遗漏条件）
+- `S4-5` 定位专项（第二轮进展）：
+  - 已定位“按 slot 分片写入”表现：`mid/high` 可到达目标，`low(0-5460)` 持续缺失
+  - 证据：trace 命令仅见 `mid/high` 被 `Print cmd to target` 打印，`low` 未进入 output 发送链路
+  - 进一步证据：`7004` 分片 `RedisOutput stats` 持续 `sendCmd(0)`，而 `7005/7006` 有发送
+  - 排除项：源端 `7004` 从节点（READONLY）可读到 `low` 键，说明不是源端复制未到位
+  - 当前判断：问题集中在 `7004(low slot)` 这条 Input->Output 回放链路（非全链路故障）
+- `S4-5` 正式复验（第三轮，cluster脚本修正后）：
+  - 方法：使用 `tools/redis_admin -cluster`/cluster client 按 slot 定向写入 `low/mid/high` 三类样本键，并校验 `CLUSTER KEYSLOT` 命中区间
+  - 结果：`S4-5 PASS`（45s 内 `low/mid/high` 均收敛到目标端）
+  - 样本：`low(slot=3799)`、`mid(slot=6444)`、`high(slot=13941)`，目标端读取值与源端一致
+- `S4-4` 干净重验（第二轮，单实例B观测）：
+  - 前置：仅保留 `18013(B)` 运行，`/syncer/status` 显示 `7004/7005/7006` 全 leader/run
+  - 注入：进程级停掉目标端 `8001-8006`，16s 后全部拉起恢复
+  - 过程：注入窗口内 `B` 实例持续 `run`（生命周期未退出）
+  - 结果：恢复后 `mid/high` 收敛，`low` 仍未收敛（`S4-4 FAIL`）
+  - 样本：`low(slot=2996)->nil`，`mid(slot=7247)->OK`，`high(slot=11606)->OK`
+  - 当前判断：`S4-4` 仍存在 `low slot` 特定链路问题，需继续专项定位（重点看 `7004` Output 实际发送路径）
+- `S4 low-slot followup`（最小化定点打点 + 语义校正）：
+  - 打点范围：仅 `7004` 链路 + `stage4:lowprobe:*` 样本
+  - 观测证据：已确认 `AofWriter(7004)` 落地、`RedisOutput(7004)` 入队与发送（`enqueue sendBuf` / `Print cmd to target`）
+  - 语义约束：双向同步回环过滤场景下，事务内任一命令命中 `FilterCheckpointKey` 时，必须整包事务丢弃，防止回环标记与业务命令混放导致回流
+  - 修正：撤销“仅跳过事务内单条命中命令”的变更，恢复为 `shouldIgnore=true` 后在 `exec` 丢弃整包事务
+  - 复验：重跑目标端停启后，`low/mid/high` 三段样本均在 45s 内收敛（`S4-4 RECHECK PASS`）
+  - 收尾：专项临时打点已清理（`output/aof_writer`），仅保留回环过滤语义一致的实现
+- `S4-6` 源端/目标端 Redis 切换验证（第一轮/第二轮）：
+  - 第一轮（源端/目标端各分片同时切换）：`FAIL`
+  - 第二轮（源端/目标端各单分片切换）：`FAIL`
+  - 现象：切换后目标端样本键 `stage4:s6:key:low` 在 120s 内未收敛（持续空值）；运行态由 `run` 退化为 `stop`
+  - 关键日志：`renew error ... move ... getNodeByAddr ... not found`、`checkSyncDelay set testkey ... error(move ...)`、`syncer is stopped`
+  - 当前判断：源端拓扑切换触发了节点地址映射/续租链路的 MOVED 处理缺陷，导致实例进入停止态；`S4-6` 暂不通过，需专项修复后复测
+- `S4-6` 修复后复测（第三轮）：
+  - 修复点：`cluster` 客户端在处理 `MOVED/ASK` 时，`getNodeByAddr` miss 增加兜底解析（端口唯一匹配 + 临时节点直连），并在临时节点命中后触发拓扑刷新
+  - 注入：源端单分片切换 + 目标端单分片切换（脚本 `scripts/ha_s4_6.ps1`）
+  - 结果：`PASS`（切换期间任务保持 `run`，样本键最终从 `v0/v1` 收敛到 `v2`）
+  - 结论：当前环境下“源端/目标端 Redis 切换不影响同步”已通过
+
 **完成标准**：
-- [ ] 故障场景可恢复
-- [ ] 一致性边界有文档并通过验证
+- [~] 故障场景可恢复（S4-1/S4-3/S4-4/S4-6 已通过；S4-2 在单机环境注入无效，待跨主机重测）
+- [x] 一致性边界有文档并通过验证（S4-5 正式复验通过，low-slot专项已定位修复并复测通过）
 
 ---
 
