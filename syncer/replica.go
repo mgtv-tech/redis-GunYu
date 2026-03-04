@@ -21,6 +21,8 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/io/pipe"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
@@ -46,17 +48,19 @@ var (
 )
 
 type ReplicaLeader struct {
-	start   atomic.Bool
-	logger  log.Logger
-	input   Input
-	channel Channel
+	start           atomic.Bool
+	logger          log.Logger
+	input           Input
+	channel         Channel
+	checkpointRedis config.RedisConfig
 }
 
-func NewReplicaLeader(input Input, channel Channel) *ReplicaLeader {
+func NewReplicaLeader(input Input, channel Channel, checkpointRedis config.RedisConfig) *ReplicaLeader {
 	replica := &ReplicaLeader{
-		logger:  log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaLeader(%s)] ", input.Id()))),
-		input:   input,
-		channel: channel,
+		logger:          log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaLeader(%s)] ", input.Id()))),
+		input:           input,
+		channel:         channel,
+		checkpointRedis: checkpointRedis,
 	}
 	return replica
 }
@@ -119,6 +123,12 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 
 	// 1. protoHandShake : send run id to follower
 	sp, _ := rl.channel.StartPoint(nil)
+	if cpSp, cpOk, cpErr := rl.loadCheckpointStartPoint(inputRunIds); cpErr != nil {
+		rl.logger.Warnf("load checkpoint start point failed: runIds(%v), err(%v)", inputRunIds, cpErr)
+	} else if cpOk && cpSp.RunId == sp.RunId && cpSp.Offset > sp.Offset {
+		// When channel falls behind checkpoint after restart/recovery, prefer checkpoint.
+		sp = cpSp
+	}
 	if followerRunId == "" || followerRunId == "?" {
 		err := stream.Send(&pb.SyncResponse{
 			Code: pb.SyncResponse_META, Meta: &pb.SyncResponse_Meta{RunId: sp.RunId},
@@ -156,10 +166,10 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 		return ErrLeaderHandover
 	}
 
-	return rl.sendData(wait, req, stream, StartPoint{RunId: followerRunId, Offset: followerOffset}, sp)
+	return rl.sendData(wait, stream, StartPoint{RunId: followerRunId, Offset: followerOffset}, sp)
 }
 
-func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint) error {
+func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint) error {
 
 	// the offset of follower is invalid
 	if !rl.channel.IsValidOffset(Offset{RunId: reqSp.RunId, Offset: reqSp.Offset}) {
@@ -237,22 +247,24 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, req *pb.SyncRequest, st
 // follower
 
 type ReplicaFollower struct {
-	wait         usync.WaitCloser
-	logger       log.Logger
-	inputAddress string
-	channel      Channel
-	leader       *cluster.RoleInfo
-	mux          sync.RWMutex
-	conn         *grpc.ClientConn
+	wait            usync.WaitCloser
+	logger          log.Logger
+	inputAddress    string
+	channel         Channel
+	leader          *cluster.RoleInfo
+	checkpointRedis config.RedisConfig
+	mux             sync.RWMutex
+	conn            *grpc.ClientConn
 }
 
-func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo) *ReplicaFollower {
+func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo, checkpointRedis config.RedisConfig) *ReplicaFollower {
 	replica := &ReplicaFollower{
-		logger:       log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%s)] ", inputAddress))),
-		wait:         usync.NewWaitCloser(nil),
-		channel:      channel,
-		leader:       leader,
-		inputAddress: inputAddress,
+		logger:          log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%s)] ", inputAddress))),
+		wait:            usync.NewWaitCloser(nil),
+		channel:         channel,
+		leader:          leader,
+		inputAddress:    inputAddress,
+		checkpointRedis: checkpointRedis,
 	}
 	return replica
 }
@@ -421,7 +433,69 @@ func (rf *ReplicaFollower) preSync(leaderSp StartPoint) (sp StartPoint, err erro
 			return
 		}
 	}
+	if cpSp, cpOk, cpErr := rf.loadCheckpointStartPoint([]string{leaderSp.RunId}); cpErr != nil {
+		rf.logger.Warnf("load checkpoint start point failed: runId(%s), err(%v)", leaderSp.RunId, cpErr)
+	} else if cpOk && cpSp.RunId == leaderSp.RunId && cpSp.Offset > sp.Offset {
+		// Follower only reads checkpoint. After takeover, input will continue writing.
+		sp.Offset = cpSp.Offset
+	}
 	return
+}
+
+func (rl *ReplicaLeader) loadCheckpointStartPoint(runIds []string) (StartPoint, bool, error) {
+	if len(runIds) == 0 {
+		return StartPoint{}, false, nil
+	}
+	cli, err := client.NewRedis(rl.checkpointRedis)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	defer cli.Close()
+
+	cpName, _, err := checkpoint.GetCheckpointHash(cli, runIds)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	if cpName == "" {
+		return StartPoint{}, false, nil
+	}
+
+	cpInfo, _, err := checkpoint.GetCheckpoint(cli, cpName, runIds)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	if cpInfo == nil || cpInfo.RunId == "" || cpInfo.RunId == "?" || cpInfo.Offset < 0 {
+		return StartPoint{}, false, nil
+	}
+	return StartPoint{RunId: cpInfo.RunId, Offset: cpInfo.Offset}, true, nil
+}
+
+func (rf *ReplicaFollower) loadCheckpointStartPoint(runIds []string) (StartPoint, bool, error) {
+	if len(runIds) == 0 {
+		return StartPoint{}, false, nil
+	}
+	cli, err := client.NewRedis(rf.checkpointRedis)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	defer cli.Close()
+
+	cpName, _, err := checkpoint.GetCheckpointHash(cli, runIds)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	if cpName == "" {
+		return StartPoint{}, false, nil
+	}
+
+	cpInfo, _, err := checkpoint.GetCheckpoint(cli, cpName, runIds)
+	if err != nil {
+		return StartPoint{}, false, err
+	}
+	if cpInfo == nil || cpInfo.RunId == "" || cpInfo.RunId == "?" || cpInfo.Offset < 0 {
+		return StartPoint{}, false, nil
+	}
+	return StartPoint{RunId: cpInfo.RunId, Offset: cpInfo.Offset}, true, nil
 }
 
 func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ApiServiceClient) (pb.ApiService_SyncClient, *pb.SyncResponse, error) {
@@ -448,7 +522,6 @@ func (rf *ReplicaFollower) rdbSync(followerSp StartPoint, stream pb.ApiService_S
 	if err := rf.channel.DelRunId(followerSp.RunId); err != nil {
 		return errors.Join(ErrRestart, err)
 	}
-	followerSp.Offset = left
 	if err := rf.channel.SetRunId(followerSp.RunId); err != nil {
 		return errors.Join(ErrRestart, err)
 	}

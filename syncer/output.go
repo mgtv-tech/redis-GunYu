@@ -57,6 +57,8 @@ type RedisOutput struct {
 	channel Channel
 
 	cpConnLogged atomic.Bool
+	leaderEpoch  atomic.Int64
+	leaderToken  string
 }
 
 var (
@@ -231,6 +233,8 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	ro := &RedisOutput{
 		cfg:    cfg,
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisOutput(%s)] ", cfg.InputName))),
+		leaderToken: fmt.Sprintf("%s-%d",
+			strings.ReplaceAll(cfg.InputName, ":", "_"), time.Now().UnixNano()),
 	}
 	// Keep checkpoint path explicit internally while preserving simple caller config.
 	if len(ro.cfg.CheckpointRedis.Addresses) == 0 {
@@ -264,6 +268,27 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	}
 
 	return ro
+}
+
+func (ro *RedisOutput) StartLeaderEpoch(ctx context.Context) error {
+	if !ro.cfg.EnableResumeFromBreakPoint || ro.cfg.CheckpointName == "" {
+		return nil
+	}
+	return util.RetryLinearJitter(ctx, func() error {
+		cli, err := ro.NewCheckpointConn(ctx)
+		if err != nil {
+			return err
+		}
+		defer cli.Close()
+		epoch, err := common.Int64(cli.Do("INCR", ro.cfg.CheckpointName+":leader_epoch"))
+		if err != nil {
+			return err
+		}
+		ro.leaderEpoch.Store(epoch)
+		ro.logger.Infof("output leader epoch acquired : cp(%s), epoch(%d), token(%s)",
+			ro.cfg.CheckpointName, epoch, ro.leaderToken)
+		return nil
+	}, 5, time.Second, 0.3)
 }
 
 type RedisOutputConfig struct {
@@ -654,6 +679,49 @@ func (ro *RedisOutput) setCheckpoint(ctx context.Context, runId string, offset i
 		defer cli.Close()
 		if ro.cpConnLogged.CompareAndSwap(false, true) {
 			ro.logger.Infof("checkpoint conn bound : redisType(%v), addresses(%v)", cli.RedisType(), cli.Addresses())
+		}
+		epoch := ro.leaderEpoch.Load()
+		if epoch > 0 {
+			// CAS/Fencing: reject stale leaders whose epoch is lower than current hash epoch.
+			// KEYS[1] = checkpoint hash key
+			// ARGV = runid, version, offset, mtime, epoch, token
+			reply, e := cli.Do("EVAL", `
+local key = KEYS[1]
+local runid = ARGV[1]
+local version = ARGV[2]
+local offset = ARGV[3]
+local mtime = ARGV[4]
+local epoch = tonumber(ARGV[5])
+local token = ARGV[6]
+local current = tonumber(redis.call('HGET', key, '__leader_epoch') or '0')
+if current > epoch then
+  return 0
+end
+redis.call('HSET', key,
+  runid .. '_runid', runid,
+  runid .. '_version', version,
+  runid .. '_offset', offset,
+  runid .. '_mtime', mtime,
+  '__leader_epoch', tostring(epoch),
+  '__leader_token', token
+)
+return 1
+`, []byte("1"), checkpointKv.Key, checkpointKv.RunId, checkpointKv.Version,
+				strconv.FormatInt(checkpointKv.Offset, 10),
+				strconv.FormatInt(time.Now().UnixNano(), 10),
+				strconv.FormatInt(epoch, 10), ro.leaderToken)
+			if e != nil {
+				return e
+			}
+			ok, e := common.Int64(reply, nil)
+			if e != nil {
+				return e
+			}
+			if ok != 1 {
+				return errors.Join(ErrBreak, fmt.Errorf("output checkpoint fenced by newer leader: cp(%s), epoch(%d), token(%s)",
+					checkpointKv.Key, epoch, ro.leaderToken))
+			}
+			return nil
 		}
 		return checkpoint.SetCheckpoint(cli, checkpointKv)
 	}, 5, time.Second*2, 0.3)

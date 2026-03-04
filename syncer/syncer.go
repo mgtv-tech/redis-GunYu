@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -109,12 +110,18 @@ type syncer struct {
 	wait      usync.WaitCloser
 	input     Input
 	output    *RedisOutput
+	outLeader *OutputLeader
+	outFollow *OutputFollower
 	channel   Channel
 	leader    *ReplicaLeader
 	slaveOf   *cluster.RoleInfo
 	state     SyncerState
 	role      SyncerRole
 	pauseWait usync.WaitNotifier
+
+	// output-only pause control (input keeps ingesting)
+	outputPaused   atomic.Bool
+	outputPauseNtf usync.WaitNotifier
 }
 
 type SyncerState int
@@ -247,20 +254,27 @@ func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
 
 func (s *syncer) Pause() {
 	s.guard.Lock()
-	s.state = SyncerStatePause
-	s.pauseWait = usync.NewWaitNotifier()
-	wait := s.wait
+	if s.outputPaused.Load() {
+		s.guard.Unlock()
+		return
+	}
+	s.outputPaused.Store(true)
+	s.outputPauseNtf = usync.NewWaitNotifier()
 	s.guard.Unlock()
-	wait.Close(nil)
-	wait.WgWait()
 }
 
 func (s *syncer) Resume() {
 	s.guard.Lock()
-	defer s.guard.Unlock()
-	s.state = SyncerStateReadyRun
-	close(s.pauseWait)
-	s.pauseWait = nil
+	if !s.outputPaused.Load() {
+		s.guard.Unlock()
+		return
+	}
+	s.outputPaused.Store(false)
+	if s.outputPauseNtf != nil {
+		close(s.outputPauseNtf)
+		s.outputPauseNtf = nil
+	}
+	s.guard.Unlock()
 }
 
 func (s *syncer) DelRunId() {
@@ -361,9 +375,11 @@ func (s *syncer) runLeader() error {
 	// Set channel for output (decoupled architecture)
 	output.SetChannel(s.channel)
 
-	leader := NewReplicaLeader(input, s.channel)
+	leader := NewReplicaLeader(input, s.channel, checkpointRedis)
+	outLeader := NewOutputLeader(s.cfg.Input.Address(), output)
 	s.input = input
 	s.output = output
+	s.outLeader = outLeader
 	s.leader = leader
 	s.state = SyncerStateRun
 	wait := s.wait
@@ -392,7 +408,11 @@ func (s *syncer) runLeader() error {
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
-		s.runOutputLoop(wait, output)
+		err := outLeader.Run(wait)
+		if err != nil {
+			s.logger.Errorf("output leader run error: %v", err)
+			wait.Close(err)
+		}
 	}, func(i interface{}) {
 		wait.Close(fmt.Errorf("panic: %v", i))
 	})
@@ -413,6 +433,22 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 	const maxConsecutiveOutputFailures = 300
 	consecutiveFailures := 0
 	for !wait.IsClosed() {
+		if s.outputPaused.Load() {
+			s.guard.RLock()
+			pauseNtf := s.outputPauseNtf
+			s.guard.RUnlock()
+			if pauseNtf == nil {
+				wait.Sleep(200 * time.Millisecond)
+				continue
+			}
+			select {
+			case <-pauseNtf:
+				continue
+			case <-wait.Done():
+				return
+			}
+		}
+
 		err := output.runOnce(wait)
 		if err == nil {
 			consecutiveFailures = 0
@@ -445,8 +481,20 @@ func (s *syncer) runFollower() error {
 
 	s.guard.RLock()
 	leader := s.slaveOf
-	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader)
+	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader, s.inputCheckpointRedis())
+	s.guard.RUnlock()
+
+	output, err := s.newOutput()
+	if err != nil {
+		return err
+	}
+	output.SetChannel(s.channel)
+	outFollower := NewOutputFollower(s.cfg.Input.Address(), output)
+
+	s.guard.RLock()
 	s.state = SyncerStateRun
+	s.output = output
+	s.outFollow = outFollower
 	wait := s.wait
 	s.guard.RUnlock()
 
@@ -457,17 +505,40 @@ func (s *syncer) runFollower() error {
 
 	inputStateGauge.Set(0, s.cfg.Input.Address(), "follower")
 
+	followerErrCh := make(chan error, 1)
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
-		err := follower.Run()
-		wait.Close(err)
+		followerErrCh <- follower.Run()
 	}, func(i interface{}) {
 		wait.Close(fmt.Errorf("panic: %v", i))
 	})
 
-	<-wait.Done()
+	wait.WgAdd(1)
+	usync.SafeGo(func() {
+		defer wait.WgDone()
+		err := outFollower.Run(wait)
+		if err != nil {
+			wait.Close(err)
+		}
+	}, func(i interface{}) {
+		wait.Close(fmt.Errorf("panic: %v", i))
+	})
+
+	for !wait.IsClosed() {
+		select {
+		case err := <-followerErrCh:
+			if errors.Is(err, ErrLeaderTakeover) {
+				s.logger.Infof("follower received handover signal, trigger output takeover")
+				outFollower.TriggerTakeover()
+				continue
+			}
+			wait.Close(err)
+		case <-wait.Done():
+		}
+	}
 	follower.Stop()
+	output.Close()
 	wait.WgWait()
 	return wait.Error()
 }
