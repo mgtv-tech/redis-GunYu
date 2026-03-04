@@ -257,9 +257,10 @@ func cloneBoolPointer(vp *bool) *bool {
 }
 
 type OutputConfig struct {
-	Redis  *RedisConfig
-	Replay ReplayConfig
-	Filter FilterConfig
+	Redis     *RedisConfig
+	MetaRedis *RedisConfig `yaml:"metaRedis"`
+	Replay    ReplayConfig
+	Filter    FilterConfig
 }
 
 type ReplayConfig struct {
@@ -289,6 +290,12 @@ func (of *OutputConfig) fix() error {
 		return newConfigError("output.redis is nil")
 	}
 	if err := of.Redis.fix(); err != nil {
+		return err
+	}
+	if of.MetaRedis == nil {
+		return newConfigError("output.metaRedis is nil")
+	}
+	if err := of.MetaRedis.fix(); err != nil {
 		return err
 	}
 
@@ -497,6 +504,9 @@ type RedisConfig struct {
 	shards         []*RedisClusterShard
 	UserName       string    `yaml:"userName"`
 	Password       string    `yaml:"password"`
+	MasterName     string    `yaml:"masterName"`
+	SentinelUser   string    `yaml:"sentinelUser"`
+	SentinelPass   string    `yaml:"sentinelPass"`
 	TlsEnable      bool      `yaml:"tlsEnable"`
 	Type           RedisType // for new redis client
 	Otype          RedisType // original type
@@ -517,6 +527,9 @@ func (rc *RedisConfig) Clone() *RedisConfig {
 		shards:         make([]*RedisClusterShard, 0, len(rc.shards)),
 		UserName:       rc.UserName,
 		Password:       rc.Password,
+		MasterName:     rc.MasterName,
+		SentinelUser:   rc.SentinelUser,
+		SentinelPass:   rc.SentinelPass,
 		TlsEnable:      rc.TlsEnable,
 		Type:           rc.Type,
 		Otype:          rc.Type,
@@ -773,6 +786,9 @@ func (rc *RedisConfig) fix() error {
 	if rc.Type == RedisTypeUnknown {
 		rc.Type = RedisTypeStandalone
 	}
+	if rc.Type == RedisTypeSentinel && rc.MasterName == "" {
+		return newConfigError("redis.type is sentinel, but masterName is empty")
+	}
 	if rc.ClusterOptions == nil {
 		rc.ClusterOptions = &RedisClusterOptions{}
 		rc.ClusterOptions.fix()
@@ -806,6 +822,9 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 		Addresses:   []string{rc.Addresses[i]},
 		UserName:    rc.UserName,
 		Password:    rc.Password,
+		MasterName:  rc.MasterName,
+		SentinelUser: rc.SentinelUser,
+		SentinelPass: rc.SentinelPass,
 		TlsEnable:   rc.TlsEnable,
 		Type:        rc.Type,
 		Otype:       rc.Type,
@@ -861,6 +880,9 @@ func (rc *RedisConfig) SelNodeByAddress(addr string) *RedisConfig {
 		Addresses:      []string{addr},
 		UserName:       rc.UserName,
 		Password:       rc.Password,
+		MasterName:     rc.MasterName,
+		SentinelUser:   rc.SentinelUser,
+		SentinelPass:   rc.SentinelPass,
 		TlsEnable:      rc.TlsEnable,
 		Type:           rc.Type,
 		Otype:          rc.Type,
@@ -933,6 +955,9 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 			Addresses:      []string{r},
 			UserName:       rc.UserName,
 			Password:       rc.Password,
+			MasterName:     rc.MasterName,
+			SentinelUser:   rc.SentinelUser,
+			SentinelPass:   rc.SentinelPass,
 			TlsEnable:      rc.TlsEnable,
 			Type:           rc.Type,
 			Otype:          rc.Type,

@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	ReaderBufferSize = 512 * 1024
-	WriterBufferSize = 1 * 1024 * 1024
+	ReaderBufferSize     = 512 * 1024
+	WriterBufferSize     = 1 * 1024 * 1024
+	sentinelConnectRetry = 3
 )
 
 type RedisConn struct {
@@ -34,6 +35,35 @@ type RedisConn struct {
 }
 
 func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
+	if cfg.Type == config.RedisTypeSentinel {
+		var lastErr error
+		for i := 0; i < sentinelConnectRetry; i++ {
+			masterAddr, err := discoverMasterBySentinel(cfg)
+			if err != nil {
+				lastErr = err
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			directCfg := cfg
+			directCfg.Addresses = []string{masterAddr}
+			directCfg.Type = config.RedisTypeStandalone
+			conn, err := newDirectRedisConn(directCfg)
+			if err == nil {
+				log.Infof("sentinel connect success : masterName(%s), master(%s)", cfg.MasterName, masterAddr)
+				return conn, nil
+			}
+			lastErr = err
+			log.Warnf("sentinel connect retry : masterName(%s), master(%s), err(%v), retry(%d/%d)",
+				cfg.MasterName, masterAddr, err, i+1, sentinelConnectRetry)
+			time.Sleep(200 * time.Millisecond)
+		}
+		return nil, fmt.Errorf("connect via sentinel failed: %w", lastErr)
+	}
+
+	return newDirectRedisConn(cfg)
+}
+
+func newDirectRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
 	r := &RedisConn{
 		cfg: cfg,
 	}
@@ -79,6 +109,50 @@ func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
 	}
 
 	return r, nil
+}
+
+func discoverMasterBySentinel(cfg config.RedisConfig) (string, error) {
+	var lastErr error
+	for _, sentinelAddr := range cfg.Addresses {
+		// connect to sentinel node
+		sentinelCfg := cfg
+		sentinelCfg.Addresses = []string{sentinelAddr}
+		sentinelCfg.Type = config.RedisTypeStandalone
+		// Sentinel auth is independent from Redis master auth.
+		// Keep sentinel credentials explicit so that:
+		// 1) sentinel-without-auth + master-with-auth works
+		// 2) sentinel-with-auth can still be configured via sentinelUser/sentinelPass
+		sentinelCfg.UserName = cfg.SentinelUser
+		sentinelCfg.Password = cfg.SentinelPass
+		sc, err := newDirectRedisConn(sentinelCfg)
+		if err != nil {
+			log.Warnf("sentinel node connect failed : addr(%s), err(%v)", sentinelAddr, err)
+			lastErr = err
+			continue
+		}
+		reply, err := sc.Do("SENTINEL", "get-master-addr-by-name", cfg.MasterName)
+		_ = sc.Close()
+		if err != nil {
+			log.Warnf("sentinel query master failed : addr(%s), masterName(%s), err(%v)", sentinelAddr, cfg.MasterName, err)
+			lastErr = err
+			continue
+		}
+		ret, err := common.Strings(reply, nil)
+		if err != nil || len(ret) < 2 {
+			if err == nil {
+				err = fmt.Errorf("unexpected sentinel reply: %v", reply)
+			}
+			log.Warnf("sentinel reply invalid : addr(%s), masterName(%s), err(%v)", sentinelAddr, cfg.MasterName, err)
+			lastErr = err
+			continue
+		}
+		log.Infof("sentinel discovered master : masterName(%s), master(%s:%s), via(%s)", cfg.MasterName, ret[0], ret[1], sentinelAddr)
+		return fmt.Sprintf("%s:%s", ret[0], ret[1]), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no available sentinel nodes")
+	}
+	return "", fmt.Errorf("discover master by sentinel failed: %w", lastErr)
 }
 
 func (r *RedisConn) Close() error {

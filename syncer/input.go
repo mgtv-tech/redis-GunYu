@@ -14,6 +14,7 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	"github.com/mgtv-tech/redis-GunYu/pkg/store"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
@@ -60,22 +61,23 @@ type Input interface {
 	Id() string
 	Run() error
 	Stop() error
-	SetOutput(output Output) // @TODO multi outputs
 	SetChannel(ch Channel)
+	SetCheckpointMeta(redisCfg config.RedisConfig, checkpointName string)
 	StateNotify(SyncState) usync.WaitChannel
 	RunIds() []string
 }
 
 type RedisInput struct {
-	inputAddr string
-	cfg       config.RedisConfig
-	wait      usync.WaitCloser
-	channel   Channel
-	output    Output
-	fsm       *SyncFiniteStateMachine
-	logger    log.Logger
-	runIds    []string
-	mutex     sync.RWMutex
+	inputAddr       string
+	cfg             config.RedisConfig
+	wait            usync.WaitCloser
+	channel         Channel
+	checkpointRedis config.RedisConfig
+	checkpointName  string
+	fsm             *SyncFiniteStateMachine
+	logger          log.Logger
+	runIds          []string
+	mutex           sync.RWMutex
 	//metricOffset metric.Gauge
 }
 
@@ -116,8 +118,9 @@ func (ri *RedisInput) Id() string {
 	return ri.cfg.Address()
 }
 
-func (ri *RedisInput) SetOutput(output Output) {
-	ri.output = output
+func (ri *RedisInput) SetCheckpointMeta(redisCfg config.RedisConfig, checkpointName string) {
+	ri.checkpointRedis = redisCfg
+	ri.checkpointName = checkpointName
 }
 
 func (ri *RedisInput) SetChannel(ch Channel) {
@@ -178,18 +181,41 @@ func (ri *RedisInput) fetchInput(wait usync.WaitCloser) (outSp StartPoint) {
 	return
 }
 
-func (ri *RedisInput) getOutputStartPoint(ctx context.Context, ids []string) (sp StartPoint, err error) {
-	util.RetryLinearJitter(ctx, func() error {
-		sp, err = ri.output.StartPoint(ctx, ids)
-		return err
+func (ri *RedisInput) getCheckpointStartPoint(ctx context.Context, ids []string) (sp StartPoint, err error) {
+	if ri.checkpointName == "" {
+		sp.Initialize()
+		return sp, nil
+	}
+
+	err = util.RetryLinearJitter(ctx, func() error {
+		cli, e := client.NewRedis(ri.checkpointRedis)
+		if e != nil {
+			return e
+		}
+		defer cli.Close()
+		cpInfo, dbid, e := checkpoint.GetCheckpoint(cli, ri.checkpointName, ids)
+		if e != nil {
+			return e
+		}
+		if cpInfo == nil || cpInfo.RunId == "" || cpInfo.RunId == "?" {
+			sp.Initialize()
+			return nil
+		}
+		sp = StartPoint{
+			DbId:   dbid,
+			RunId:  cpInfo.RunId,
+			Offset: cpInfo.Offset,
+		}
+		return nil
 	}, 3, time.Second*2, 0.5)
 	if err != nil {
+		ri.logger.Errorf("get checkpoint error : runIds(%v), err(%v)", ids, err)
 		err = errors.Join(ErrBreak, err)
 	}
 	return
 }
 
-func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRedis) (isFullSync bool, rdbSize int64, locSp StartPoint, outSp StartPoint, err error) {
+func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRedis) (isFullSync bool, rdbSize int64, locSp StartPoint, cpSp StartPoint, err error) {
 	var clearLocal bool
 	var sOffset Offset
 	var id1, id2 string
@@ -202,11 +228,11 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	inputIds := []string{id1, id2}
 	ri.setRunIds(inputIds)
 
-	outSp, err = ri.getOutputStartPoint(ctx, inputIds)
+	cpSp, err = ri.getCheckpointStartPoint(ctx, inputIds)
 	if err != nil {
-		err = fmt.Errorf("output start point error : runIds(%v), err(%w)", inputIds, err)
+		err = fmt.Errorf("checkpoint start point error : runIds(%v), err(%w)", inputIds, err)
 		// may cause full sync if does not return
-		// else, can not ingest input to local if output is fail
+		// else, can not ingest input to local if checkpoint is fail
 		return
 	}
 	locSp, err = ri.channel.StartPoint(inputIds)
@@ -214,43 +240,43 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		ri.logger.Errorf("channel start point error : runIds(%v), err(%v)", inputIds, err)
 	}
 
-	ri.logger.Debugf("meta : runId(%s - %s), locSp(%v), outSp(%v)", id1, id2, locSp, outSp)
+	ri.logger.Debugf("meta : runId(%s - %s), locSp(%v), cpSp(%v)", id1, id2, locSp, cpSp)
 
-	// outSp and locSp are valid and belong to inputIds
-	if slices.Contains(inputIds, outSp.RunId) && slices.Contains(inputIds, locSp.RunId) {
-		// outSp in locSp : two cases
-		// 1. channel.left <= output.offset <= channel.right :
-		// 2. output.offset < channel.left and channel.hasRdb :
-		// outSp not in locSp :
-		// 3. channel.right < output.offset :
-		if ri.channel.IsValidOffset(Offset{RunId: locSp.RunId, Offset: outSp.Offset}) {
+	// cpSp and locSp are valid and belong to inputIds
+	if slices.Contains(inputIds, cpSp.RunId) && slices.Contains(inputIds, locSp.RunId) {
+		// cpSp in locSp : two cases
+		// 1. channel.left <= checkpoint.offset <= channel.right :
+		// 2. checkpoint.offset < channel.left and channel.hasRdb :
+		// cpSp not in locSp :
+		// 3. channel.right < checkpoint.offset :
+		if ri.channel.IsValidOffset(Offset{RunId: locSp.RunId, Offset: cpSp.Offset}) {
 			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, locSp.ToOffset())
 			if err != nil {
 				return
 			}
 		} else {
-			// there is a gap between output and channel [@TODO, @OPTIMIZE : check distance of gap]
-			// channel.Clear(); locSp = outSp
-			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, outSp.ToOffset())
+			// there is a gap between checkpoint and channel [@TODO, @OPTIMIZE : check distance of gap]
+			// channel.Clear(); locSp = cpSp
+			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, cpSp.ToOffset())
 			if err != nil {
 				return
 			}
 			clearLocal = true
 			if !isFullSync {
-				locSp = StartPoint{RunId: sOffset.RunId, Offset: outSp.Offset}
+				locSp = StartPoint{RunId: sOffset.RunId, Offset: cpSp.Offset}
 			}
 		}
-	} else if slices.Contains(inputIds, outSp.RunId) {
-		// local is stale, set locSp to outSp
-		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, outSp.ToOffset())
+	} else if slices.Contains(inputIds, cpSp.RunId) {
+		// local is stale, set locSp to cpSp
+		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, cpSp.ToOffset())
 		if err != nil {
 			return
 		}
 		clearLocal = true
 		if !isFullSync {
-			locSp = StartPoint{RunId: sOffset.RunId, Offset: outSp.Offset}
+			locSp = StartPoint{RunId: sOffset.RunId, Offset: cpSp.Offset}
 		}
-	} else if slices.Contains(inputIds, locSp.RunId) && outSp.IsInitial() { // outSp is ?
+	} else if slices.Contains(inputIds, locSp.RunId) && cpSp.IsInitial() { // cpSp is ?
 		// @TODO @OPTIMIZE : if gap is very large, it's better to send full sync
 		// channel has a RDB file, so set offset to zero
 		locRdbLeft, locRdbSize := ri.channel.GetRdb(locSp.RunId)
@@ -262,7 +288,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 			if !isFullSync { // continue to sync with local RDB
 				_, locRight := ri.channel.GetOffsetRange(locSp.RunId)
 				locSp.Offset = locRight
-				outSp.Offset = locRdbLeft - locRdbSize
+				cpSp.Offset = locRdbLeft - locRdbSize
 				rdbSize = locRdbSize
 			}
 		} else {
@@ -280,7 +306,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		}
 	}
 
-	ri.logger.Infof("psync : runId(%s - %s), local(%v), output(%v), reply(%v), rdb(%d)", id1, id2, locSp, outSp, sOffset, rdbSize)
+	ri.logger.Infof("psync : runId(%s - %s), local(%v), checkpoint(%v), reply(%v), rdb(%d)", id1, id2, locSp, cpSp, sOffset, rdbSize)
 
 	// correct run id
 	if isFullSync {
@@ -303,26 +329,36 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		ri.logger.Errorf("channel SetRunId error : offset(%v), err(%v)", sOffset, err)
 		return
 	}
-	err = ri.output.SetRunId(ctx, sOffset.RunId)
-	if err != nil {
-		ri.logger.Errorf("output SetRunId error : offset(%v), err(%v)", sOffset, err)
-		return
+	// update redis checkpoint run id
+	if ri.checkpointName != "" {
+		e := util.RetryLinearJitter(ctx, func() error {
+			cli, ce := client.NewRedis(ri.checkpointRedis)
+			if ce != nil {
+				return ce
+			}
+			defer cli.Close()
+			return checkpoint.UpdateCheckpoint(cli, ri.checkpointName, []string{sOffset.RunId, id1})
+		}, 3, time.Second*2, 0.5)
+		if e != nil {
+			ri.logger.Errorf("checkpoint UpdateCheckpoint error : offset(%v), err(%v)", sOffset, e)
+			return
+		}
 	}
 
 	locSp.RunId = sOffset.RunId
-	outSp.RunId = sOffset.RunId
+	cpSp.RunId = sOffset.RunId
 	if isFullSync {
 		locSp.Offset = sOffset.Offset
-		outSp.Offset = sOffset.Offset - rdbSize // less than rdb offset,
+		cpSp.Offset = sOffset.Offset - rdbSize // less than rdb offset,
 		metricSyncType.Inc(ri.inputAddr, "full")
 	} else {
 		metricSyncType.Inc(ri.inputAddr, "incr")
 	}
 
-	if outSp.Offset <= 0 {
-		ri.logger.Warnf("read offset is zero : locSp(%v), outSp(%v), rdb(%v), rdb(%d)", locSp, outSp, isFullSync, rdbSize)
+	if cpSp.Offset <= 0 {
+		ri.logger.Warnf("read offset is zero : locSp(%v), cpSp(%v), rdb(%v), rdb(%d)", locSp, cpSp, isFullSync, rdbSize)
 	} else {
-		ri.logger.Debugf("meta sync : locSp(%v), outSp(%v), rdb(%v), rdb(%d)", locSp, outSp, isFullSync, rdbSize)
+		ri.logger.Debugf("meta sync : locSp(%v), cpSp(%v), rdb(%v), rdb(%d)", locSp, cpSp, isFullSync, rdbSize)
 	}
 
 	return
@@ -386,7 +422,7 @@ func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.Standalone
 	}, func(i interface{}) { wait.Close(fmt.Errorf("panic : %v", i)) })
 }
 
-func (ri *RedisInput) syncRdb(ctx context.Context, reader *bufio.Reader, writer *store.RdbWriter) error {
+func (ri *RedisInput) syncRdb(ctx context.Context, _ *bufio.Reader, writer *store.RdbWriter) error {
 	ri.fsm.SetState(SyncStateFullSyncing)
 	writer.Start()
 	err := writer.Wait(ctx)
@@ -400,7 +436,7 @@ func (ri *RedisInput) syncRdb(ctx context.Context, reader *bufio.Reader, writer 
 	return err
 }
 
-func (ri *RedisInput) syncIncr(ctx context.Context, reader *bufio.Reader, offset int64, writer *store.AofWriter) error {
+func (ri *RedisInput) syncIncr(ctx context.Context, _ *bufio.Reader, _ int64, writer *store.AofWriter) error {
 	ri.fsm.SetState(SyncStateIncrSyncing)
 	writer.Start()
 	err := writer.Wait(ctx)
@@ -437,8 +473,36 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 				wait.Close(err)
 				return
 			}
+			// Persist input checkpoint to meta redis for input restart/reconnect.
+			if ackOffset > 0 {
+				if err := ri.setCheckpointOffset(wait.Context(), ri.channel.RunId(), ackOffset); err != nil {
+					ri.logger.Errorf("set input checkpoint offset error : runId(%s), offset(%d), err(%v)", ri.channel.RunId(), ackOffset, err)
+					wait.Close(err)
+					return
+				}
+			}
 		}
 	}, func(i interface{}) { wait.Close(fmt.Errorf("panic : %v", i)) })
+}
+
+func (ri *RedisInput) setCheckpointOffset(ctx context.Context, runId string, offset int64) error {
+	if ri.checkpointName == "" || runId == "" || runId == "?" || offset <= 0 {
+		return nil
+	}
+	cp := &checkpoint.CheckpointInfo{
+		Key:     ri.checkpointName,
+		RunId:   runId,
+		Offset:  offset,
+		Version: config.Version,
+	}
+	return util.RetryLinearJitter(ctx, func() error {
+		cli, err := client.NewRedis(ri.checkpointRedis)
+		if err != nil {
+			return err
+		}
+		defer cli.Close()
+		return checkpoint.SetCheckpoint(cli, cp)
+	}, 3, time.Second, 0.3)
 }
 
 func (ri *RedisInput) Run() (err error) {
@@ -520,16 +584,17 @@ func (ri *RedisInput) run() error {
 	// @TODO should wait for all goroutines to exit. sync/async IO,
 	runScope := usync.NewWaitCloserFromParent(ri.wait, nil)
 
-	// input -> channel -> output
-	startPoint := ri.fetchInput(runScope)
-	reader := ri.readChannel(runScope, startPoint)
-	ri.sendOutput(runScope, reader)
+	// input -> channel (decoupled from output)
+	// Output now reads from channel independently
+	ri.fetchInput(runScope)
 
 	runScope.WgWait()
 	return runScope.Error()
 }
 
-func (ri *RedisInput) readChannel(wait usync.WaitCloser, readerOffset StartPoint) *store.Reader {
+// GetChannelReader creates a reader for the channel at the given offset
+// This method is used by Output to read from channel independently
+func (ri *RedisInput) GetChannelReader(wait usync.WaitCloser, readerOffset StartPoint) *store.Reader {
 	if wait.IsClosed() {
 		return nil
 	}
@@ -541,18 +606,6 @@ func (ri *RedisInput) readChannel(wait usync.WaitCloser, readerOffset StartPoint
 	}
 	reader.Start(wait)
 	return reader
-}
-
-func (ri *RedisInput) sendOutput(wait usync.WaitCloser, reader *store.Reader) {
-	if wait.IsClosed() {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(wait.Context())
-	defer cancel()
-
-	err := ri.output.Send(ctx, reader)
-	wait.Close(err)
 }
 
 // @TODO call stop

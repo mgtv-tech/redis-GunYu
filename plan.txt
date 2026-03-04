@@ -1,0 +1,331 @@
+# Redis-GunYu 改造实施计划（重排版）
+
+## 一、改造目标
+
+1. 先落地 **元数据 Redis Sentinel + Checkpoint 写入链路**，作为后续所有阶段的前置依赖。
+2. 在不影响主数据链路（源端 -> 本地落地 -> 目标端）的前提下，完成 Input/Output 解耦。
+3. 再实现 Input/Output 高可用与故障切换。
+4. 最后实现按 Slot（16384）的 checkpoint，支持异构分片集群双向同步。
+
+---
+
+## 二、总体原则
+
+- Checkpoint 采用双边界：`input_cp` 在 **meta.redis（Sentinel 托管）**，`output_cp` 在 **目标端 Redis**。
+- 两类 checkpoint 严格命名隔离，禁止混用/复用 key。
+- 本地落地（channel）继续作为数据缓冲与恢复介质。
+- 阶段之间必须有明确依赖，不跳阶段。
+
+---
+
+## 三、里程碑顺序（重新规划）
+
+### 阶段0：元数据 Redis Sentinel 基座（必须先做）
+
+**目标**：先把 checkpoint 写入元数据 Redis Sentinel 路径打通，形成稳定依赖。
+
+**工作量**：4-6天  
+**风险**：中-高
+
+#### [x] 任务0.1：补齐 Sentinel 客户端能力
+- **文件**：`pkg/redis/client/`、`config/config.go`、`config/var.go`
+- **内容**：
+  - 支持 `RedisTypeSentinel` 连接
+  - 支持 masterName、sentinel auth、切主重连
+  - 输出明确的连接/切主日志与指标
+
+#### [x] 任务0.2：定义元数据 Redis 配置
+- **文件**：`config/*.yaml`、`config/config.go`
+- **内容**：
+  - 新增 `meta.redis` 配置（与 input/output redis 解耦）
+  - 支持 sentinel 地址列表、masterName、认证参数
+
+#### [x] 任务0.3：Checkpoint 写入链路先打通
+- **文件**：`syncer/output.go`、`pkg/redis/checkpoint/checkpoint.go`
+- **内容**：
+  - Input checkpoint 写入 `meta.redis`
+  - Output 回放成功后 checkpoint 写入目标端 Redis
+  - 增加重试、超时、错误分类（可重试/不可重试）
+
+#### [x] 任务0.4：Checkpoint 读取链路打通
+- **文件**：`syncer/input.go`、`syncer/output.go`
+- **内容**：
+  - Input 启动时从 `meta.redis` 读取 checkpoint
+  - Output 启动时从目标端 checkpoint 获取起点
+
+#### [ ] 任务0.5：验收测试
+- [x] Sentinel 主从切换测试
+- [x] 进程重启恢复测试
+- [ ] 断网抖动下 checkpoint 连续性测试
+
+**完成标准**：
+- [x] checkpoint 双边界生效：`input_cp` 落 `meta.redis`，`output_cp` 落目标端
+- [x] Sentinel 切主后 30s 内自动恢复 checkpoint 读写
+- [x] 进程重启后可从 checkpoint 正常续传
+
+---
+
+### 阶段1：Input/Output 解耦（依赖阶段0）
+
+**目标**：解耦运行时依赖，Input 和 Output 互不直接调用。
+
+**工作量**：6-9天  
+**风险**：中
+
+#### [x] 任务1.1：Input 仅负责“读取源端 -> 写本地落地”
+- **文件**：`syncer/input.go`
+- **内容**：
+  - 保留 channel 写入逻辑
+  - 去除 Output 直接调用路径
+  - 启动/续传点完全依赖 `meta.redis checkpoint + channel`
+
+#### [x] 任务1.2：Output 仅负责“读本地落地 -> 写目标端”
+- **文件**：`syncer/output.go`、`syncer/output_runner.go`
+- **内容**：
+  - 起点读取来自目标端checkpoint，并与本地落地文件可读区间比较校正
+  - 回放成功后更新目标端checkpoint
+
+#### [x] 任务1.3：重构 syncer 主流程
+- **文件**：`syncer/syncer.go`
+- **内容**：
+  - Input、Output 独立 goroutine/runner
+  - 错误传播与退出语义拆分
+  - output 异常默认隔离重试；命中红线时受控联动退出
+
+#### [x] 任务1.5：`syncer` / `output_runner` 启动路径语义对齐（stage1-next-pass-e）
+- **文件**：`syncer/syncer.go`、`syncer/output_runner.go`
+- **内容**：
+  - 两条路径统一 output 连续失败阈值（300）与致命错误联动退出语义
+  - 移除 `InputRunner` 中 checkpoint redis 回退逻辑（checkpointName 配置时必须显式提供 checkpointRedis）
+
+#### [ ] 任务1.4：验收测试
+- [ ] Input 单独运行可持续落地
+- [ ] Output 单独运行可持续回放
+- [x] 单向链路重启不丢进度
+- [x] 生命周期分离验证：Output异常退出不影响Input持续落地
+- [x] 自恢复验证：Output恢复后可从目标端checkpoint继续回放
+
+**完成标准**：
+- [x] Input 与 Output 代码和运行时解耦
+- [x] Input checkpoint 只依赖 `meta.redis`
+- [x] 端到端单向同步稳定
+- [x] Output故障不触发Input联动退出（满足分离生命周期，带受控红线）
+- [ ] 达到磁盘水位/一致性红线时可触发可观测的受控联动策略
+
+#### 阶段1仅剩清单
+- [ ] Input 单独运行可持续落地（独立运行态验收）
+- [ ] Output 单独运行可持续回放（独立运行态验收）
+- [ ] 达到磁盘水位/一致性红线时可触发可观测的受控联动策略
+
+---
+
+### 阶段2：Input 高可用（依赖阶段1）
+
+**目标**：Input 实现 Leader/Follower，保障源端采集连续性。
+
+**工作量**：4-6天  
+**风险**：中
+
+#### 任务2.1：ReplicaLeader 适配 Redis checkpoint
+- **文件**：`syncer/replica.go`
+
+#### 任务2.2：ReplicaFollower 适配 Redis checkpoint
+- **文件**：`syncer/replica.go`
+
+#### 任务2.3：checkpoint 同步策略
+- Leader 负责写 `meta.redis`
+- Follower 只读并在接管后接续写入
+- 暂停控制仅作用于 Output；Input 不做暂停操作（避免采集中断）
+
+#### 任务2.4：验收测试
+- Leader 故障接管
+- 接管后偏移连续性
+
+**完成标准**：
+- [ ] Input 侧故障切换可用
+- [ ] 接管前后 checkpoint 连续
+
+---
+
+### 阶段3：Output 高可用（依赖阶段1）
+
+**目标**：Output 实现 Leader/Follower，保障回放连续性。
+
+**工作量**：8-11天  
+**风险**：高
+
+#### 任务3.1：实现 OutputLeader / OutputFollower
+- **文件**：`syncer/output_leader.go`、`syncer/output_follower.go`
+
+#### 任务3.2：Output checkpoint 协调
+- 仅 Leader 写 `目标端 Redis checkpoint`
+- Follower 接管后通过 CAS/epoch 防止覆盖
+
+#### 任务3.3：验收测试
+- 回放不中断
+- 切换后无大范围重复/回退
+
+**完成标准**：
+- [ ] Output 故障切换可用
+- [ ] checkpoint 写入单主语义明确
+
+---
+
+### 阶段4：故障切换与一致性收敛（依赖阶段2/3）
+
+**目标**：统一故障语义，明确一致性边界。
+
+**工作量**：5-7天  
+**风险**：高
+
+#### 任务4.1：故障注入矩阵
+- 进程崩溃
+- 网络分区
+- Sentinel 切主
+- 目标端短暂不可用
+
+#### 任务4.2：一致性策略固化
+- at-least-once 边界说明
+- checkpoint 更新时机标准化
+- 回放幂等策略
+
+#### 任务4.3：验收测试
+- 各场景恢复时间
+- 数据一致性抽样比对
+
+**完成标准**：
+- [ ] 故障场景可恢复
+- [ ] 一致性边界有文档并通过验证
+
+---
+
+### 阶段5：按 Slot Checkpoint（可选增强，依赖阶段0-4）
+
+**目标**：支持不同分片拓扑双向同步。
+
+**工作量**：9-13天  
+**风险**：中
+
+#### 任务5.1：Redis checkpoint 结构升级
+- **文件**：`pkg/redis/checkpoint/checkpoint.go`
+- **内容**：
+  - 每 slot 独立 checkpoint 字段（0-16383）
+  - 提供批量读写接口
+
+#### 任务5.2：Output 按 slot 更新 checkpoint
+- **文件**：`syncer/output.go`
+
+#### 任务5.3：Input 按 slot 聚合起点
+- **文件**：`syncer/input.go`
+
+#### 任务5.4：性能优化
+- 仅更新变更 slot
+- 合并网络往返
+
+#### 任务5.5：验收测试
+- 异构分片双向同步验证
+
+**完成标准**：
+- [ ] slot 级 checkpoint 完整
+- [ ] 异构分片双向同步可用
+
+---
+
+## 四、当前推荐执行顺序
+
+1. **立刻开始阶段0**（元数据 Redis Sentinel + checkpoint 读写）
+2. 阶段0稳定后，推进阶段1（解耦）
+3. 再并行推进阶段2/3（Input/Output HA）
+4. 阶段4收敛一致性
+5. 阶段5作为增强
+
+---
+
+## 五、工期总览（重排后）
+
+| 阶段 | 工作量 | 风险 |
+|---|---|---|
+| 阶段0：元数据Redis Sentinel + checkpoint | 4-6天 | 中-高 |
+| 阶段1：Input/Output解耦 | 6-9天 | 中 |
+| 阶段2：Input高可用 | 4-6天 | 中 |
+| 阶段3：Output高可用 | 8-11天 | 高 |
+| 阶段4：故障切换与一致性 | 5-7天 | 高 |
+| 阶段5：Slot checkpoint（可选） | 9-13天 | 中 |
+
+- 必选总工期（阶段0-4）：**27-39天**
+- 含阶段5总工期：**36-52天**
+
+---
+
+## 六、验收口径（关键）
+
+- `input_cp` 真相源是 `meta.redis`（Sentinel 托管）
+- `output_cp` 真相源是目标端 Redis（用于回放续传与回环过滤边界）
+- 任意单点进程重启后可按 checkpoint 续传
+- 双向同步下回环过滤策略与 checkpoint 策略一致
+
+---
+
+## 七、备注
+
+- 历史“文件 checkpoint”方案不再作为主路径，仅保留回滚参考。
+- 进入阶段1之前，阶段0必须在测试环境完成切主演练并通过。
+
+---
+
+## 八、工业级验收门槛
+
+### 8.1 SLO 与恢复目标
+
+- [ ] **可用性目标**：同步服务月度可用性 >= 99.9%
+- [ ] **恢复时间目标（RTO）**：单节点故障后 30s 内恢复同步
+- [ ] **数据丢失目标（RPO）**：进程异常重启场景 RPO <= 1s（按checkpoint刷新周期）
+- [ ] **重复回放窗口**：故障切换后允许小窗口 at-least-once，窗口上限可观测且可告警
+
+### 8.2 故障演练门槛（必须通过）
+
+- [ ] **Sentinel切主演练**：主从切换后自动恢复 checkpoint 读写与同步
+- [ ] **网络分区演练**：短时网络抖动/分区后无长时间卡死
+- [ ] **目标端不可用演练**：目标Redis不可用后可重试并恢复，不出现不可恢复中断
+- [ ] **进程反复重启演练**：连续重启后仍可按 checkpoint 续传
+- [ ] **分离生命周期演练**：仅Output故障时，Input保持持续落地且不退出
+- [ ] **恢复追平演练**：Output恢复后可自动追平积压并持续更新目标端checkpoint
+
+### 8.3 数据一致性门槛
+
+- [ ] **双向回环控制**：过滤策略稳定，无明显误过滤/漏过滤
+- [ ] **偏移单调性**：checkpoint offset 单调递增（允许故障恢复回退窗口有记录）
+- [ ] **抽样对账**：按库/slot抽样对账通过率 >= 99.99%
+- [ ] **一致性报告**：每次发布后产出一致性验证报告
+
+### 8.4 可观测性与告警门槛
+
+- [ ] **核心指标齐全**：lag、checkpoint延迟、回放QPS、失败率、重试次数、切主耗时
+- [ ] **告警分级**：P1/P2/P3 告警阈值、抑制与升级链路明确
+- [ ] **日志可追踪**：按 taskId/runId/slot 可关联输入、回放、checkpoint 三段日志
+- [ ] **审计可回放**：关键操作（切主、重试、回退）有审计记录
+
+### 8.5 发布与回滚门槛
+
+- [ ] **灰度发布能力**：支持按任务/实例灰度，支持快速回退
+- [ ] **双栈兼容窗口**：etcd 与 meta.redis 迁移期间可灰度并行验证
+- [ ] **回滚手册**：故障场景有标准回滚SOP，值班人员可执行
+- [ ] **变更冻结机制**：重大活动期间具备冻结与快速止损机制
+
+### 8.6 安全与合规门槛
+
+- [ ] **访问控制**：元数据Redis启用ACL最小权限
+- [ ] **传输安全**：生产环境支持TLS（按环境可配置）
+- [ ] **密钥管理**：账号密码轮换机制与泄露应急预案
+- [ ] **多租户隔离**：不同环境/任务 key namespace 强隔离
+
+### 8.7 双Checkpoint边界与隐患防护（必须明确）
+
+- [ ] **命名与职责隔离**：`input_cp` 仅记录源端采集进度（存放于 `meta.redis`），`output_cp` 仅记录回放进度（存放于目标端）；两者使用不同前缀/命名空间，禁止复用key。
+- [ ] **ACK后前移规则**：`output_cp` 仅在目标端写入成功并收到确认后更新，禁止“先更新checkpoint后写数据”。
+- [ ] **回环过滤隔离**：A->B 与 B->A 使用独立过滤标记key，避免checkpoint相关命令被反向链路误处理。
+- [ ] **落地文件保留保护**：AOF/RDB 清理策略必须受 `output lag` 保护，确保“checkpoint在、文件也在”，避免读取断档。
+- [ ] **拓扑变更连续性**：源端/目标端拓扑变化后，runId/replid 与 checkpoint 键选择规则保持连续，支持自动恢复与重试。
+- [ ] **降级与兜底策略**：当 `meta.redis` 或目标端checkpoint读取失败时，必须有可观测的降级策略（重试、回退安全点、告警），避免静默错位。
+
+> 注：按当前设计，`input_cp(meta.redis)` 与 `output_cp(目标端)` 在命名隔离正确的前提下不会互相覆盖；主要风险不在“覆盖”，而在“语义混淆、更新时机、回环与清理策略”。

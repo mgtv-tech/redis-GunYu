@@ -48,6 +48,9 @@ var (
 	ErrLeaderTakeover = fmt.Errorf("%w %s", ErrRole, "take over leadership")
 	// data
 	ErrCorrupted = fmt.Errorf("%w %s", ErrBreak, "corrupted")
+
+	// controlled linkage redline for isolated output lifecycle
+	errOutputRetryExceeded = errors.New("output retry exceeded")
 )
 
 type SyncerConfig struct {
@@ -105,6 +108,7 @@ type syncer struct {
 	guard     sync.RWMutex
 	wait      usync.WaitCloser
 	input     Input
+	output    *RedisOutput
 	channel   Channel
 	leader    *ReplicaLeader
 	slaveOf   *cluster.RoleInfo
@@ -345,13 +349,21 @@ func (s *syncer) runLeader() error {
 	if err != nil {
 		return err
 	}
+	checkpointRedis := s.inputCheckpointRedis()
 
 	s.guard.Lock()
 	input := NewRedisInput(s.cfg.Input)
-	input.SetOutput(output)
 	input.SetChannel(s.channel)
+	if output.cfg.CheckpointName != "" {
+		input.SetCheckpointMeta(checkpointRedis, output.cfg.CheckpointName)
+	}
+
+	// Set channel for output (decoupled architecture)
+	output.SetChannel(s.channel)
+
 	leader := NewReplicaLeader(input, s.channel)
 	s.input = input
+	s.output = output
 	s.leader = leader
 	s.state = SyncerStateRun
 	wait := s.wait
@@ -363,11 +375,24 @@ func (s *syncer) runLeader() error {
 
 	inputStateGauge.Set(0, s.cfg.Input.Address(), "leader")
 
+	// Run input goroutine
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
 		err := input.Run()
+		if err != nil {
+			s.logger.Errorf("input run error: %v", err)
+		}
 		wait.Close(err)
+	}, func(i interface{}) {
+		wait.Close(fmt.Errorf("panic: %v", i))
+	})
+
+	// Run output goroutine (decoupled from input)
+	wait.WgAdd(1)
+	usync.SafeGo(func() {
+		defer wait.WgDone()
+		s.runOutputLoop(wait, output)
 	}, func(i interface{}) {
 		wait.Close(fmt.Errorf("panic: %v", i))
 	})
@@ -380,6 +405,39 @@ func (s *syncer) runLeader() error {
 
 	wait.WgWait()
 	return wait.Error()
+}
+
+// runOutputLoop keeps output alive without forcing input to stop on output failures.
+// output failures are retried in-place; only an explicit syncer stop closes the loop.
+func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
+	const maxConsecutiveOutputFailures = 300
+	consecutiveFailures := 0
+	for !wait.IsClosed() {
+		err := output.runOnce(wait)
+		if err == nil {
+			consecutiveFailures = 0
+			continue
+		}
+		if wait.IsClosed() {
+			return
+		}
+
+		// Non-recoverable errors should stop the whole syncer.
+		if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
+			s.logger.Errorf("output run fatal error (linkage stop): %v", err)
+			wait.Close(err)
+			return
+		}
+
+		consecutiveFailures++
+		s.logger.Errorf("output run error (isolated): err(%v), consecutive(%d)", err, consecutiveFailures)
+		if consecutiveFailures >= maxConsecutiveOutputFailures {
+			wait.Close(fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err))
+			return
+		}
+		// Backoff before restarting output loop to avoid hot retry.
+		wait.Sleep(2 * time.Second)
+	}
 }
 
 func (s *syncer) runFollower() error {
@@ -432,6 +490,7 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	}
 
 	cfg := config.GetSyncerConfig().Output
+	metaRedis := s.inputCheckpointRedis()
 
 	outputCfg := RedisOutputConfig{
 		InputName:                  s.cfg.Input.Address(),
@@ -471,10 +530,19 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 			s.logger.Errorf("%s", err.Error())
 			return nil, errors.Join(ErrQuit, err)
 		}
-		// update checkpoint name and run id,
-		err = s.updateCheckpoint(wait, localCheckpoint, []string{id1, id2})
+		ids := []string{id1, id2}
+		// Initialize input-side checkpoint mapping on metadata redis.
+		err = s.updateCheckpoint(wait, metaRedis, localCheckpoint, ids)
 		if err != nil {
 			return nil, errors.Join(ErrRestart, err)
+		}
+		// When metadata redis is dedicated, output-side checkpoint mapping must
+		// also be initialized on target redis for loopback filtering/restart.
+		if !isSameRedisEndpoint(metaRedis, s.cfg.Output) {
+			err = s.updateCheckpoint(wait, s.cfg.Output, localCheckpoint, ids)
+			if err != nil {
+				return nil, errors.Join(ErrRestart, err)
+			}
 		}
 		outputCfg.CheckpointName = localCheckpoint
 		s.logger.Debugf("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
@@ -484,9 +552,35 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	return output, nil
 }
 
-func (s *syncer) updateCheckpoint(wait usync.WaitCloser, localCheckpoint string, ids []string) error {
+func (s *syncer) inputCheckpointRedis() config.RedisConfig {
+	cfg := config.GetSyncerConfig().Output
+	if cfg == nil || cfg.MetaRedis == nil {
+		panic("output.metaRedis must be configured")
+	}
+	return *cfg.MetaRedis
+}
+
+func isSameRedisEndpoint(a, b config.RedisConfig) bool {
+	if a.Type != b.Type ||
+		a.MasterName != b.MasterName ||
+		a.UserName != b.UserName ||
+		a.Password != b.Password ||
+		a.SentinelUser != b.SentinelUser ||
+		a.SentinelPass != b.SentinelPass ||
+		len(a.Addresses) != len(b.Addresses) {
+		return false
+	}
+	for i := range a.Addresses {
+		if a.Addresses[i] != b.Addresses[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *syncer) updateCheckpoint(wait usync.WaitCloser, metaRedis config.RedisConfig, localCheckpoint string, ids []string) error {
 	return util.RetryLinearJitter(wait.Context(), func() error {
-		cli, err := client.NewRedis(s.cfg.Output)
+		cli, err := client.NewRedis(metaRedis)
 		if err != nil {
 			return err
 		}
@@ -494,7 +588,7 @@ func (s *syncer) updateCheckpoint(wait usync.WaitCloser, localCheckpoint string,
 
 		err = checkpoint.UpdateCheckpoint(cli, localCheckpoint, ids)
 		if err != nil {
-			s.logger.Errorf("update checkpoint : redis(%s), local(%s), ids(%v), error(%v)", s.cfg.Output.Address(), localCheckpoint, ids, err)
+			s.logger.Errorf("update checkpoint : redis(%s), local(%s), ids(%v), error(%v)", metaRedis.Address(), localCheckpoint, ids, err)
 		}
 		return err
 	}, 5, time.Second*1, 0.3)

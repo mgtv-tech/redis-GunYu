@@ -231,8 +231,13 @@ func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd stri
 
 	resp := common.CheckReply(reply)
 	switch resp {
-	case common.KrespOK, common.KrespError:
+	case common.KrespOK:
 		return reply, nil
+	case common.KrespError:
+		if rerr, ok := reply.(common.RedisError); ok {
+			return nil, rerr
+		}
+		return nil, fmt.Errorf("redis error reply: %v", reply)
 	case common.KrespMove:
 		if !cluster.handleMoveError {
 			return nil, common.ErrMove

@@ -641,8 +641,31 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		}
 		redisCfg.SetMigrating(migrating)
 	} else if redisCfg.Type == config.RedisTypeSentinel {
-		// @TODO
-		return errors.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
+		cli, err := client.NewRedis(*redisCfg)
+		if err != nil {
+			return errors.Errorf("fix typology : new sentinel redis error : addr(%s), error(%w)", redisCfg.Address(), err)
+		}
+		defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
+		addrs := cli.Addresses()
+		if len(addrs) == 0 {
+			return errors.Errorf("fix typology : sentinel discovered empty master")
+		}
+		shards := []*config.RedisClusterShard{
+			{
+				Slots: config.RedisSlots{
+					Ranges: []config.RedisSlotRange{
+						{Left: 0, Right: 16383},
+					},
+				},
+				Master: config.RedisNode{
+					Address: addrs[0],
+					Role:    config.RedisRoleMaster,
+					Health:  "online",
+				},
+			},
+		}
+		redisCfg.SetClusterShards(shards)
+		return nil
 	} else if redisCfg.Type == config.RedisTypeStandalone {
 		shards := []*config.RedisClusterShard{}
 		for _, addr := range redisCfg.Addresses {
