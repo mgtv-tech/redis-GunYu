@@ -94,3 +94,27 @@ func TestParseAofCommand_KeepTransactionWhenNoFilterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestParseAofCommand_DropEvalContainingFilterCheckpoint(t *testing.T) {
+	oldMarker := config.FilterCheckpointKey
+	config.FilterCheckpointKey = "redis-GunYu-Filter-Checkpoint"
+	t.Cleanup(func() {
+		config.FilterCheckpointKey = oldMarker
+	})
+
+	ro := newTestOutput()
+	wait := usync.NewWaitCloser(nil)
+	defer wait.Close(nil)
+
+	payload := bytes.NewBuffer(nil)
+	payload.WriteString(respArray("EVAL", "return redis.call('set', KEYS[1], ARGV[1])", "1", config.FilterCheckpointKey+":k", "v1"))
+
+	sendBuf := make(chan cmdExecution, 8)
+	err := ro.parseAofCommand(wait, bufio.NewReader(payload), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sendBuf) != 0 {
+		t.Fatalf("expected eval command to be dropped, got %d cmds", len(sendBuf))
+	}
+}

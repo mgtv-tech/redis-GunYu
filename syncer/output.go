@@ -494,6 +494,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 		}
 
 		filterOut := false
+		keyStr := util.BytesToString(e.Key)
 		if ro.outFilter.FilterDb(int(e.DB)) {
 			filterOut = true
 		} else {
@@ -506,8 +507,9 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 				}
 			}
 
-			if ro.outFilter.FilterKey(util.BytesToString(e.Key)) ||
-				ro.outFilter.FilterSlot(util.BytesToString(e.Key)) {
+			if ro.outFilter.FilterKey(keyStr) ||
+				ro.outFilter.FilterSlot(keyStr) ||
+				ro.isSyncCheckpointKey(keyStr) {
 				filterOut = true
 			}
 		}
@@ -524,6 +526,29 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 		}
 		pingFn(filterOut)
 	}
+}
+
+func (ro *RedisOutput) isSyncCheckpointKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	// Guardrail for bidirectional sync: checkpoint keys must never be replayed as business data.
+	if config.CheckpointKey != "" && strings.HasPrefix(key, config.CheckpointKey) {
+		return true
+	}
+	if config.FilterCheckpointKey != "" && strings.HasPrefix(key, config.FilterCheckpointKey) {
+		return true
+	}
+	syncCfg := config.GetSyncerConfig()
+	if syncCfg == nil || syncCfg.Input == nil {
+		return false
+	}
+	cp := syncCfg.Input.SyncCheckPointKey
+	if cp != "" && strings.HasPrefix(key, cp) {
+		return true
+	}
+	fcp := syncCfg.Input.FilterCheckPointKey
+	return fcp != "" && strings.HasPrefix(key, fcp)
 }
 
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
@@ -926,6 +951,19 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 					Offset: startOffset + incrOffset,
 					Db:     currentDB,
 				})
+				continue
+			}
+			// Some checkpoint writes (for example Lua/EVAL based writes) are not
+			// recognized by FilterCmdKey command key positions; apply a raw payload
+			// guard to prevent filter checkpoint commands from loopback replay.
+			if config.FilterCheckpointKey != "" &&
+				bytes.Contains(bytes.Join(argv, []byte{' '}), []byte(config.FilterCheckpointKey)) {
+				filterCnt++
+				if filterCnt > 50000 {
+					ro.logger.Infof("Contains Filter Checkpoint Key: %s, ignore cmd(%s)...", config.FilterCheckpointKey, sCmd)
+					filterCnt = 0
+				}
+				ro.filterCounterAdd(1)
 				continue
 			}
 			if strings.EqualFold(sCmd, "select") {

@@ -391,30 +391,100 @@
 
 ---
 
-### 阶段5：按 Slot Checkpoint（可选增强，依赖阶段0-4）
+### 阶段5：验证双向同步（依赖阶段0-4）
+
+**目标**：验证 A->B 与 B->A 长稳运行、回环过滤有效、双向切换/重启后可持续收敛。
+
+**工作量**：3-5天  
+**风险**：中-高
+
+#### 任务5.1：双向链路对开验证
+- **内容**：
+  - 同时启动 A->B、B->A 双任务
+  - 持续写入冲突敏感样本（string/hash/zset + 事务）
+  - 观察是否出现异常回流放大
+
+#### 任务5.2：回环过滤有效性验证
+- **内容**：
+  - 针对 `FilterCheckpointKey` 与业务事务混合场景验证“整包事务丢弃”语义
+  - 校验双向链路下不过滤业务、不过度放行回环标记
+
+#### 任务5.3：双向切换/重启验证
+- **内容**：
+  - 源端切换、目标端切换、进程重启组合注入
+  - 校验 `input_cp(meta.redis)` 与 `output_cp(目标端)` 连续性
+
+#### 任务5.4：延迟度量改造（替换 syncDelayTestKey）
+- **内容**：
+  - 取消 `syncDelayTestKey: redis-GunYu-syncDelay-testKey` 参数与注入式测量路径
+  - 改为基于双 checkpoint 对比计算延迟：
+    - `input_cp(meta.redis)` 作为采集进度基线（offset/mtime）
+    - `output_cp(目标端)` 作为回放进度（offset/mtime）
+  - 产出并暴露两个核心指标：
+    - `lag_offset = input_cp.offset - output_cp.offset`
+    - `lag_time = input_cp.mtime - output_cp.mtime`（或等价时间差）
+  - 增加异常判定：checkpoint 不连续/倒退时打告警并标记度量无效窗口
+
+#### 任务5.5：验收测试
+- 双向 24h 稳态回放无异常放大
+- 抽样对账通过
+- 异常场景恢复后可追平
+- checkpoint 对比延迟指标稳定、可观测（lag_offset/lag_time）
+
+#### 阶段5补充记录（2026-03-05，双向专项排查与修复）
+- **问题现象**：
+  - 双向配置测试中，目标端出现了不应回流的 `redis-GunYu-Checkpoint-ClusterB*` 键。
+  - 运行日志伴随大量 `slot-key(... ) not start with checkpoint(...)` 前缀不一致告警。
+- **根因定位**：
+  - 反向链路配置方向错误：`cluster2-runtime-b.yaml` 与 `cluster2-runtime-a.yaml` 同向（均为 `A->B`），未形成真实 `B->A`。
+  - slot-key 文件共享导致污染：两条链路共用 `slot-key.txt`，不同 checkpoint 前缀相互覆盖。
+  - 非事务脚本命令漏过滤：`EVAL` 场景中可能携带 `FilterCheckpointKey`，未被事务分支拦截。
+- **修复项**：
+  - 配置修正：`config/cluster2-runtime-b.yaml` 改为 `input=800x`、`output=700x`，并切换为
+    `syncCheckPointKey=redis-GunYu-Checkpoint-ClusterB`、
+    `filterCheckPointKey=redis-GunYu-Checkpoint-ClusterA`。
+  - slot-key 隔离：`main.go` 将 cluster slot 映射文件改为按 checkpoint 前缀命名
+    （`slot-key-<syncCheckPointKey>.txt`），避免双向任务互相污染。
+  - 回环过滤兜底：`syncer/output.go` 在非事务路径增加基于原始参数载荷的
+    `FilterCheckpointKey` 检测，命中即丢弃（覆盖 `EVAL`/脚本写 checkpoint 场景）。
+  - 回归测试：`syncer/output_parse_test.go` 新增 `EVAL` 命中过滤键的丢弃用例。
+- **复测结论**：
+  - 在“清空 A/B 集群 + 清空 metaRedis + 仅启动 A->B 与 B->A 两链路”条件下复测通过。
+  - 双向方向正确：A->B 与 B->A 均可正常运行，且不再出现 slot-key 前缀污染告警。
+  - 回环过滤符合预期：B 侧不再出现 `ClusterB*` 回流键，A 侧不再出现 `ClusterA*` 回流键。
+
+**完成标准**：
+- [ ] 双向同步稳定运行
+- [ ] 回环过滤语义正确（无明显误过滤/漏过滤）
+- [ ] 双向切换与重启后可持续收敛
+- [ ] 延迟指标由 checkpoint 对比给出且可用于告警
+
+---
+
+### 阶段6：按 Slot Checkpoint（可选增强，依赖阶段0-5）
 
 **目标**：支持不同分片拓扑双向同步。
 
 **工作量**：9-13天  
 **风险**：中
 
-#### 任务5.1：Redis checkpoint 结构升级
+#### 任务6.1：Redis checkpoint 结构升级
 - **文件**：`pkg/redis/checkpoint/checkpoint.go`
 - **内容**：
   - 每 slot 独立 checkpoint 字段（0-16383）
   - 提供批量读写接口
 
-#### 任务5.2：Output 按 slot 更新 checkpoint
+#### 任务6.2：Output 按 slot 更新 checkpoint
 - **文件**：`syncer/output.go`
 
-#### 任务5.3：Input 按 slot 聚合起点
+#### 任务6.3：Input 按 slot 聚合起点
 - **文件**：`syncer/input.go`
 
-#### 任务5.4：性能优化
+#### 任务6.4：性能优化
 - 仅更新变更 slot
 - 合并网络往返
 
-#### 任务5.5：验收测试
+#### 任务6.5：验收测试
 - 异构分片双向同步验证
 
 **完成标准**：
@@ -429,7 +499,8 @@
 2. 阶段0稳定后，推进阶段1（解耦）
 3. 再并行推进阶段2/3（Input/Output HA）
 4. 阶段4收敛一致性
-5. 阶段5作为增强
+5. 阶段5完成双向同步验证
+6. 阶段6作为增强（Slot Checkpoint）
 
 ---
 
@@ -442,10 +513,11 @@
 | 阶段2：Input高可用 | 4-6天 | 中 |
 | 阶段3：Output高可用 | 8-11天 | 高 |
 | 阶段4：故障切换与一致性 | 5-7天 | 高 |
-| 阶段5：Slot checkpoint（可选） | 9-13天 | 中 |
+| 阶段5：双向同步验证 | 3-5天 | 中-高 |
+| 阶段6：Slot checkpoint（可选） | 9-13天 | 中 |
 
-- 必选总工期（阶段0-4）：**27-39天**
-- 含阶段5总工期：**36-52天**
+- 必选总工期（阶段0-5）：**30-44天**
+- 含阶段6总工期：**39-57天**
 
 ---
 

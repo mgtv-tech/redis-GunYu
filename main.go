@@ -47,7 +47,7 @@ func runCmd() error {
 			if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeCluster {
 				digest.SlotKey = make(map[uint16]string)
 				isRewriteFile := false
-				slotKeyFile := filepath.Join(filepath.Dir(config.GetFlag().ConfigPath), "slot-key.txt")
+				slotKeyFile := filepath.Join(filepath.Dir(config.GetFlag().ConfigPath), checkpointSlotKeyFileName(config.CheckpointKey))
 				f, err := os.OpenFile(slotKeyFile, os.O_RDONLY, 0666)
 				defer f.Close()
 				if err != nil {
@@ -166,4 +166,23 @@ func panicIfError(err error) {
 		return
 	}
 	log.Panic(err)
+}
+
+func checkpointSlotKeyFileName(checkpointKey string) string {
+	sanitized := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+		" ", "_",
+	).Replace(checkpointKey)
+	if sanitized == "" {
+		sanitized = "default"
+	}
+	return "slot-key-" + sanitized + ".txt"
 }

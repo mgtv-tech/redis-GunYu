@@ -49,7 +49,7 @@ func NewRedisConn(cfg config.RedisConfig) (*RedisConn, error) {
 			directCfg.Type = config.RedisTypeStandalone
 			conn, err := newDirectRedisConn(directCfg)
 			if err == nil {
-				log.Infof("sentinel connect success : masterName(%s), master(%s)", cfg.MasterName, masterAddr)
+				//log.Infof("sentinel connect success : masterName(%s), master(%s)", cfg.MasterName, masterAddr)
 				return conn, nil
 			}
 			lastErr = err
@@ -146,7 +146,7 @@ func discoverMasterBySentinel(cfg config.RedisConfig) (string, error) {
 			lastErr = err
 			continue
 		}
-		log.Infof("sentinel discovered master : masterName(%s), master(%s:%s), via(%s)", cfg.MasterName, ret[0], ret[1], sentinelAddr)
+		//log.Infof("sentinel discovered master : masterName(%s), master(%s:%s), via(%s)", cfg.MasterName, ret[0], ret[1], sentinelAddr)
 		return fmt.Sprintf("%s:%s", ret[0], ret[1]), nil
 	}
 	if lastErr == nil {
