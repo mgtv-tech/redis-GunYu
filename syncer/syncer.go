@@ -502,8 +502,6 @@ func (s *syncer) runFollower() error {
 	s.guard.Unlock()
 
 	s.updateStateMetric()
-	syncDelayGauge.Set(0, s.cfg.Input.Address())
-
 	s.logger.Infof("RunFollower : leader(%s)", leader.Address)
 
 	inputStateGauge.Set(0, s.cfg.Input.Address(), "follower")
@@ -571,6 +569,7 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		RunId:                      id1,
 		CanTransaction:             s.cfg.CanTransaction,
 		Redis:                      s.cfg.Output,
+		InputCheckpointRedis:       metaRedis,
 		EnableResumeFromBreakPoint: *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint,
 		AllowRestoreReplay:         cfg.Replay.AllowRestoreReplay,
 		ReplaceHashTag:             cfg.Replay.ReplaceHashTag,
@@ -590,7 +589,6 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		ReplayPipeline:             cfg.Replay.AofPipelineMode,
 		Stats:                      cfg.Replay.Stats,
 		Filter:                     config.GetSyncerConfig().Output.Filter,
-		SyncDelayTestKey:           config.GetSyncerConfig().Input.SyncDelayTestKey,
 	}
 
 	if *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint {

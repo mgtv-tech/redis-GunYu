@@ -160,7 +160,6 @@ func (rc *RdbCmd) Load(rdbPath string, cfg *config.RdbCmdLoad) error {
 		UpdateCheckpointTicker:     cfg.Replay.UpdateCheckpointTicker,
 		Stats:                      cfg.Replay.Stats,
 		Filter:                     cfg.Filter,
-		SyncDelayTestKey:           "",
 	}
 
 	output := syncer.NewRedisOutput(outputCfg)

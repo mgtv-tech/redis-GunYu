@@ -158,7 +158,6 @@ type InputConfig struct {
 	rdbParallelLimiter  chan struct{}
 	Mode                InputMode       `yaml:"mode"`
 	SyncFrom            SelNodeStrategy `yaml:"syncFrom"`
-	SyncDelayTestKey    string          `yaml:"syncDelayTestKey"`
 	SyncCheckPointKey   string          `yaml:"syncCheckPointKey"`
 	FilterCheckPointKey string          `yaml:"filterCheckPointKey"`
 	SkipReplyRdb        bool            `yaml:"skipReplyRdb" default:"false"`

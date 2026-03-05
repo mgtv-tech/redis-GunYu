@@ -399,18 +399,18 @@
 **工作量**：3-5天  
 **风险**：中-高
 
-#### 任务5.1：双向链路对开验证
+#### [x] 任务5.1：双向链路对开验证
 - **内容**：
   - 同时启动 A->B、B->A 双任务
   - 持续写入冲突敏感样本（string/hash/zset + 事务）
   - 观察是否出现异常回流放大
 
-#### 任务5.2：回环过滤有效性验证
+#### [x] 任务5.2：回环过滤有效性验证
 - **内容**：
   - 针对 `FilterCheckpointKey` 与业务事务混合场景验证“整包事务丢弃”语义
   - 校验双向链路下不过滤业务、不过度放行回环标记
 
-#### 任务5.3：双向切换/重启验证
+#### [x] 任务5.3：双向切换/重启验证
 - **内容**：
   - 源端切换、目标端切换、进程重启组合注入
   - 校验 `input_cp(meta.redis)` 与 `output_cp(目标端)` 连续性
@@ -419,7 +419,7 @@
     - 观测：`cluster renew/campaign` 错误窗口、`/syncer/status` 是否保持 `run`、是否触发进程退出
     - 验收：允许短时重试日志，不允许长期 `stop` 或不可恢复中断
 
-#### 任务5.4：延迟度量改造（替换 syncDelayTestKey）
+#### [x] 任务5.4：延迟度量改造（替换 syncDelayTestKey）
 - **内容**：
   - 取消 `syncDelayTestKey: redis-GunYu-syncDelay-testKey` 参数与注入式测量路径
   - 改为基于双 checkpoint 对比计算延迟：
@@ -429,15 +429,81 @@
     - `lag_offset = input_cp.offset - output_cp.offset`
     - `lag_time = input_cp.mtime - output_cp.mtime`（或等价时间差）
   - 增加异常判定：checkpoint 不连续/倒退时打告警并标记度量无效窗口
+  - 指标实现口径（方式2，默认 `meta.redis` 与目标端时钟一致）：
+    - `redis_gunyu_output_checkpoint_lag_offset{input=...}`
+    - `redis_gunyu_output_checkpoint_lag_time{input=...}`（单位：ns）
+    - `redis_gunyu_output_checkpoint_lag_valid{input=...}`（1=有效，0=无效）
+  - 有效门控（任一命中即 `lag_valid=0`，并将 lag 指标置为 `-1`）：
+    - runId 为空/非法，或 `input_cp.runid != output_cp.runid`
+    - 任一侧 checkpoint 不存在、读失败、字段非法（offset<0 或 mtime<=0）
+    - 计算结果为负值（`lag_offset<0` 或 `lag_time<0`）
+    - 同一 runId 下 checkpoint offset 回退（判定为无效窗口）
+  - 告警建议（仅在 `lag_valid=1` 时生效）：
+    - P3：`lag_offset > 10_000` 持续 1 分钟
+    - P2：`lag_offset > 100_000` 或 `lag_time > 30s` 持续 3 分钟
+    - P1：`lag_offset > 1_000_000` 或 `lag_time > 120s` 持续 5 分钟
+  - Prometheus 告警规则样例（可直接落地，含 `lag_valid` 门控）：
+```yaml
+groups:
+  - name: redis-gunyu-lag
+    rules:
+      - alert: RedisGunYuLagP3
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and redis_gunyu_output_checkpoint_lag_offset > 10000
+        for: 1m
+        labels:
+          severity: P3
+        annotations:
+          summary: "Redis-GunYu lag P3 on {{ $labels.input }}"
+          description: "checkpoint lag_offset > 10000 for 1m"
 
-#### 任务5.5：验收测试
+      - alert: RedisGunYuLagP2
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and (
+            redis_gunyu_output_checkpoint_lag_offset > 100000
+            or redis_gunyu_output_checkpoint_lag_time > 30000000000
+          )
+        for: 3m
+        labels:
+          severity: P2
+        annotations:
+          summary: "Redis-GunYu lag P2 on {{ $labels.input }}"
+          description: "lag_offset > 100000 or lag_time > 30s for 3m"
+
+      - alert: RedisGunYuLagP1
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and (
+            redis_gunyu_output_checkpoint_lag_offset > 1000000
+            or redis_gunyu_output_checkpoint_lag_time > 120000000000
+          )
+        for: 5m
+        labels:
+          severity: P1
+        annotations:
+          summary: "Redis-GunYu lag P1 on {{ $labels.input }}"
+          description: "lag_offset > 1000000 or lag_time > 120s for 5m"
+
+      - alert: RedisGunYuLagInvalidWindow
+        expr: redis_gunyu_output_checkpoint_lag_valid == 0
+        for: 2m
+        labels:
+          severity: P2
+        annotations:
+          summary: "Redis-GunYu lag metric invalid on {{ $labels.input }}"
+          description: "checkpoint lag is in invalid window for more than 2m"
+```
+
+#### [ ] 任务5.5：验收测试
 - 双向 24h 稳态回放无异常放大
 - 抽样对账通过
 - 异常场景恢复后可追平
 - checkpoint 对比延迟指标稳定、可观测（lag_offset/lag_time）
 - `meta.redis(Sentinel)` 切主注入后，协调续租可恢复（无长期 `renew error` 导致的不可恢复退出）
 
-#### 任务5.6：差异风险专项验证（冲突/非幂等/TTL/Lua）
+#### [~] 任务5.6：差异风险专项验证（冲突/非幂等/TTL/Lua）
 - **内容**：
   - 冲突写验证：A/B 同时写同 key，观测最终值与覆盖顺序，明确“最后写入生效”边界。
   - 非幂等命令验证：`INCR/HINCRBY/ZINCRBY/XADD` 在重试/切换窗口内压测，量化重复回放影响。
@@ -446,10 +512,10 @@
   - 产出专项脚本与报告：`scripts/stage5_risk_verify.sh`（命令级），固定采样与记录模板。
 
 **通过标准（任务5.6）**：
-- [ ] 已明确并文档化“冲突写最终一致性”边界与业务约束
-- [ ] 已量化非幂等命令在故障窗口的偏差范围
-- [ ] 已给出 TTL/Lua 两类差异场景的验收口径与告警阈值
-- [ ] 已形成可复用的一键验证脚本与结果记录模板
+- [x] 已明确并文档化“冲突写最终一致性”边界与业务约束
+- [x] 已量化非幂等命令在故障窗口的偏差范围
+- [~] 已给出 TTL/Lua 两类差异场景的验收口径与告警阈值（TTL已补齐，Lua待补测）
+- [x] 已形成可复用的一键验证脚本与结果记录模板
 
 #### 阶段5补充记录（2026-03-05，双向专项排查与修复）
 - **问题现象**：
@@ -514,10 +580,10 @@
   - 结论：`INCR` 在“非幂等 + 故障切换（非双写）”路径已恢复通过。
 
 **完成标准**：
-- [ ] 双向同步稳定运行
-- [ ] 回环过滤语义正确（无明显误过滤/漏过滤）
-- [ ] 双向切换与重启后可持续收敛
-- [ ] 延迟指标由 checkpoint 对比给出且可用于告警
+- [~] 双向同步稳定运行（关键场景已通过，24h稳态待补）
+- [x] 回环过滤语义正确（无明显误过滤/漏过滤）
+- [x] 双向切换与重启后可持续收敛
+- [x] 延迟指标由 checkpoint 对比给出且可用于告警
 
 ---
 

@@ -56,9 +56,14 @@ type RedisOutput struct {
 	// New fields for decoupled architecture
 	channel Channel
 
-	cpConnLogged atomic.Bool
-	leaderEpoch  atomic.Int64
-	leaderToken  string
+	cpConnLogged  atomic.Bool
+	leaderEpoch   atomic.Int64
+	leaderToken   string
+	lagStarted    atomic.Bool
+	lagGuard      sync.Mutex
+	lagLastRunID  string
+	lagLastInOff  int64
+	lagLastOutOff int64
 }
 
 var (
@@ -135,10 +140,22 @@ var (
 		Name:      "ack_offset",
 		Labels:    []string{"input"},
 	})
-	syncDelayGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+	checkpointLagOffsetGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
 		Namespace: config.AppName,
 		Subsystem: "output",
-		Name:      "sync_delay",
+		Name:      "checkpoint_lag_offset",
+		Labels:    []string{"input"},
+	})
+	checkpointLagTimeGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "checkpoint_lag_time",
+		Labels:    []string{"input"},
+	})
+	checkpointLagValidGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "checkpoint_lag_valid",
 		Labels:    []string{"input"},
 	})
 )
@@ -156,6 +173,7 @@ func (ro *RedisOutput) Run(wait usync.WaitCloser) error {
 	if ro.channel == nil {
 		return fmt.Errorf("channel is not set")
 	}
+	ro.startCheckpointLagCollector(wait.Context())
 
 	for !wait.IsClosed() {
 		err := ro.runOnce(wait)
@@ -240,6 +258,9 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	if len(ro.cfg.CheckpointRedis.Addresses) == 0 {
 		ro.cfg.CheckpointRedis = ro.cfg.Redis
 	}
+	if len(ro.cfg.InputCheckpointRedis.Addresses) == 0 {
+		ro.cfg.InputCheckpointRedis = ro.cfg.CheckpointRedis
+	}
 	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
 		ro.cfg.Redis.GetClusterOptions().HandleAskErr = false
@@ -257,8 +278,6 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		ro.outFilter.InsertPrefixKeyBlackList(keyFilter.PrefixKeyBlacklist)
 		ro.outFilter.InsertPrefixKeyWhiteList(keyFilter.PrefixKeyWhitelist)
 	}
-
-	syncDelayGauge.Set(float64(0), ro.cfg.InputName)
 
 	slotFilter := cfg.Filter.SlotFilter
 	if slotFilter != nil {
@@ -301,7 +320,9 @@ type RedisOutputConfig struct {
 	CanTransaction bool
 	Redis          config.RedisConfig
 	// Optional. If empty, NewRedisOutput defaults it to Redis.
-	CheckpointRedis            config.RedisConfig
+	CheckpointRedis config.RedisConfig
+	// Input-side checkpoint source, normally meta redis.
+	InputCheckpointRedis       config.RedisConfig
 	EnableResumeFromBreakPoint bool
 	AllowRestoreReplay         bool
 
@@ -322,17 +343,14 @@ type RedisOutputConfig struct {
 	UpdateCheckpointTicker time.Duration      `yaml:"updateCheckpointTicker"`
 	Stats                  config.OutputStats `yaml:"stats"`
 
-	Filter           config.FilterConfig
-	SyncDelayTestKey string
+	Filter config.FilterConfig
 }
 
 type cmdExecution struct {
-	Cmd           string
-	Args          []interface{}
-	Offset        int64
-	Db            int
-	syncDelayNs   int64
-	syncDelayHost string
+	Cmd    string
+	Args   []interface{}
+	Offset int64
+	Db     int
 }
 
 func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
@@ -758,6 +776,113 @@ return 1
 	return err
 }
 
+func (ro *RedisOutput) startCheckpointLagCollector(ctx context.Context) {
+	if !ro.lagStarted.CompareAndSwap(false, true) {
+		return
+	}
+	interval := ro.cfg.UpdateCheckpointTicker
+	if interval <= 0 {
+		interval = time.Second
+	}
+	usync.SafeGo(func() {
+		defer ro.lagStarted.Store(false)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ro.collectCheckpointLag()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}, nil)
+}
+
+func (ro *RedisOutput) setCheckpointLagInvalid(reason string) {
+	checkpointLagValidGauge.Set(0, ro.cfg.InputName)
+	checkpointLagOffsetGauge.Set(-1, ro.cfg.InputName)
+	checkpointLagTimeGauge.Set(-1, ro.cfg.InputName)
+	if reason != "" {
+		ro.logger.Debugf("checkpoint lag invalid : input(%s), reason(%s)", ro.cfg.InputName, reason)
+	}
+}
+
+func (ro *RedisOutput) readCheckpointByRedis(redisCfg config.RedisConfig, runID string) (*checkpoint.CheckpointInfo, error) {
+	if len(redisCfg.Addresses) == 0 || ro.cfg.CheckpointName == "" || runID == "" || runID == "?" {
+		return nil, nil
+	}
+	cli, err := client.NewRedis(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
+	cp, _, err := checkpoint.GetCheckpoint(cli, ro.cfg.CheckpointName, []string{runID})
+	return cp, err
+}
+
+func (ro *RedisOutput) collectCheckpointLag() {
+	runID := ro.cfg.RunId
+	if runID == "" || runID == "?" {
+		ro.setCheckpointLagInvalid("runid_empty")
+		return
+	}
+
+	inCp, err := ro.readCheckpointByRedis(ro.cfg.InputCheckpointRedis, runID)
+	if err != nil {
+		ro.setCheckpointLagInvalid("read_input_checkpoint_failed")
+		return
+	}
+	outCp, err := ro.readCheckpointByRedis(ro.cfg.CheckpointRedis, runID)
+	if err != nil {
+		ro.setCheckpointLagInvalid("read_output_checkpoint_failed")
+		return
+	}
+	if inCp == nil || outCp == nil {
+		ro.setCheckpointLagInvalid("checkpoint_not_found")
+		return
+	}
+	if inCp.RunId == "" || inCp.RunId == "?" || outCp.RunId == "" || outCp.RunId == "?" {
+		ro.setCheckpointLagInvalid("checkpoint_runid_invalid")
+		return
+	}
+	if inCp.RunId != outCp.RunId {
+		ro.setCheckpointLagInvalid("runid_mismatch")
+		return
+	}
+	if inCp.Offset < 0 || outCp.Offset < 0 || inCp.Mtime <= 0 || outCp.Mtime <= 0 {
+		ro.setCheckpointLagInvalid("checkpoint_field_invalid")
+		return
+	}
+
+	lagOffset := inCp.Offset - outCp.Offset
+	lagTime := inCp.Mtime - outCp.Mtime
+	if lagOffset < 0 || lagTime < 0 {
+		ro.setCheckpointLagInvalid("negative_lag")
+		return
+	}
+
+	ro.lagGuard.Lock()
+	if ro.lagLastRunID == inCp.RunId {
+		if inCp.Offset < ro.lagLastInOff || outCp.Offset < ro.lagLastOutOff {
+			ro.lagLastInOff = inCp.Offset
+			ro.lagLastOutOff = outCp.Offset
+			ro.lagGuard.Unlock()
+			ro.setCheckpointLagInvalid("checkpoint_offset_rollback")
+			return
+		}
+	} else {
+		ro.lagLastRunID = inCp.RunId
+	}
+	ro.lagLastInOff = inCp.Offset
+	ro.lagLastOutOff = outCp.Offset
+	ro.lagGuard.Unlock()
+
+	checkpointLagValidGauge.Set(1, ro.cfg.InputName)
+	checkpointLagOffsetGauge.Set(float64(lagOffset), ro.cfg.InputName)
+	checkpointLagTimeGauge.Set(float64(lagTime), ro.cfg.InputName)
+}
+
 func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err error) {
 	conn, err = client.NewRedis(ro.cfg.Redis)
 	if err != nil {
@@ -863,7 +988,6 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		}
 	}
 
-	syncDelayTestkey := []byte(ro.cfg.SyncDelayTestKey)
 	inTransaction := false                         // 标记是否在处理MULTI-EXEC块
 	shouldIgnore := false                          // 标记事务是否应整包丢弃（用于回环过滤）
 	transactionCommands := make([]cmdExecution, 0) // 存储事务中的命令
@@ -1031,22 +1155,6 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			Offset: startOffset + incrOffset,
 			Db:     currentDB,
 		}
-		if len(syncDelayTestkey) > 0 {
-			if sCmd == "set" && len(argv) > 0 {
-				if bytes.Equal(argv[0], syncDelayTestkey) {
-					vals := strings.Split(util.BytesToString(argv[1]), "_")
-					if len(vals) == 2 {
-						ns, err := strconv.ParseInt((vals[1]), 10, 64)
-						if err != nil {
-							ro.logger.Errorf("parse int : string(%s), error(%v)", argv[1], err)
-						} else {
-							cmdExec.syncDelayNs = ns
-							cmdExec.syncDelayHost = vals[0]
-						}
-					}
-				}
-			}
-		}
 
 		select {
 		case sendBuf <- cmdExec:
@@ -1167,10 +1275,6 @@ func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, conn client.Redis, 
 			}
 			ro.sendCounterAdd(1)
 			sendSizeCounter.Add(float64(length), ro.cfg.InputName)
-			if item.syncDelayNs > 0 {
-				delay := time.Now().UnixNano() - item.syncDelayNs
-				syncDelayGauge.Set(float64(delay), item.syncDelayHost)
-			}
 		case <-replayWait.Done():
 			return nil
 		}
@@ -1224,21 +1328,13 @@ func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn c
 		}
 
 		lastOffset := int64(0)
-		delayNs := int64(0)
 		for _, ce := range cmdQueue {
 			batcher.Put(ce.Cmd, ce.Args...)
 			// if err := conn.Send(ce.Cmd, ce.Args...); err != nil {
 			// 	return handleDirectError(fmt.Errorf("send cmd error : cmd(%s), args(%v), error(%v)", ce.Cmd, ce.Args, err))
 			// }
 			lastOffset = ce.Offset
-			if ce.syncDelayNs > 0 && delayNs == 0 {
-				delayNs = ce.syncDelayNs
-				//delay := time.Now().UnixNano() - ce.syncDelayNs
-				//syncDelayGauge.Set(float64(delay), ro.cfg.InputName)
-			}
 		}
-
-		syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
 		sendOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 		ro.sendCounterAdd(queuedCmdCount)
 		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
@@ -1416,7 +1512,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		bt         common.CmdBatcher
 		cmdCounter uint
 		offset     uint
-		delayNs    int64
 	}
 	var pipeline chan *cmdBatcher
 
@@ -1454,9 +1549,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 					handleError(bat, err)
 					return
 				}
-				if bat.delayNs > 0 {
-					syncDelayGauge.Set(float64(time.Now().UnixNano()-bat.delayNs), ro.cfg.InputName)
-				}
 				succCounter.Add(float64(bat.cmdCounter), ro.cfg.InputName)
 				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 				ackOffsetGauge.Set(float64(bat.offset), ro.cfg.InputName)
@@ -1472,10 +1564,9 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			batcher.Put("multi")
 		}
 
-		delayNs := int64(0)
 		for _, ce := range cmdQueue {
 			if config.GetSyncerConfig().Input.PrintCmdToTarget {
-				if len(ce.Args) > 0 && !bytes.EqualFold(ce.Args[0].([]byte), []byte(config.GetSyncerConfig().Input.SyncDelayTestKey)) {
+				if len(ce.Args) > 0 {
 					argsStr := make([]string, len(ce.Args))
 					for i, arg := range ce.Args {
 						switch v := arg.(type) {
@@ -1490,11 +1581,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			}
 			batcher.Put(ce.Cmd, ce.Args...)
 			cmdCounter++
-			if ce.syncDelayNs > 0 {
-				if delayNs == 0 || delayNs > ce.syncDelayNs {
-					delayNs = ce.syncDelayNs
-				}
-			}
 		}
 
 		if shouldInTransaction {
@@ -1529,7 +1615,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				bt:         batcher,
 				cmdCounter: cmdCounter,
 				offset:     uint(lastOffset),
-				delayNs:    delayNs,
 			}:
 			case <-replayWait.Context().Done():
 				return replayWait.Error()
@@ -1541,10 +1626,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
 				return err
 			}
-			if delayNs > 0 {
-				syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
-			}
-
 			succCounter.Add(float64(cmdCounter), ro.cfg.InputName)
 			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 			ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
