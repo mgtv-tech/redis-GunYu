@@ -572,6 +572,7 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		CanTransaction:             s.cfg.CanTransaction,
 		Redis:                      s.cfg.Output,
 		EnableResumeFromBreakPoint: *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint,
+		AllowRestoreReplay:         cfg.Replay.AllowRestoreReplay,
 		ReplaceHashTag:             cfg.Replay.ReplaceHashTag,
 		KeyExists:                  cfg.Replay.KeyExists,
 		KeyExistsLog:               cfg.Replay.KeyExistsLog,

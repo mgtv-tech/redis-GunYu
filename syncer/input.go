@@ -311,10 +311,6 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	// correct run id
 	if isFullSync {
 		ri.setRunIds([]string{sOffset.RunId})
-	} else {
-		if sOffset.RunId != id1 { // if it's incr sync, run id maybe not latest
-			sOffset.RunId = id1
-		}
 	}
 
 	if isFullSync || clearLocal {

@@ -246,6 +246,9 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	}
 	ro.outFilter = &filter.RedisKeyFilter{}
 	ro.outFilter.InsertCmdBlackList(filter.NoRouteCmds, true)
+	if !cfg.AllowRestoreReplay {
+		ro.outFilter.InsertCmdBlackList([]string{"restore"}, true)
+	}
 	ro.outFilter.InsertCmdBlackList(cfg.Filter.CmdBlacklist, true)
 
 	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey, config.NamespacePrefixKey})
@@ -300,6 +303,7 @@ type RedisOutputConfig struct {
 	// Optional. If empty, NewRedisOutput defaults it to Redis.
 	CheckpointRedis            config.RedisConfig
 	EnableResumeFromBreakPoint bool
+	AllowRestoreReplay         bool
 
 	ReplaceHashTag         bool               `yaml:"replaceHashTag"`
 	KeyExists              string             `yaml:"keyExists"` // replace|ignore|error
@@ -750,7 +754,7 @@ return 1
 		}
 		return checkpoint.SetCheckpoint(cli, checkpointKv)
 	}, 5, time.Second*2, 0.3)
-	ro.logger.Log(err, "set checkpoint : checkpoint(%v), err(%v)", checkpointKv, err)
+	//ro.logger.Log(err, "set checkpoint : checkpoint(%v), err(%v)", checkpointKv, err)
 	return err
 }
 

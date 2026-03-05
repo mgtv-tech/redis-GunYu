@@ -265,6 +265,7 @@ type OutputConfig struct {
 
 type ReplayConfig struct {
 	ResumeFromBreakPoint   *bool         `yaml:"resumeFromBreakPoint" default:"true"`
+	AllowRestoreReplay     bool          `yaml:"allowRestoreReplay"`
 	ReplaceHashTag         bool          `yaml:"replaceHashTag"`
 	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
 	KeyExistsLog           bool          `yaml:"keyExistsLog"`
@@ -819,19 +820,19 @@ func (rc *RedisConfig) Index(i int) RedisConfig {
 	addr := rc.Addresses[i]
 	slots := rc.GetSlots(addr)
 	sre := RedisConfig{
-		Addresses:   []string{rc.Addresses[i]},
-		UserName:    rc.UserName,
-		Password:    rc.Password,
-		MasterName:  rc.MasterName,
+		Addresses:    []string{rc.Addresses[i]},
+		UserName:     rc.UserName,
+		Password:     rc.Password,
+		MasterName:   rc.MasterName,
 		SentinelUser: rc.SentinelUser,
 		SentinelPass: rc.SentinelPass,
-		TlsEnable:   rc.TlsEnable,
-		Type:        rc.Type,
-		Otype:       rc.Type,
-		Version:     rc.Version,
-		isMigrating: rc.isMigrating,
-		KeepAlive:   rc.KeepAlive,
-		AliveTime:   rc.AliveTime,
+		TlsEnable:    rc.TlsEnable,
+		Type:         rc.Type,
+		Otype:        rc.Type,
+		Version:      rc.Version,
+		isMigrating:  rc.isMigrating,
+		KeepAlive:    rc.KeepAlive,
+		AliveTime:    rc.AliveTime,
 	}
 	if slots != nil {
 		sre.slots = *slots

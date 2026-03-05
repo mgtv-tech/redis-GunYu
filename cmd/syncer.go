@@ -463,7 +463,9 @@ func (sc *SyncerCmd) run() error {
 		cli, err = cluster.NewEtcdCluster(runWait.Context(), *config.GetSyncerConfig().Cluster.MetaEtcd)
 	} else {
 		ttl := int(config.GetSyncerConfig().Cluster.LeaseTimeout / time.Second)
-		cli, err = cluster.NewRedisCluster(runWait.Context(), *config.GetSyncerConfig().Input.Redis, ttl)
+		// Use meta redis as coordination backend to avoid coupling elections/leases
+		// to source or target business redis clusters.
+		cli, err = cluster.NewRedisCluster(runWait.Context(), *config.GetSyncerConfig().Output.MetaRedis, ttl)
 	}
 
 	if err != nil {
