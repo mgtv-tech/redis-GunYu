@@ -204,6 +204,26 @@
 - [x] Output 故障切换可用
 - [x] checkpoint 写入单主语义明确
 
+#### 阶段2/3状态机分层口径（统一定义）
+
+- **分层原则**：生命周期、Input角色、Output角色三层正交，不混用同一状态字段表达不同语义。
+- **L1：Syncer生命周期状态（总控层）**
+  - 状态：`ready_run` / `run` / `stop`（`pause` 预留）
+  - 含义：描述“syncer主循环是否在运行”，不代表 Input/Output 的主备角色。
+- **L2：Input HA角色状态（采集层）**
+  - 状态：`leader` / `follower`
+  - 语义：`leader` 负责源端采集并推进 `input_cp(meta.redis)`；`follower` 只读/待接管，接管后转为 `leader` 继续推进。
+- **L3：Output HA角色状态（回放层）**
+  - 状态：`leader(active)` / `follower(standby)` / `takeover(active)`
+  - 语义：仅 active 侧回放数据并推进 `output_cp(目标端)`；standby 不执行回放写入。
+- **PAUSED/RESUME 语义（当前口径）**
+  - `PAUSED` 仅控制 Output 回放环节（等价 `outputPaused=true`），用于“暂停发送到目标端”。
+  - Input 采集与本地落地不受影响，仍持续推进 `input_cp(meta.redis)`。
+  - `RESUME` 仅恢复 Output 回放，不触发 Input 角色切换或生命周期重建。
+- **验收要求**
+  - 运行态与文档统一按“三层状态”描述，禁止将 `SyncerState` 误解释为 Input/Output 角色状态。
+  - 所有暂停相关用例按“仅暂停Output、Input持续采集”进行验证与记录。
+
 #### 阶段2/3仅剩清单（状态对齐）
 - [x] 阶段2任务2.1：ReplicaLeader 适配 Redis checkpoint
 - [x] 阶段2任务2.2：ReplicaFollower 适配 Redis checkpoint
@@ -317,6 +337,23 @@
   - 源端切换与目标端切换分别通过；同步任务保持 `run`；
   - checkpoint 不回退（允许短窗口重复写但需可观测）；
   - 60s~120s 观测窗口内抽样一致性恢复。
+
+**脚本 S4-7：PAUSED/RESUME（仅暂停Output，不影响Input）**
+- 目标：
+  - 验证 `PAUSED` 仅作用于 Output 回放，不中断 Input 采集与落地；
+  - 验证 `RESUME` 后 Output 可从当前进度继续回放并追平积压。
+- 注入步骤（建议持续写流量）：
+  - 对目标任务执行暂停（仅 Output）：`PAUSED`
+  - 保持 120s 持续写入样本数据（含 string/hash/zset）
+  - 对目标任务执行恢复：`RESUME`
+- 观测重点：
+  - 暂停窗口内：`input_cp(meta.redis)` 持续前移，`output_cp(目标端)` 可短时停滞；
+  - 暂停窗口内：允许 `lag_offset/lag_time` 增大，但 `syncer` 生命周期保持 `run`；
+  - 恢复后：`output_cp` 重新前移并追平，`lag_offset/lag_time` 回落至常态区间。
+- 通过标准：
+  - 暂停期间 Input 无中断（`input_cp` 单调前进）；
+  - 恢复后 Output 可追平（`output_cp` 继续单调前进，样本最终一致）；
+  - 全程无不可恢复退出，且无“暂停导致角色错切换”现象。
 
 **验收记录模板（每轮必填）**：
 - 场景编号、注入时间、恢复时间、RTO、是否出现双主、checkpoint 是否单调、抽样一致性结果、异常日志摘要、是否涉及源端切换/目标端切换。
@@ -494,6 +531,30 @@ groups:
         annotations:
           summary: "Redis-GunYu lag metric invalid on {{ $labels.input }}"
           description: "checkpoint lag is in invalid window for more than 2m"
+
+      - alert: RedisGunYuOutputStallP2
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and increase(redis_gunyu_output_received_cmd[2m]) > 0
+          and increase(redis_gunyu_output_send_cmd[2m]) == 0
+        for: 2m
+        labels:
+          severity: P2
+        annotations:
+          summary: "Redis-GunYu output stall P2 on {{ $labels.input }}"
+          description: "input keeps receiving cmds but output send_cmd stays 0 for 2m"
+
+      - alert: RedisGunYuOutputStallP1
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and increase(redis_gunyu_output_received_cmd[5m]) > 0
+          and increase(redis_gunyu_output_send_cmd[5m]) == 0
+        for: 5m
+        labels:
+          severity: P1
+        annotations:
+          summary: "Redis-GunYu output stall P1 on {{ $labels.input }}"
+          description: "input keeps receiving cmds but output send_cmd stays 0 for 5m"
 ```
 
 #### [ ] 任务5.5：验收测试
@@ -514,7 +575,7 @@ groups:
 **通过标准（任务5.6）**：
 - [x] 已明确并文档化“冲突写最终一致性”边界与业务约束
 - [x] 已量化非幂等命令在故障窗口的偏差范围
-- [~] 已给出 TTL/Lua 两类差异场景的验收口径与告警阈值（TTL已补齐，Lua待补测）
+- [~] 已给出 TTL/Lua 两类差异场景的验收口径（已完成复测并通过，告警阈值与运行态门控策略待固化）
 - [x] 已形成可复用的一键验证脚本与结果记录模板
 
 #### 阶段5补充记录（2026-03-05，双向专项排查与修复）
@@ -579,6 +640,32 @@ groups:
   - 注入回归（A->B 进程重启后）：`A=30, B=30`，保持一致。
   - 结论：`INCR` 在“非幂等 + 故障切换（非双写）”路径已恢复通过。
 
+#### 阶段5补充记录（2026-03-05，TTL/Lua 首轮实测验证）
+- **执行方式**：
+  - 脚本：`scripts/stage5_risk_verify.sh`
+  - 场景：S5.6-3（TTL 漂移验证）、S5.6-4（Lua 确定性/非确定性）
+- **实测结果**：
+  - TTL：`A(value=ttlv, pttl=11860)`，`B(value=nil, pttl=-2)`，目标侧未观测到同 key。
+  - Lua（确定性）：`A=det-v1`，`B=nil`。
+  - Lua（非确定性）：`A=1772700197-906685`，`B=nil`。
+- **结论**：
+  - 本轮 TTL/Lua 验证已执行，但结果未通过；当前仅能确认验收口径，尚不能确认告警阈值与通过标准。
+  - 后续需在稳定双向链路与一致故障窗口下补充复测，并给出 TTL 漂移可接受阈值与 Lua 使用边界（确定性允许、非确定性限制）。
+
+#### 阶段5补充记录（2026-03-05，TTL/Lua 未通过原因排查与复测）
+- **原因定位**：
+  - 首轮失败并非 TTL/Lua 命令语义错误，而是测试窗口内双向链路处于“运行态空转”（`sendCmd` 长时间为 0），导致命令未实际回放到目标端。
+  - 现象特征：`input_cp(meta.redis)` 仍前移，但 `output_cp(目标端)` 未同步前移，A/B 出现 `nil` 偏差。
+- **处置动作**：
+  - 重启双向同步实例（18012/18013）后恢复回放。
+  - 重新执行 `scripts/stage5_risk_verify.sh` 进行 TTL/Lua 验证。
+- **复测结果**：
+  - TTL：`A(value=ttlv, pttl=11948)`，`B(value=ttlv, pttl=11968)`，value 一致、TTL 漂移在小窗口内。
+  - Lua（确定性）：`A=det-v1`，`B=det-v1`。
+  - Lua（非确定性样例）：`A=1772700797-735888`，`B=1772700797-735888`（本轮一致）。
+- **后续建议**：
+  - 增加运行态门控告警：当 `input_cp` 前移但 `sendCmd=0` 且 `output_cp` 长时间不前移时，触发告警并进入自愈/人工处置流程。
+
 **完成标准**：
 - [~] 双向同步稳定运行（关键场景已通过，24h稳态待补）
 - [x] 回环过滤语义正确（无明显误过滤/漏过滤）
@@ -621,47 +708,13 @@ groups:
 
 ### 阶段7：前端 Web 系统管理平台（可选增强，依赖阶段0-6）
 
-**目标**：提供可视化管理能力，覆盖同步程序安装配置、任务生命周期管理、多实例统一纳管与已有实例接入。
+阶段7详细规划已拆分至独立文档：`management_platform/plan/plan_web.txt`。
 
-**工作量**：10-14天  
-**风险**：中-高
-
-#### 任务7.1：平台基础架构与鉴权
-- **文件**：`web/`（新增）、`api/`（新增或复用）
-- **内容**：
-  - 建立前后端基础框架（登录、会话、权限模型）
-  - 提供任务列表、实例列表、节点状态总览
-  - 对接现有 `/syncer/status` 与核心指标采集接口
-
-#### 任务7.2：同步程序安装与配置向导
-- **内容**：
-  - 提供“新建同步任务”向导：源端/目标端/meta.redis 参数配置与连通性校验
-  - 支持生成/下发配置模板（含 `syncCheckPointKey`、`filterCheckPointKey` 规则校验）
-  - 支持启动/停止/重启任务与失败原因可视化
-
-#### 任务7.3：多套同步程序统一管理
-- **内容**：
-  - 支持按环境/集群/业务分组管理多套同步程序
-  - 支持批量操作（批量发布配置、批量启停、批量巡检）
-  - 提供运行态看板（lag、checkpoint、错误率、重试次数）
-
-#### 任务7.4：已有同步程序纳管
-- **内容**：
-  - 支持导入已有运行实例（IP/端口/配置指纹）
-  - 建立“只读接入 -> 接管控制”两阶段纳管流程
-  - 纳管后支持一致的日志、告警、审计视图
-
-#### 任务7.5：验收测试
-- 新建任务从安装到运行全流程可闭环
-- 同时管理多套同步程序无明显性能退化
-- 既有实例纳管成功且不影响现网运行
-- 关键操作（配置变更、启停、接管）有审计记录
-
-**完成标准**：
-- [ ] Web 平台可完成同步任务安装配置与生命周期管理
-- [ ] 支持多套同步程序统一纳管与批量运维
-- [ ] 支持已有同步程序平滑纳管（先观测后接管）
-- [ ] 核心运行指标与告警在平台可观测
+**索引说明**：
+- 目标与范围：见 `management_platform/plan/plan_web.txt` 的“阶段7目标与边界”
+- 分期里程碑（7A/7B/7C）：见 `management_platform/plan/plan_web.txt` 的“阶段7分期里程碑”
+- 数据落地与DDL：见 `management_platform/plan/plan_web.txt` 的“数据模型与初始化”
+- 分期验收标准：见 `management_platform/plan/plan_web.txt` 的“验收标准”
 
 ---
 

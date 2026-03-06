@@ -408,11 +408,13 @@ func (s *syncer) runLeader() error {
 	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
-		err := outLeader.Run(wait)
-		if err != nil {
-			s.logger.Errorf("output leader run error: %v", err)
+		// Keep leader_epoch/fencing semantics before entering output loop.
+		if err := output.StartLeaderEpoch(wait.Context()); err != nil {
+			s.logger.Errorf("output leader start epoch error: %v", err)
 			wait.Close(err)
+			return
 		}
+		s.runOutputLoop(wait, output)
 	}, func(i interface{}) {
 		wait.Close(fmt.Errorf("panic: %v", i))
 	})
@@ -449,30 +451,63 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 			}
 		}
 
-		err := output.runOnce(wait)
-		if err == nil {
-			consecutiveFailures = 0
-			continue
-		}
-		if wait.IsClosed() {
-			return
-		}
+		// Execute runOnce with a child wait so pause can cancel current replay cycle
+		// without terminating the whole syncer lifecycle.
+		onceWait := usync.NewWaitCloserFromParent(wait, nil)
+		done := make(chan error, 1)
+		usync.SafeGo(func() {
+			done <- output.runOnce(onceWait)
+		}, func(i interface{}) {
+			done <- fmt.Errorf("panic: %v", i)
+		})
 
-		// Non-recoverable errors should stop the whole syncer.
-		if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
-			s.logger.Errorf("output run fatal error (linkage stop): %v", err)
-			wait.Close(err)
-			return
-		}
+		interruptedByPause := false
+		for {
+			select {
+			case err := <-done:
+				if interruptedByPause {
+					consecutiveFailures = 0
+					break
+				}
+				if err == nil {
+					consecutiveFailures = 0
+					break
+				}
+				if wait.IsClosed() {
+					return
+				}
+				// Non-recoverable errors should stop the whole syncer.
+				if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
+					s.logger.Errorf("output run fatal error (linkage stop): %v", err)
+					wait.Close(err)
+					return
+				}
 
-		consecutiveFailures++
-		s.logger.Errorf("output run error (isolated): err(%v), consecutive(%d)", err, consecutiveFailures)
-		if consecutiveFailures >= maxConsecutiveOutputFailures {
-			wait.Close(fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err))
-			return
+				consecutiveFailures++
+				s.logger.Errorf("output run error (isolated): err(%v), consecutive(%d)", err, consecutiveFailures)
+				if consecutiveFailures >= maxConsecutiveOutputFailures {
+					wait.Close(fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err))
+					return
+				}
+				// Backoff before restarting output loop to avoid hot retry.
+				wait.Sleep(2 * time.Second)
+				break
+			case <-wait.Done():
+				onceWait.Close(wait.Error())
+				<-done
+				return
+			case <-time.After(100 * time.Millisecond):
+				if !s.outputPaused.Load() {
+					continue
+				}
+				interruptedByPause = true
+				onceWait.Close(nil)
+				<-done
+				break
+			}
+			// break inner loop, continue outer loop.
+			break
 		}
-		// Backoff before restarting output loop to avoid hot retry.
-		wait.Sleep(2 * time.Second)
 	}
 }
 

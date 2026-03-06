@@ -225,31 +225,71 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 	})
 
 	syncerGroup.POST("pause", func(ctx *gin.Context) {
-		inputs := sc.parseInputsFromQuery(ctx)
+		inputs := sc.allInputs(sc.getRunWait().Context())
 		if len(inputs) == 0 {
-			ctx.AbortWithStatus(http.StatusBadRequest)
+			ctx.JSON(http.StatusOK, gin.H{
+				"operation": "pause",
+				"scope":     "output_only",
+				"note":      "no active syncer matched; no-op (all outputs)",
+				"inputs":    []string{},
+				"applied":   []string{},
+				"skipped":   []string{},
+			})
 			return
 		}
+		applied := make([]string, 0, len(inputs))
+		skipped := make([]string, 0)
 		for _, input := range inputs {
 			sync := sc.getSyncer(input)
 			if sync.sync != nil {
 				sync.sync.Pause()
+				applied = append(applied, input)
+			} else {
+				skipped = append(skipped, input)
 			}
 		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"operation": "pause",
+			"scope":     "output_only",
+			"note":      "pause only affects output replay; input ingest keeps running",
+			"inputs":    inputs,
+			"applied":   applied,
+			"skipped":   skipped,
+		})
 	})
 
 	syncerGroup.POST("resume", func(ctx *gin.Context) {
-		inputs := sc.parseInputsFromQuery(ctx)
+		inputs := sc.allInputs(sc.getRunWait().Context())
 		if len(inputs) == 0 {
-			ctx.AbortWithStatus(http.StatusBadRequest)
+			ctx.JSON(http.StatusOK, gin.H{
+				"operation": "resume",
+				"scope":     "output_only",
+				"note":      "no active syncer matched; no-op (all outputs)",
+				"inputs":    []string{},
+				"applied":   []string{},
+				"skipped":   []string{},
+			})
 			return
 		}
+		applied := make([]string, 0, len(inputs))
+		skipped := make([]string, 0)
 		for _, input := range inputs {
 			sync := sc.getSyncer(input)
 			if sync.sync != nil {
 				sync.sync.Resume()
+				applied = append(applied, input)
+			} else {
+				skipped = append(skipped, input)
 			}
 		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"operation": "resume",
+			"scope":     "output_only",
+			"note":      "resume only affects output replay; input ingest remains continuous",
+			"inputs":    inputs,
+			"applied":   applied,
+			"skipped":   skipped,
+		})
 	})
 
 	syncerGroup.POST("handover", func(ctx *gin.Context) {
