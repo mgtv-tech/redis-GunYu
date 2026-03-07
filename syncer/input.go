@@ -220,6 +220,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	var sOffset Offset
 	var id1, id2 string
 	synSp := StartPoint{}
+	var forcedSwitchOffset *Offset
 
 	id1, id2, err = redis.GetRunIds(redisCli.Client())
 	if err != nil {
@@ -241,6 +242,23 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	}
 
 	ri.logger.Debugf("meta : runId(%s - %s), locSp(%v), cpSp(%v)", id1, id2, locSp, cpSp)
+	switchToNewReplid := ri.shouldSwitchToNewReplidNow(id1, id2, locSp, cpSp)
+	if switchToNewReplid {
+		probeOffset := chooseNewRunIDProbeOffset(locSp, cpSp)
+		if probeOffset >= 0 {
+			ok := ri.probeNewRunIDContinue(ctx, id1, probeOffset)
+			if ok {
+				forcedSwitchOffset = &Offset{RunId: id1, Offset: probeOffset}
+				ri.logger.Infof("runid converge: switch to new replid with probed continue, runId(%s), offset(%d), local(%v), checkpoint(%v)",
+					id1, probeOffset, locSp, cpSp)
+			} else {
+				ri.logger.Warnf("runid converge: skip switch to new replid because probe may fullsync, runId(%s), probeOffset(%d), local(%v), checkpoint(%v)",
+					id1, probeOffset, locSp, cpSp)
+			}
+		} else {
+			ri.logger.Warnf("runid converge: no valid probe offset, keep legacy path, runId(%s), local(%v), checkpoint(%v)", id1, locSp, cpSp)
+		}
+	}
 
 	// cpSp and locSp are valid and belong to inputIds
 	if slices.Contains(inputIds, cpSp.RunId) && slices.Contains(inputIds, locSp.RunId) {
@@ -250,25 +268,42 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		// cpSp not in locSp :
 		// 3. channel.right < checkpoint.offset :
 		if ri.channel.IsValidOffset(Offset{RunId: locSp.RunId, Offset: cpSp.Offset}) {
-			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, locSp.ToOffset())
+			preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
+			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
 				return
 			}
 		} else {
-			// there is a gap between checkpoint and channel [@TODO, @OPTIMIZE : check distance of gap]
-			// channel.Clear(); locSp = cpSp
-			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, cpSp.ToOffset())
-			if err != nil {
-				return
-			}
-			clearLocal = true
-			if !isFullSync {
-				locSp = StartPoint{RunId: sOffset.RunId, Offset: cpSp.Offset}
+			// Distinguish two mismatch cases:
+			// 1) checkpoint is ahead of local channel (cp > local.right): prefer checkpoint and clear local.
+			// 2) checkpoint lags behind local channel (cp < local.left): prefer local to avoid unnecessary fullresync.
+			locLeft, locRight := ri.channel.GetOffsetRange(locSp.RunId)
+			if cpSp.Offset >= 0 && locLeft >= 0 && cpSp.Offset < locLeft {
+				ri.logger.Infof("checkpoint behind local channel, prefer local incremental: runId(%s), cpOffset(%d), localRange(%d,%d)",
+					locSp.RunId, cpSp.Offset, locLeft, locRight)
+				preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
+				sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
+				if err != nil {
+					return
+				}
+			} else {
+				// there is a gap between checkpoint and channel [@TODO, @OPTIMIZE : check distance of gap]
+				// channel.Clear(); locSp = cpSp
+				preferOffset := choosePSyncOffset(cpSp.ToOffset(), forcedSwitchOffset)
+				sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
+				if err != nil {
+					return
+				}
+				clearLocal = true
+				if !isFullSync {
+					locSp = StartPoint{RunId: sOffset.RunId, Offset: cpSp.Offset}
+				}
 			}
 		}
 	} else if slices.Contains(inputIds, cpSp.RunId) {
 		// local is stale, set locSp to cpSp
-		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, cpSp.ToOffset())
+		preferOffset := choosePSyncOffset(cpSp.ToOffset(), forcedSwitchOffset)
+		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 		if err != nil {
 			return
 		}
@@ -281,7 +316,8 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		// channel has a RDB file, so set offset to zero
 		locRdbLeft, locRdbSize := ri.channel.GetRdb(locSp.RunId)
 		if locRdbLeft != -1 && locRdbSize != -1 { // a valid RDB
-			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, locSp.ToOffset())
+			preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
+			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
 				return
 			}
@@ -293,14 +329,16 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 			}
 		} else {
 			synSp.Initialize()
-			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, synSp.ToOffset())
+			preferOffset := choosePSyncOffset(synSp.ToOffset(), forcedSwitchOffset)
+			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
 				return
 			}
 		}
 	} else { // full sync
 		synSp.Initialize()
-		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, synSp.ToOffset())
+		preferOffset := choosePSyncOffset(synSp.ToOffset(), forcedSwitchOffset)
+		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 		if err != nil {
 			return
 		}
@@ -333,7 +371,10 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 				return ce
 			}
 			defer cli.Close()
-			return checkpoint.UpdateCheckpoint(cli, ri.checkpointName, []string{sOffset.RunId, id1})
+			// Include both replid and replid2 candidates during failover windows,
+			// so checkpoint hash lookup can carry forward existing offsets instead of
+			// falling back to an empty mapping and forcing full sync.
+			return checkpoint.UpdateCheckpoint(cli, ri.checkpointName, []string{sOffset.RunId, id1, id2})
 		}, 3, time.Second*2, 0.5)
 		if e != nil {
 			ri.logger.Errorf("checkpoint UpdateCheckpoint error : offset(%v), err(%v)", sOffset, e)
@@ -358,6 +399,65 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	}
 
 	return
+}
+
+func (ri *RedisInput) shouldSwitchToNewReplidNow(id1, id2 string, locSp, cpSp StartPoint) bool {
+	if id1 == "" {
+		return false
+	}
+	// When local/checkpoint still bind to legacy runid while id1 moved to new
+	// master replid, force probe to new path via PSYNC <newid> 0.
+	// The 5s grace is controlled by control-plane restart trigger.
+	if id2 != "" && id2 != id1 {
+		if (locSp.RunId != "" && locSp.RunId != "?" && locSp.RunId != id1) ||
+			(!cpSp.IsInitial() && cpSp.RunId != "" && cpSp.RunId != id1) {
+			return true
+		}
+	}
+	return false
+}
+
+func chooseNewRunIDProbeOffset(locSp, cpSp StartPoint) int64 {
+	best := int64(-1)
+	if locSp.Offset > best {
+		best = locSp.Offset
+	}
+	if cpSp.Offset > best {
+		best = cpSp.Offset
+	}
+	return best
+}
+
+func choosePSyncOffset(defaultOffset Offset, forced *Offset) Offset {
+	if forced != nil {
+		return *forced
+	}
+	return defaultOffset
+}
+
+func (ri *RedisInput) probeNewRunIDContinue(ctx context.Context, newRunID string, probeOffset int64) bool {
+	if newRunID == "" || newRunID == "?" || probeOffset < 0 {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cli, err := ri.newRedisConn(probeCtx)
+	if err != nil {
+		ri.logger.Warnf("runid converge probe new conn failed: runId(%s), offset(%d), err(%v)", newRunID, probeOffset, err)
+		return false
+	}
+	defer cli.Close()
+	err = cli.SendPSyncListeningPort(config.GetSyncerConfig().Server.ListenPort)
+	if err != nil {
+		ri.logger.Warnf("runid converge probe listening-port failed: runId(%s), offset(%d), err(%v)", newRunID, probeOffset, err)
+		return false
+	}
+	_, fullSync, _, err := ri.sendPsync(cli, Offset{RunId: newRunID, Offset: probeOffset})
+	if err != nil {
+		ri.logger.Warnf("runid converge probe psync failed: runId(%s), offset(%d), err(%v)", newRunID, probeOffset, err)
+		return false
+	}
+	return !fullSync
 }
 
 func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.StandaloneRedis, isFullSync bool, rdbSize int64, offset int64) {

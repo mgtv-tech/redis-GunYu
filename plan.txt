@@ -252,6 +252,34 @@
 - checkpoint 更新时机标准化
 - 回放幂等策略
 
+#### 任务4.4：源端 failover 局部重建（替代全局重启，工业级增强）
+- **目标**：源端主从切换/拓扑抖动时，仅重建受影响 shard 的 Input 链路；其他 shard 与 Output 持续运行。
+- **子任务4.4.1：触发面收敛（分类错误，不再一刀切）**
+  - 将源端拓扑变化从“全局 `runWait.Close(ErrRestart)`”收敛为“按 input/shard 标记重建”。
+  - 保留全局重启为兜底，仅用于不可恢复错误（协议损坏、关键元数据不一致、持续重试超阈）。
+- **子任务4.4.2：局部重建执行器**
+  - 在 `runCluster` 维持 shard 级生命周期控制：单 shard 退出后仅重建该 shard 的 `syncer`。
+  - 重建时复用既有 checkpoint 语义：`input_cp(meta.redis)` 连续、`output_cp(目标端)` 不回退。
+  - 与 `pause_all_outputs` 持久化状态联动：局部重建后自动恢复暂停意图。
+- **子任务4.4.3：可观测与验收**
+  - 新增（或补齐）“局部重建次数/耗时/影响分片”日志与指标。
+  - 验收用例：单分片源端 failover 时，仅该分片出现短暂重建；其他分片 `State=run` 持续。
+  - 通过标准：  
+    - 无全局 `stop/restart`；  
+    - 非故障分片无明显抖动；  
+    - 故障分片在目标 RTO 内恢复并保持 checkpoint 单调。
+- **当前进展（2026-03-06，第一轮落地）**：
+  - 已改造 `runCluster`：源端角色探测异常、`role!=master`、campaign 抖动改为“本分片局部重试”，不再直接关闭全局 `runWait`。
+  - 已改造 `checkTypology(watchIn)`：源端 master 地址变化/选中节点变化改为记录并由局部重建吸收，不触发全局重启。
+  - 已补充运行中守护：`clusterTicker` 周期校验当前 input 是否仍为 master，若降为 slave 则触发 `ErrRestart` 走局部重建（不触发全局重启）。
+  - 已补充重建重绑定：每轮局部重建前按最新拓扑刷新 `cfg.Input` 的 shard master 地址（按 slot 匹配），避免继续绑定旧 slave。
+  - 已补充可观测指标：
+    - `redisGunYu_syncer_source_local_rebuild_total{input,reason}`
+    - `redisGunYu_syncer_source_local_rebuild_duration_ms{input,reason}`
+    - 说明：`reason` 当前覆盖 `role_check_error`、`role_not_master`、`campaign_error`、`syncer_restart_error`、`master_rebind`、`ticker_role_not_master`。
+  - 已保留全局兜底：`ErrCorrupted/ErrQuit` 等不可恢复错误仍可触发全局退出，避免静默坏状态扩散。
+  - 已完成实测：对源端从节点执行 `CLUSTER FAILOVER TAKEOVER` 后，`18012/18013` 在 24s 观测窗口内均保持 `State=run`，未出现全局 `stop`。
+
 #### 任务4.3：验收测试
 - 各场景恢复时间
 - 数据一致性抽样比对
@@ -355,6 +383,35 @@
   - 恢复后 Output 可追平（`output_cp` 继续单调前进，样本最终一致）；
   - 全程无不可恢复退出，且无“暂停导致角色错切换”现象。
 
+**脚本 S4-8：源端局部重建一致性专项（新增）**
+- 目标：
+  - 验证“源端 failover -> 单分片局部重建”不会引入长期不一致；
+  - 明确一致性语义：允许短窗口 at-least-once 重放，不允许长期缺失/回退。
+- runid 收敛口径（新增）：
+  - `T0(切换瞬间)`：允许旧/新 runid 混用（拓扑切换与连接重建窗口）；
+  - `T1(兼容窗口)`：允许基于 `master_replid2` 继续 `PSYNC CONTINUE`，优先保持增量连续性；
+  - `T2(收敛期)`：`input_cp/channel/output_cp` 进入新主路径并稳定单调，旧 runid 仅保留查询兜底。
+- 样本设计（同时覆盖幂等/非幂等）：
+  - 幂等：`SET stage4:s8:idem:<slotTag> v1 -> v2`
+  - 非幂等：`INCR stage4:s8:nonidem:<slotTag>`
+  - 分片覆盖：`low/mid/high` 各至少 1 组，执行前用 `CLUSTER KEYSLOT` 校验命中区间。
+- 注入步骤：
+  - 基线采样：记录源/目标端幂等值与非幂等计数、`/syncer/status`、`lag_offset/lag_valid`。
+  - 在源端目标分片从节点执行：`CLUSTER FAILOVER TAKEOVER`（单分片注入）。
+  - 注入后持续写入 60s，继续采样 120s。
+- 观测重点：
+  - 生命周期：非故障分片 `State=run` 持续，无全局 `stop/restart`；
+  - 一致性：幂等样本最终收敛；非幂等样本允许小窗口重复但不可长期偏离；
+  - 连续性：`input_cp/output_cp` 无长期停滞，`lag_valid=1` 时 lag 可回落。
+  - runid 演进：允许 T1 窗口内沿旧 runid 增量；要求通过“先探测再切换”进入 T2（不要求切换后立即改新 runid）。
+  - 可观测：`redisGunYu_syncer_source_local_rebuild_total{input,reason}` 在注入窗口出现增量。
+- 通过标准：
+  - 120s 窗口内，`low/mid/high` 幂等样本全部收敛；
+  - 非幂等偏差在可接受阈值内（默认 `|A-B| <= 3`，超阈触发复核）；
+  - 无全局重启，且无单分片长期卡死（`send_cmd=0` 持续 >5m）；
+  - runid 切换原理：源端切换后先沿旧 `replid2` 保持增量同步；到收敛窗口（当前 `10s`）后，程序先探测 `PSYNC <newid> <knownOffset>` 是否可 `CONTINUE`；
+  - 仅当探测结果可 `CONTINUE` 才切到新 `replid`（进入 T2）；若探测会触发 `FULLRESYNC`，则保持旧链路增量并延后下一次探测，避免主动触发全量。
+
 **验收记录模板（每轮必填）**：
 - 场景编号、注入时间、恢复时间、RTO、是否出现双主、checkpoint 是否单调、抽样一致性结果、异常日志摘要、是否涉及源端切换/目标端切换。
 
@@ -422,6 +479,24 @@
   - 注入：源端单分片切换 + 目标端单分片切换（脚本 `scripts/ha_s4_6.ps1`）
   - 结果：`PASS`（切换期间任务保持 `run`，样本键最终从 `v0/v1` 收敛到 `v2`）
   - 结论：当前环境下“源端/目标端 Redis 切换不影响同步”已通过
+- `S4-6` 工程加固（第四轮，2026-03-06）：
+  - 目标端 failover 语义优化：`output` 侧 `MOVED/ASK` 不再升级为全局 `ErrRedisTypologyChanged`，改为 output 自愈重连/重试优先。
+  - 拓扑监控策略优化：`checkTypology(watchOut)` 观测到目标端主节点地址变化时不再触发全量重启，仅记录变化并继续运行。
+  - `PAUSED` 持久化：新增 `pause_all_outputs` 期望状态落地到 `meta.redis`，`syncer` 重建后自动恢复该状态，避免 failover/restart 后暂停失效。
+  - 复测结论：`pause -> 进程重启 -> 源端写入 -> 目标端不可见 -> resume 后可见` 闭环通过，符合“仅暂停Output且跨重建保持”的预期。
+- `S4-8` 源端局部重建一致性专项（第一轮，2026-03-06）：
+  - 注入：对源端单分片执行 `CLUSTER FAILOVER TAKEOVER`（从节点触发），注入前后持续写入 `SET/INCR` 样本并轮询 `status`。
+  - 运行态：`18012/18013` 在观测窗口内保持 `State=run`，未出现全局 `stop/restart`。
+  - 一致性结果：幂等样本 `v2` 可收敛，但非幂等 `mid(slot=16319)` 出现长期偏差（`A=40/41`，`B=20`，120s 窗口未追平），本轮判定 `FAIL`。
+  - 现场拓扑：源端 `10923-16383` 分片主节点已切换为 `7003`，原配置 input 地址 `7006` 已为 `slave`。
+  - 初步判断：当前“源端局部重建”尚未完成“分片主地址重绑定”，导致受影响分片存在持续一致性风险；需补“按最新 master 重建 input cfg”后复测。
+- `S4-8` 源端局部重建一致性专项（第二轮，2026-03-06）：
+  - 修复点：补充“运行中角色守护 + 局部重建前 master 重绑定”两段机制，确保分片切换后能自动迁移到新 master。
+  - 注入：高分片从节点 `7006` 执行 `CLUSTER FAILOVER TAKEOVER`，触发 `10923-16383` 主节点从 `7003 -> 7006` 切换。
+  - 运行态：`/syncer/status` 在 `T+4s` 出现 input 从 `7003` 自动切换到 `7006`，全程保持 `State=run`、无全局重启。
+  - 一致性结果：幂等样本 `stage4:s8:idem:mid=v2` 稳定一致；非幂等 `stage4:s8:nonidem:mid` 在 60s 观测窗口内 `A=B=161`，未出现长期偏差。
+  - 指标证据：`source_local_rebuild_total/duration_ms` 新增 `master_rebind`、`ticker_role_not_master` 样本，证明局部重建链路命中并生效。
+  - 结论：`S4-8 RECHECK PASS`，局部重建路径在源端 failover 场景下可维持一致性收敛。
 
 **完成标准**：
 - [~] 故障场景可恢复（S4-1/S4-3/S4-4/S4-6 已通过；S4-2 在单机环境注入无效，待跨主机重测）
@@ -770,32 +845,32 @@ groups:
 ### 8.1 SLO 与恢复目标
 
 - [ ] **可用性目标**：同步服务月度可用性 >= 99.9%
-- [ ] **恢复时间目标（RTO）**：单节点故障后 30s 内恢复同步
+- [~] **恢复时间目标（RTO）**：单节点故障后 30s 内恢复同步（已完成多轮样本演练，需补长期统计）
 - [ ] **数据丢失目标（RPO）**：进程异常重启场景 RPO <= 1s（按checkpoint刷新周期）
-- [ ] **重复回放窗口**：故障切换后允许小窗口 at-least-once，窗口上限可观测且可告警
+- [~] **重复回放窗口**：故障切换后允许小窗口 at-least-once，窗口上限可观测且可告警（指标与告警规则已落地，需线上阈值固化）
 
 ### 8.2 故障演练门槛（必须通过）
 
-- [ ] **Sentinel切主演练**：主从切换后自动恢复 checkpoint 读写与同步
-- [ ] **meta.redis协调续租演练**：Sentinel 切主期间允许短时续租报错，但任务需自动恢复并保持可用
+- [x] **Sentinel切主演练**：主从切换后自动恢复 checkpoint 读写与同步
+- [~] **meta.redis协调续租演练**：Sentinel 切主期间允许短时续租报错，但任务需自动恢复并保持可用（已验证恢复，需补压测样本）
 - [ ] **网络分区演练**：短时网络抖动/分区后无长时间卡死
-- [ ] **目标端不可用演练**：目标Redis不可用后可重试并恢复，不出现不可恢复中断
-- [ ] **进程反复重启演练**：连续重启后仍可按 checkpoint 续传
-- [ ] **分离生命周期演练**：仅Output故障时，Input保持持续落地且不退出
-- [ ] **恢复追平演练**：Output恢复后可自动追平积压并持续更新目标端checkpoint
+- [x] **目标端不可用演练**：目标Redis不可用后可重试并恢复，不出现不可恢复中断
+- [~] **进程反复重启演练**：连续重启后仍可按 checkpoint 续传（单轮已通过，需补多轮稳定性）
+- [x] **分离生命周期演练**：仅Output故障时，Input保持持续落地且不退出
+- [x] **恢复追平演练**：Output恢复后可自动追平积压并持续更新目标端checkpoint
 
 ### 8.3 数据一致性门槛
 
-- [ ] **双向回环控制**：过滤策略稳定，无明显误过滤/漏过滤
-- [ ] **偏移单调性**：checkpoint offset 单调递增（允许故障恢复回退窗口有记录）
-- [ ] **抽样对账**：按库/slot抽样对账通过率 >= 99.99%
+- [x] **双向回环控制**：过滤策略稳定，无明显误过滤/漏过滤
+- [~] **偏移单调性**：checkpoint offset 单调递增（允许故障恢复回退窗口有记录，需补连续观测报表）
+- [~] **抽样对账**：按库/slot抽样对账通过率 >= 99.99%（阶段4/5样本通过，需补长期统计）
 - [ ] **一致性报告**：每次发布后产出一致性验证报告
 
 ### 8.4 可观测性与告警门槛
 
-- [ ] **核心指标齐全**：lag、checkpoint延迟、回放QPS、失败率、重试次数、切主耗时
-- [ ] **告警分级**：P1/P2/P3 告警阈值、抑制与升级链路明确
-- [ ] **日志可追踪**：按 taskId/runId/slot 可关联输入、回放、checkpoint 三段日志
+- [~] **核心指标齐全**：lag、checkpoint延迟、回放QPS、失败率、重试次数、切主耗时（已覆盖 lag/checkpoint/send/recv，切主耗时统计待补）
+- [~] **告警分级**：P1/P2/P3 告警阈值、抑制与升级链路明确（规则草案已落地，需纳入统一告警平台）
+- [~] **日志可追踪**：按 taskId/runId/slot 可关联输入、回放、checkpoint 三段日志（已具备 runId/slot 线索，taskId 关联待补）
 - [ ] **审计可回放**：关键操作（切主、重试、回退）有审计记录
 
 ### 8.5 发布与回滚门槛
@@ -814,11 +889,22 @@ groups:
 
 ### 8.7 双Checkpoint边界与隐患防护（必须明确）
 
-- [ ] **命名与职责隔离**：`input_cp` 仅记录源端采集进度（存放于 `meta.redis`），`output_cp` 仅记录回放进度（存放于目标端）；两者使用不同前缀/命名空间，禁止复用key。
-- [ ] **ACK后前移规则**：`output_cp` 仅在目标端写入成功并收到确认后更新，禁止“先更新checkpoint后写数据”。
-- [ ] **回环过滤隔离**：A->B 与 B->A 使用独立过滤标记key，避免checkpoint相关命令被反向链路误处理。
+- [x] **命名与职责隔离**：`input_cp` 仅记录源端采集进度（存放于 `meta.redis`），`output_cp` 仅记录回放进度（存放于目标端）；两者使用不同前缀/命名空间，禁止复用key。
+- [x] **ACK后前移规则**：`output_cp` 仅在目标端写入成功并收到确认后更新，禁止“先更新checkpoint后写数据”。
+- [x] **回环过滤隔离**：A->B 与 B->A 使用独立过滤标记key，避免checkpoint相关命令被反向链路误处理。
 - [ ] **落地文件保留保护**：AOF/RDB 清理策略必须受 `output lag` 保护，确保“checkpoint在、文件也在”，避免读取断档。
-- [ ] **拓扑变更连续性**：源端/目标端拓扑变化后，runId/replid 与 checkpoint 键选择规则保持连续，支持自动恢复与重试。
-- [ ] **降级与兜底策略**：当 `meta.redis` 或目标端checkpoint读取失败时，必须有可观测的降级策略（重试、回退安全点、告警），避免静默错位。
+- [~] **拓扑变更连续性**：源端/目标端拓扑变化后，runId/replid 与 checkpoint 键选择规则保持连续，支持自动恢复与重试（目标端failover已优化为无全局重启，源端侧仍需细化局部重建）。
+- [~] **降级与兜底策略**：当 `meta.redis` 或目标端checkpoint读取失败时，必须有可观测的降级策略（重试、回退安全点、告警），避免静默错位（已具备重试与告警基础，回退安全点策略待补）。
 
 > 注：按当前设计，`input_cp(meta.redis)` 与 `output_cp(目标端)` 在命名隔离正确的前提下不会互相覆盖；主要风险不在“覆盖”，而在“语义混淆、更新时机、回环与清理策略”。
+
+### 8.8 runId演进轨迹落地（阶段8执行，当前暂缓）
+
+- [ ] **目标**：将源端 runId 变化路径落地到 `meta.redis`，提升多次切换场景下的增量续传命中率，降低误全量同步概率。
+- [ ] **落地范围（阶段8）**：
+  - `current runId` 指针（按 task/shard 维度）；
+  - `runId history` 时间序索引（保留最近 N 条）；
+  - `runId meta` 元信息（first/last seen、last offset、parent/source）。
+- [ ] **启动候选策略（阶段8）**：启动/重建时候选 runId 不仅使用 `id1/id2`，还纳入 checkpoint/channel/history 进行去重与优先级尝试。
+- [ ] **清理策略（阶段8）**：按“最近N条 + TTL + 与channel可读性联动”清理历史 runId，避免元数据膨胀并防止误删可恢复链路。
+- [ ] **当前口径**：阶段4~5先不引入 runId 历史持久化，仅保留现有 `id1/id2 + checkpoint` 策略；该能力统一在阶段8实施与验收。

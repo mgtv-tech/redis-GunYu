@@ -1809,7 +1809,9 @@ func (ro *RedisOutput) selectDB(currentDB int, originDB int) (int, bool) {
 
 func handleDirectError(err error) error {
 	if errors.Is(err, common.ErrMove) || errors.Is(err, common.ErrAsk) {
-		return errors.Join(ErrRedisTypologyChanged, err)
+		// Output-side MOVED/ASK during target failover should be handled by
+		// reconnect/retry in output loop, instead of forcing whole syncer restart.
+		return err
 	}
 	if errors.Is(err, common.ErrCrossSlots) {
 		return errors.Join(ErrBreak, err)

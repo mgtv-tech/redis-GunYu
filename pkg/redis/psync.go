@@ -50,9 +50,7 @@ type RdbInfo struct {
 
 func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64, <-chan *RdbInfo, error) {
 
-	if offset >= 0 {
-		offset += 1 // redis replication.c : redis' offset will increased by 1 while new slave is connecting to it.
-	}
+	offset = normalizePSyncOffset(offset)
 
 	sr.logger.Debugf("send psync : %s, %d", runid, offset)
 
@@ -81,6 +79,16 @@ func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64,
 	}
 
 	return "", -1, nil, fmt.Errorf("invalid psync response = '%s'", reply)
+}
+
+func normalizePSyncOffset(offset int64) int64 {
+	// Keep zero as-is so caller can explicitly trigger PSYNC <runid> 0
+	// (PSYNC2 unknown-offset handover probe). Positive offsets still follow
+	// Redis replica handshake semantics: send offset+1.
+	if offset > 0 {
+		return offset + 1
+	}
+	return offset
 }
 
 // pipeline mode means that we don't wait all dump finish and run the next step

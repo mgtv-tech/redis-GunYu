@@ -30,19 +30,22 @@ func GetCheckpointHash(cli client.Redis, runIds []string) (cpName string, runId 
 	if err != nil {
 		return
 	}
-
-	cpName, err = redis.HGet(cli, config.CheckpointKeyHashKey, runIds[0])
-	if err != nil && err != common.ErrNil {
-		return
-	}
-	if len(cpName) == 0 && len(runIds) > 1 {
-		cpName, err = redis.HGet(cli, config.CheckpointKeyHashKey, runIds[1])
-		if err == common.ErrNil {
-			return "", "", nil
+	for _, id := range runIds {
+		if id == "" || id == "?" {
+			continue
 		}
-		return cpName, runIds[1], err
+		cpName, err = redis.HGet(cli, config.CheckpointKeyHashKey, id)
+		if err == common.ErrNil {
+			continue
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if cpName != "" {
+			return cpName, id, nil
+		}
 	}
-	return cpName, runIds[0], err
+	return "", "", nil
 }
 
 func DelCheckpointHash(cli client.Redis, runId string) error {

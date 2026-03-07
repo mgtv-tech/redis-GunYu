@@ -171,10 +171,14 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 
 	syncerGroup := engine.Group("/syncer/")
 	type syncerStatus struct {
-		Input       string
-		Role        string
-		Transaction bool
-		State       string
+		Input          string `json:"input"`
+		Role           string `json:"role"`
+		Transaction    bool   `json:"transaction"`
+		State          string `json:"state"`
+		ActiveRunID    string `json:"active_runid,omitempty"`
+		ExpectedRunID  string `json:"expected_runid,omitempty"`
+		RunIDStage     string `json:"runid_stage,omitempty"`
+		RunIDElapsedMs int64  `json:"runid_elapsed_ms,omitempty"`
 	}
 	syncerGroup.GET("status", func(ctx *gin.Context) {
 		sys := []syncerStatus{}
@@ -185,6 +189,19 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 				Role:        val.sync.Role().String(),
 				Transaction: val.sync.TransactionMode(),
 				State:       val.sync.State().String(),
+				ActiveRunID: val.sync.ActiveRunID(),
+			}
+			runIDs := val.sync.RunIds()
+			if len(runIDs) > 0 {
+				st.ExpectedRunID = runIDs[0]
+			}
+			if st.ExpectedRunID != "" && st.ActiveRunID != "" && st.ExpectedRunID == st.ActiveRunID {
+				st.RunIDStage = "T2"
+			} else if st.ExpectedRunID != "" && st.ActiveRunID != "" {
+				st.RunIDStage = "T1"
+				if cst, ok := sc.runidConverge[key]; ok && !cst.since.IsZero() {
+					st.RunIDElapsedMs = time.Since(cst.since).Milliseconds()
+				}
 			}
 			if val.sync.IsLeader() {
 				st.Role = "leader"
@@ -225,12 +242,19 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 	})
 
 	syncerGroup.POST("pause", func(ctx *gin.Context) {
+		if err := sc.setOutputPauseDesired(ctx.Request.Context(), true); err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("persist pause desired state failed: %v", err),
+			})
+			return
+		}
+
 		inputs := sc.allInputs(sc.getRunWait().Context())
 		if len(inputs) == 0 {
 			ctx.JSON(http.StatusOK, gin.H{
 				"operation": "pause",
 				"scope":     "output_only",
-				"note":      "no active syncer matched; no-op (all outputs)",
+				"note":      "no active syncer matched; desired state is persisted",
 				"inputs":    []string{},
 				"applied":   []string{},
 				"skipped":   []string{},
@@ -251,7 +275,7 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		ctx.JSON(http.StatusOK, gin.H{
 			"operation": "pause",
 			"scope":     "output_only",
-			"note":      "pause only affects output replay; input ingest keeps running",
+			"note":      "pause only affects output replay; input ingest keeps running; desired state persisted",
 			"inputs":    inputs,
 			"applied":   applied,
 			"skipped":   skipped,
@@ -259,12 +283,19 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 	})
 
 	syncerGroup.POST("resume", func(ctx *gin.Context) {
+		if err := sc.setOutputPauseDesired(ctx.Request.Context(), false); err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("persist resume desired state failed: %v", err),
+			})
+			return
+		}
+
 		inputs := sc.allInputs(sc.getRunWait().Context())
 		if len(inputs) == 0 {
 			ctx.JSON(http.StatusOK, gin.H{
 				"operation": "resume",
 				"scope":     "output_only",
-				"note":      "no active syncer matched; no-op (all outputs)",
+				"note":      "no active syncer matched; desired state is persisted",
 				"inputs":    []string{},
 				"applied":   []string{},
 				"skipped":   []string{},
@@ -285,7 +316,7 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		ctx.JSON(http.StatusOK, gin.H{
 			"operation": "resume",
 			"scope":     "output_only",
-			"note":      "resume only affects output replay; input ingest remains continuous",
+			"note":      "resume only affects output replay; input ingest remains continuous; desired state persisted",
 			"inputs":    inputs,
 			"applied":   applied,
 			"skipped":   skipped,
@@ -611,6 +642,7 @@ func (sc *SyncerCmd) flushdb(ctx context.Context, inputs []string, flushCmd stri
 }
 
 func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error {
+	_ = ctx
 	runIdMap := make(map[string]struct{}, len(inputs)*2)
 	for _, in := range inputs {
 		sy := sc.getSyncer(in)
@@ -675,6 +707,7 @@ func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error 
 }
 
 func (sc *SyncerCmd) resume(ctx context.Context, inputs []string) error {
+	_ = ctx
 	for _, input := range inputs {
 		si := sc.getSyncer(input)
 		if si.sync != nil {
@@ -685,21 +718,26 @@ func (sc *SyncerCmd) resume(ctx context.Context, inputs []string) error {
 }
 
 func (sc *SyncerCmd) allInputs(ctx context.Context) []string {
-	all := config.GetSyncerConfig().Input.Mode != config.InputModeStatic
-	inputRedis := config.GetSyncerConfig().Input.Redis.SelNodes(all, config.GetSyncerConfig().Input.SyncFrom)
-	addrs := []string{}
-	for _, r := range inputRedis {
-		addrs = append(addrs, r.Addresses...)
+	_ = ctx
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	addrs := make([]string, 0, len(sc.syncers))
+	for addr, si := range sc.syncers {
+		if si.sync != nil {
+			addrs = append(addrs, addr)
+		}
 	}
 	return addrs
 }
 
 func (sc *SyncerCmd) allOutputs(ctx context.Context) []config.RedisConfig {
+	_ = ctx
 	rr := config.GetSyncerConfig().Output.Redis.SelNodes(config.GetSyncerConfig().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
 	return rr
 }
 
 func (sc *SyncerCmd) allSyncers(ctx context.Context) ([]string, error) {
+	_ = ctx
 	ips, err := sc.clusterCli.Discover(sc.getRunWait().Context(), sc.registerKey)
 	return ips, err
 }

@@ -68,6 +68,7 @@ type Syncer interface {
 	Stop()
 	ServiceReplica(req *pb.SyncRequest, stream pb.ApiService_SyncServer) error
 	RunIds() []string
+	ActiveRunID() string
 	IsLeader() bool
 	Pause()
 	DelRunId()
@@ -182,6 +183,15 @@ func (s *syncer) RunIds() []string {
 		return nil
 	}
 	return s.input.RunIds()
+}
+
+func (s *syncer) ActiveRunID() string {
+	s.guard.RLock()
+	defer s.guard.RUnlock()
+	if s.channel == nil {
+		return ""
+	}
+	return s.channel.RunId()
 }
 
 func (s *syncer) getState() SyncerState {
