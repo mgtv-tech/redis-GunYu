@@ -74,13 +74,13 @@ func (of *OutputFollower) Run(wait usync.WaitCloser) error {
 		}
 		consecutiveFailures++
 		of.logger.Errorf("run error after takeover: err(%v), consecutive(%d)", err, consecutiveFailures)
-		if consecutiveFailures >= 300 {
+		if consecutiveFailures >= outputMaxConsecutiveFailures {
 			return fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err)
 		}
 		select {
 		case <-wait.Done():
 			return nil
-		case <-time.After(2 * time.Second):
+		case <-time.After(outputRetryInterval):
 		}
 	}
 	return nil

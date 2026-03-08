@@ -54,18 +54,28 @@ curl -XPOST http://http_server:port/syncer/restart
 
 ### 暂停同步
 ```
-curl -XPOST 'http://server:port/syncer/pause?inputs=inputIP&flushdb=yes'
+curl -XPOST 'http://server:port/syncer/pause'
 ```
 URL，查询参数：
-- inputs : 需要全量同步的源端redis IPs，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP，则用逗号分隔
+- 无。`pause` 固定控制当前实例全部 output。
+
+说明：
+- `pause` 仅暂停 Output 回放（写目标端），不暂停 Input 采集与本地落地。
+- `pause` 期望状态会持久化到 `meta.redis`，故障重启/拓扑重建后会自动继续保持暂停语义。
+- 接口返回 JSON，包含 `operation/scope/applied/skipped` 字段，`scope=output_only`。
 
 
 ### 恢复同步
 ```
-curl -XPOST 'http://server:port/syncer/resume?inputs=inputIP&flushdb=yes'
+curl -XPOST 'http://server:port/syncer/resume'
 ```
 URL，查询参数：
-- inputs : 需要全量同步的源端redis IPs，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP，则用逗号分隔
+- 无。`resume` 固定控制当前实例全部 output。
+
+说明：
+- `resume` 仅恢复 Output 回放，不改变 Input 侧采集连续性。
+- `resume` 期望状态会持久化到 `meta.redis`，用于清除暂停持久化状态并在重建后继续生效。
+- 接口返回 JSON，包含 `operation/scope/applied/skipped` 字段，`scope=output_only`。
 
 
 

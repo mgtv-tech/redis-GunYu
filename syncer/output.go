@@ -182,7 +182,7 @@ func (ro *RedisOutput) Run(wait usync.WaitCloser) error {
 			if errors.Is(err, ErrBreak) {
 				return err
 			}
-			wait.Sleep(2 * time.Second)
+			wait.Sleep(outputRetryInterval)
 			continue
 		}
 	}

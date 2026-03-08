@@ -3,7 +3,6 @@ package syncer
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
@@ -29,7 +28,6 @@ func (ol *OutputLeader) Run(wait usync.WaitCloser) error {
 		return err
 	}
 
-	const maxConsecutiveOutputFailures = 300
 	consecutiveFailures := 0
 	for !wait.IsClosed() {
 		err := ol.output.runOnce(wait)
@@ -48,11 +46,10 @@ func (ol *OutputLeader) Run(wait usync.WaitCloser) error {
 
 		consecutiveFailures++
 		ol.logger.Errorf("output run error: err(%v), consecutive(%d)", err, consecutiveFailures)
-		if consecutiveFailures >= maxConsecutiveOutputFailures {
+		if consecutiveFailures >= outputMaxConsecutiveFailures {
 			return fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err)
 		}
-		wait.Sleep(2 * time.Second)
+		wait.Sleep(outputRetryInterval)
 	}
 	return nil
 }
-

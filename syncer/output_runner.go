@@ -55,7 +55,6 @@ func NewOutputRunner(cfg OutputRunnerConfig) *OutputRunner {
 
 func (or *OutputRunner) Run() error {
 	or.logger.Infof("OutputRunner starting")
-	const maxConsecutiveOutputFailures = 300
 	consecutiveFailures := 0
 	for !or.wait.IsClosed() {
 		err := or.output.runOnce(or.wait)
@@ -66,11 +65,11 @@ func (or *OutputRunner) Run() error {
 				break
 			}
 			consecutiveFailures++
-			if consecutiveFailures >= maxConsecutiveOutputFailures {
+			if consecutiveFailures >= outputMaxConsecutiveFailures {
 				or.wait.Close(fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err))
 				break
 			}
-			or.wait.Sleep(2 * time.Second)
+			or.wait.Sleep(outputRetryInterval)
 			continue
 		}
 		consecutiveFailures = 0

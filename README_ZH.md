@@ -111,9 +111,46 @@
 
 ## 实现
 
-`redis-GunYu`同步功能的技术实现如图所示，具体技术原理请见[技术实现](docs/tech_zh.md)
+`redis-GunYu`的同步实现采用“输入采集 -> 本地通道 -> 输出回放”的三段式流水线。
+每个源端分片（或实例）会对应一条独立 pipeline，互不阻塞，便于并行扩展与故障隔离。
 
 <img src="docs/imgs/sync.png" width = "400" height = "150" alt="架构图" align=center />
+
+### 1) 数据链路（Input / Channel / Output）
+
+- Input：伪装为 Redis replica，基于 PSYNC 持续拉取源端增量（RDB + AOF）。
+- Channel：将输入数据先落地到本地文件通道，作为解耦缓冲层。
+- Output：从本地通道读取并回放到目标端 Redis，支持批量与事务模式切换。
+
+这种设计的关键价值是：即使目标端短时抖动，Input 仍可持续采集并落地，恢复后由 Output 追平积压。
+
+### 2) Checkpoint 与续传机制
+
+- `input_cp`：记录采集进度，存放于 `meta.redis`（Sentinel 托管）。
+- `output_cp`：记录回放进度，存放于目标端 Redis。
+- 重启或切换后，Input/Output 分别按各自 checkpoint 恢复，避免全量重拉。
+- 对于双向同步场景，checkpoint 与过滤标记 key 采用独立命名，防止回环污染。
+
+### 3) 一致性策略与拓扑自适应
+
+- 分片对称（源/目标 slot 对齐）时，优先使用伪事务批量回放，提高一致性。
+- 分片不对称或拓扑变更时，自动切换到更稳妥的回放策略，保证可用性与最终收敛。
+- 支持 MOVED/ASK 场景下拓扑刷新与重试，减少切换窗口中断。
+
+### 4) 高可用与故障恢复
+
+- 同步任务按分片独立选主，节点间为 P2P 主备协作。
+- Leader 负责写入进度与回放，Follower 在故障时接管，缩短恢复时间。
+- 通过 epoch/fencing 防止旧 leader 覆盖新 leader 的 output checkpoint。
+
+### 5) 延迟度量（checkpoint 对比）
+
+- 默认以 `input_cp(meta.redis)` 与 `output_cp(目标端)` 对比计算：
+  - `lag_offset = input_cp.offset - output_cp.offset`
+  - `lag_time = input_cp.mtime - output_cp.mtime`
+- 当 runId 不一致、checkpoint 字段异常、offset 回退等情况出现时，指标进入无效窗口（门控）。
+
+> 更多实现细节（协议流程、模块拆分、HA 选举等）可参考：[技术实现](docs/tech_zh.md)
 
 
 

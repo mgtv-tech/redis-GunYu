@@ -54,6 +54,13 @@ var (
 	errOutputRetryExceeded = errors.New("output retry exceeded")
 )
 
+const (
+	// Keep output retry window long enough (about 1 hour) for transient
+	// target-side network partitions before escalating to shard-local rebuild.
+	outputRetryInterval          = 2 * time.Second
+	outputMaxConsecutiveFailures = 1800
+)
+
 type SyncerConfig struct {
 	Id             int
 	Input          config.RedisConfig
@@ -442,7 +449,6 @@ func (s *syncer) runLeader() error {
 // runOutputLoop keeps output alive without forcing input to stop on output failures.
 // output failures are retried in-place; only an explicit syncer stop closes the loop.
 func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
-	const maxConsecutiveOutputFailures = 300
 	consecutiveFailures := 0
 	for !wait.IsClosed() {
 		if s.outputPaused.Load() {
@@ -495,12 +501,12 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 
 				consecutiveFailures++
 				s.logger.Errorf("output run error (isolated): err(%v), consecutive(%d)", err, consecutiveFailures)
-				if consecutiveFailures >= maxConsecutiveOutputFailures {
+				if consecutiveFailures >= outputMaxConsecutiveFailures {
 					wait.Close(fmt.Errorf("%w: consecutive(%d), lastErr(%v)", errOutputRetryExceeded, consecutiveFailures, err))
 					return
 				}
 				// Backoff before restarting output loop to avoid hot retry.
-				wait.Sleep(2 * time.Second)
+				wait.Sleep(outputRetryInterval)
 				break
 			case <-wait.Done():
 				onceWait.Close(wait.Error())

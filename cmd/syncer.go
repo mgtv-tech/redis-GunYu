@@ -1234,6 +1234,9 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			if len(outSelNodes) != len(prevOutSelNodes) {
 				reason = fmt.Sprintf("output nodes changed (no full restart): previous(%d), now(%d)", len(prevOutSelNodes), len(outSelNodes))
 				sc.logger.Infof("check typology, %s", reason)
+				// Latch latest output topology snapshot to avoid repeating
+				// the same no-restart change log on every ticker interval.
+				*prevOutRedisCfg = *outRedisCfg.Clone()
 				return false
 			}
 			for _, a := range outSelNodes {
@@ -1247,6 +1250,9 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				if !find {
 					reason = fmt.Sprintf("output nodes changed (no full restart): previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevOutSelNodes), config.GetAddressesFromRedisConfigSlice(outSelNodes))
 					sc.logger.Infof("check typology, %s", reason)
+					// Latch latest output topology snapshot to avoid repeating
+					// the same no-restart change log on every ticker interval.
+					*prevOutRedisCfg = *outRedisCfg.Clone()
 					return false
 				}
 			}
