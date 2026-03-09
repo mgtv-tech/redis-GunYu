@@ -646,7 +646,9 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	if *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint {
 		var localCheckpoint string
 		checkpointPrefix := config.CheckpointKey
-		if s.cfg.Output.IsCluster() && !s.cfg.CanTransaction {
+		// For cluster output, checkpoint must be shard-distinct; otherwise
+		// different input shards may fence each other on the same cp key.
+		if s.cfg.Output.IsCluster() {
 			checkpointPrefix = checkpointPrefixForInputSlots(config.CheckpointKey, s.cfg.Input.GetAllSlots())
 		}
 		if s.cfg.Output.IsCluster() {
