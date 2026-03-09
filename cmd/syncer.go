@@ -161,166 +161,78 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 	inputRedis := config.GetSyncerConfig().Input.Redis
 	outputRedis := config.GetSyncerConfig().Output.Redis
 
-	// 1. standalone <-> standalone  ==> multi/exec
-	// 2. cluster    <-> standalone  ==> multi/exec, monitor typology
-	// 3. standalone <-> cluster     ==> update checkpoint periodically
-	// 4. cluster    <-> cluster     ==> monitor typology
-	//		4.1 slots are matched, multi/exec
-	//		4.2 slots arenot matched, update checkpoint periodically
-	// 5. cluster : if cluster
-
 	syncFrom := config.GetSyncerConfig().Input.SyncFrom
 	inputMode := config.GetSyncerConfig().Input.Mode
 	enableTransaction := *config.GetSyncerConfig().Output.Replay.ReplayTransaction
 
-	if outputRedis.IsStanalone() {
-		// standalone <-> standalone  ==> multi/exec
-		if inputRedis.IsStanalone() {
-			// @TODO auto sharding
-			if len(inputRedis.Addresses) != len(outputRedis.Addresses) {
-				err = errors.Join(syncer.ErrQuit, fmt.Errorf("the amount of input redis does not equal output redis : %d != %d",
-					len(inputRedis.Addresses), len(outputRedis.Addresses)))
-				sc.logger.Errorf("%v", err)
-				return
-			}
-			inputs := inputRedis.SelNodes(false, syncFrom)
-			for i, source := range inputs {
-				scg := syncer.SyncerConfig{
-					Id:             i,
-					CanTransaction: true,
-					Output:         outputRedis.Index(i),
-					Input:          source,
-					Channel:        *config.GetSyncerConfig().Channel.Clone(),
+	if !inputRedis.IsCluster() || !outputRedis.IsCluster() {
+		err = errors.Join(syncer.ErrQuit, fmt.Errorf("only support cluster <-> cluster now : input(%v), output(%v)",
+			inputRedis.Type, outputRedis.Type))
+		sc.logger.Errorf("%v", err)
+		return
+	}
+
+	watchInput = true
+	watchOutput = true
+
+	// cluster <-> cluster
+	// 1) slots/topology aligned: bind each input shard to matched output shard.
+	// 2) topology differs: still allow running by using whole output cluster.
+	if len(inputRedis.GetClusterShards()) == len(outputRedis.GetClusterShards()) &&
+		!outputRedis.IsMigrating() && !inputRedis.IsMigrating() &&
+		inputRedis.GetAllSlots().Equal(outputRedis.GetAllSlots()) {
+
+		var inputs, outputs []config.RedisConfig
+		staticMode := inputMode == config.InputModeStatic
+		inputs = inputRedis.SelNodes(!staticMode, syncFrom)
+		outputs = outputRedis.SelNodes(!staticMode, config.SelNodeStrategyMaster)
+
+		sortedOut := []config.RedisConfig{}
+		for i, in := range inputs {
+			inSlots := in.GetAllSlots()
+			for _, out := range outputs {
+				if inSlots.Equal(out.GetAllSlots()) {
+					sortedOut = append(sortedOut, out)
+					break
 				}
-				if !enableTransaction {
-					scg.CanTransaction = false
-				}
-				cfgs = append(cfgs, scg)
 			}
-		} else if inputRedis.IsCluster() {
-			if len(outputRedis.Addresses) != 1 { // @TODO
-				err = errors.Join(syncer.ErrQuit, fmt.Errorf("input redis is cluster typology, but output redis is not standalone : %v", outputRedis.Addresses))
-				sc.logger.Errorf("%v", err)
-				return
+			if len(sortedOut) != i+1 {
+				break
 			}
-			var inputs []config.RedisConfig
-			if inputMode == config.InputModeStatic {
-				inputs = inputRedis.SelNodes(false, syncFrom)
-			} else {
-				inputs = inputRedis.SelNodes(true, syncFrom)
-			}
+		}
+
+		if len(inputs) == len(sortedOut) {
 			for i, source := range inputs {
 				source.Type = config.RedisTypeStandalone
-				scg := syncer.SyncerConfig{
-					Id:             i,
-					CanTransaction: true,
-					Output:         *outputRedis,
-					Input:          source,
-					Channel:        *config.GetSyncerConfig().Channel.Clone(),
-				}
-				if !enableTransaction {
-					scg.CanTransaction = false
-				}
-				cfgs = append(cfgs, scg)
-			}
-			// monitor typology, if changed, restart syncer
-			watchInput = true
-		} else {
-			err = errors.Join(syncer.ErrQuit, fmt.Errorf("does not support redis type : addr(%s), type(%v)", inputRedis.Address(), inputRedis.Type))
-			sc.logger.Errorf("%v", err)
-			return
-		}
-	} else if outputRedis.IsCluster() {
-		if inputRedis.IsStanalone() { // standalone <-> cluster     ==> multi/exec or update periodically
-			inputs := inputRedis.SelNodes(false, syncFrom)
-			for i, source := range inputs {
 				cfgs = append(cfgs, syncer.SyncerConfig{
 					Id:             i,
-					CanTransaction: false,
-					Output:         *outputRedis,
+					CanTransaction: enableTransaction,
+					Output:         sortedOut[i],
 					Input:          source,
 					Channel:        *config.GetSyncerConfig().Channel.Clone(),
 				})
 			}
-		} else if inputRedis.IsCluster() { // cluster    <-> cluster     ==> dynamical : multi/exec or update periodically
-			watchInput = true
-			// @TODO for static mode(InputMode), just need to check slots
-			if len(inputRedis.GetClusterShards()) == len(outputRedis.GetClusterShards()) &&
-				!outputRedis.IsMigrating() && !inputRedis.IsMigrating() &&
-				inputRedis.GetAllSlots().Equal(outputRedis.GetAllSlots()) {
-
-				var inputs, outputs []config.RedisConfig
-				staticMode := inputMode == config.InputModeStatic
-				inputs = inputRedis.SelNodes(!staticMode, syncFrom)
-				outputs = outputRedis.SelNodes(!staticMode, config.SelNodeStrategyMaster)
-
-				sortedOut := []config.RedisConfig{}
-				// sort slots
-				for i, in := range inputs {
-					inSlots := in.GetAllSlots()
-					for _, out := range outputs {
-						if inSlots.Equal(out.GetAllSlots()) {
-							sortedOut = append(sortedOut, out)
-							break
-						}
-					}
-					if len(sortedOut) != i+1 { // differ in typology
-						break
-					}
-				}
-				if len(inputs) == len(sortedOut) {
-					for i, source := range inputs {
-						source.Type = config.RedisTypeStandalone
-						scg := syncer.SyncerConfig{
-							Id:             i,
-							CanTransaction: true,
-							Output:         sortedOut[i],
-							Input:          source,
-							Channel:        *config.GetSyncerConfig().Channel.Clone(),
-						}
-						if !enableTransaction {
-							scg.CanTransaction = false
-						}
-						cfgs = append(cfgs, scg)
-					}
-				} else {
-					for i, source := range inputs {
-						source.Type = config.RedisTypeStandalone
-						cfgs = append(cfgs, syncer.SyncerConfig{
-							Id:             i,
-							CanTransaction: false,
-							Output:         *outputRedis,
-							Input:          source,
-							Channel:        *config.GetSyncerConfig().Channel.Clone(),
-						})
-					}
-				}
-			} else {
-
-				var inputs []config.RedisConfig
-				if inputMode == config.InputModeStatic {
-					inputs = inputRedis.SelNodes(false, syncFrom)
-				} else {
-					inputs = inputRedis.SelNodes(true, syncFrom)
-				}
-
-				for i, source := range inputs {
-					source.Type = config.RedisTypeStandalone
-					cfgs = append(cfgs, syncer.SyncerConfig{
-						Id:             i,
-						CanTransaction: false,
-						Output:         *outputRedis,
-						Input:          source,
-						Channel:        *config.GetSyncerConfig().Channel.Clone(),
-					})
-				}
-			}
-		} else {
-			err = errors.Join(syncer.ErrQuit, fmt.Errorf("does not support redis type : addr(%s), type(%v)", inputRedis.Address(), inputRedis.Type))
-			sc.logger.Errorf("%v", err)
-			return
 		}
-		watchOutput = true
+	}
+
+	if len(cfgs) == 0 {
+		var inputs []config.RedisConfig
+		if inputMode == config.InputModeStatic {
+			inputs = inputRedis.SelNodes(false, syncFrom)
+		} else {
+			inputs = inputRedis.SelNodes(true, syncFrom)
+		}
+
+		for i, source := range inputs {
+			source.Type = config.RedisTypeStandalone
+			cfgs = append(cfgs, syncer.SyncerConfig{
+				Id:             i,
+				CanTransaction: enableTransaction,
+				Output:         *outputRedis,
+				Input:          source,
+				Channel:        *config.GetSyncerConfig().Channel.Clone(),
+			})
+		}
 	}
 
 	if len(cfgs) > 0 {
@@ -1266,12 +1178,9 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			outNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 			if len(inNodes) != len(outNodes) {
 				if txnMode {
-					reason = fmt.Sprintf("transaction mode, the numbers of input nodes(%d) and output nodes(%d) are not equal", len(inNodes), len(outNodes))
-					restart = true
-					return !restart
-				} else {
-					return false
+					sc.logger.Infof("check typology, transaction mode keeps running on heterogeneous shard counts: input(%d), output(%d)", len(inNodes), len(outNodes))
 				}
+				return false
 			}
 			for _, in := range inNodes {
 				inSlots := in.GetAllSlots()
@@ -1284,13 +1193,9 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 				}
 				if !equal {
 					if txnMode {
-						reason = fmt.Sprintf("transaction mode, input nodes and output nodes are not equal : input(%v), output(%v)", inNodes, outNodes)
-						restart = true
-						return false
-					} else {
-						restart = false
-						return false
+						sc.logger.Infof("check typology, transaction mode keeps running on heterogeneous slot mapping")
 					}
+					return false
 				}
 			}
 			return true

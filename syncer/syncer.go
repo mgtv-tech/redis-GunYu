@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -644,10 +645,14 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 
 	if *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint {
 		var localCheckpoint string
-		if s.cfg.CanTransaction && s.cfg.Output.IsCluster() {
-			localCheckpoint = choseKeyInSlots(config.CheckpointKey, s.cfg.Output.GetAllSlots())
+		checkpointPrefix := config.CheckpointKey
+		if s.cfg.Output.IsCluster() && !s.cfg.CanTransaction {
+			checkpointPrefix = checkpointPrefixForInputSlots(config.CheckpointKey, s.cfg.Input.GetAllSlots())
+		}
+		if s.cfg.Output.IsCluster() {
+			localCheckpoint = choseKeyInSlots(checkpointPrefix, s.cfg.Output.GetAllSlots())
 		} else {
-			localCheckpoint = config.CheckpointKey
+			localCheckpoint = checkpointPrefix
 		}
 		if len(localCheckpoint) == 0 {
 			err = fmt.Errorf("checkpoint name is empty : prefix(%s), redis(%s)", config.CheckpointKey, s.cfg.Output.Address())
@@ -752,6 +757,17 @@ func choseSlotInRange(maxDepth int, prefix string, left, right int) string {
 	prefix = prefix + "-"
 	_, suffix := pickSuffixDfs(maxDepth, 0, judge, []byte(prefix))
 	return suffix
+}
+
+func checkpointPrefixForInputSlots(base string, slots *config.RedisSlots) string {
+	if slots == nil || len(slots.Ranges) == 0 {
+		return base + "-all"
+	}
+	parts := make([]string, 0, len(slots.Ranges))
+	for _, r := range slots.Ranges {
+		parts = append(parts, fmt.Sprintf("%d_%d", r.Left, r.Right))
+	}
+	return base + "-slot-" + strings.Join(parts, "-")
 }
 
 func pickSuffixDfs(maxDepth int, depth int, judge func(int) bool, prefix []byte) (bool, string) {

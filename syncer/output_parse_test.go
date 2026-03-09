@@ -85,12 +85,20 @@ func TestParseAofCommand_KeepTransactionWhenNoFilterCheckpoint(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(sendBuf) != 1 {
+	if len(sendBuf) != 3 {
 		t.Fatalf("expected transaction command to be replayed, got %d cmds", len(sendBuf))
+	}
+	begin := <-sendBuf
+	if begin.Cmd != "multi" {
+		t.Fatalf("unexpected begin cmd: %s", begin.Cmd)
 	}
 	cmd := <-sendBuf
 	if cmd.Cmd != "set" {
 		t.Fatalf("unexpected cmd: %s", cmd.Cmd)
+	}
+	end := <-sendBuf
+	if end.Cmd != "exec" {
+		t.Fatalf("unexpected end cmd: %s", end.Cmd)
 	}
 }
 

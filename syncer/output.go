@@ -1040,10 +1040,34 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 					continue
 				}
 
+				// Preserve source transaction boundary for replay side so only
+				// true MULTI/EXEC blocks use transaction execution.
+				if len(transactionCommands) > 0 {
+					select {
+					case sendBuf <- cmdExecution{
+						Cmd:    "multi",
+						Offset: startOffset + incrOffset,
+						Db:     currentDB,
+					}:
+					case <-replayQuit.Context().Done():
+						return nil
+					}
+				}
 				// 直接发送不包含checkpoint标签的transactionCommands中的命令
 				for _, cmd := range transactionCommands {
 					select {
 					case sendBuf <- cmd:
+					case <-replayQuit.Context().Done():
+						return nil
+					}
+				}
+				if len(transactionCommands) > 0 {
+					select {
+					case sendBuf <- cmdExecution{
+						Cmd:    "exec",
+						Offset: startOffset + incrOffset,
+						Db:     currentDB,
+					}:
 					case <-replayQuit.Context().Done():
 						return nil
 					}
@@ -1493,25 +1517,17 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	keepaliveTicker := time.NewTicker(time.Duration(ro.cfg.KeepaliveTicker))
 	defer keepaliveTicker.Stop()
 
-	cpTicker := ro.cfg.UpdateCheckpointTicker
-	if transactionMode {
-		cpTicker = time.Hour * 24 * 365 * 100
-	}
-	updateCpTicker := time.NewTicker(cpTicker)
+	updateCpTicker := time.NewTicker(ro.cfg.UpdateCheckpointTicker)
 	defer updateCpTicker.Stop()
 
 	// transaction : call sendFunc when command is "exec", never break down a transaction
 	// non-transaction : call sendFunc when queue is full or ticker is delivered
 
-	transactionLabel := "no"
-	if transactionMode {
-		transactionLabel = "yes"
-	}
-
 	type cmdBatcher struct {
 		bt         common.CmdBatcher
 		cmdCounter uint
 		offset     uint
+		txnLabel   string
 	}
 	var pipeline chan *cmdBatcher
 
@@ -1526,7 +1542,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				ro.logger.Errorf("send error : error(%v), offset(%d)", err, bat.offset)
 			}
 			failCounter.Add(float64(bat.cmdCounter), ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
+			batchSendCounter.Add(1, ro.cfg.InputName, bat.txnLabel, "error")
 			replayWait.Close(err)
 		}
 
@@ -1550,7 +1566,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 					return
 				}
 				succCounter.Add(float64(bat.cmdCounter), ro.cfg.InputName)
-				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
+				batchSendCounter.Add(1, ro.cfg.InputName, bat.txnLabel, "ok")
 				ackOffsetGauge.Set(float64(bat.offset), ro.cfg.InputName)
 			}
 		}, func(i interface{}) { replayWait.Close(fmt.Errorf("panic : %v", i)) })
@@ -1559,6 +1575,10 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	sendFuncOnce := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
 		batcher := conn.NewBatcher(isPipeline)
 		cmdCounter := uint(0)
+		transactionLabel := "no"
+		if shouldInTransaction {
+			transactionLabel = "yes"
+		}
 
 		if shouldInTransaction {
 			batcher.Put("multi")
@@ -1615,6 +1635,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				bt:         batcher,
 				cmdCounter: cmdCounter,
 				offset:     uint(lastOffset),
+				txnLabel:   transactionLabel,
 			}:
 			case <-replayWait.Context().Done():
 				return replayWait.Error()
@@ -1692,8 +1713,8 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	inTransaction := false // in transaction batch, [multi, cmds, exec], don't send to redis separatelly
 	lastOffset := int64(-1)
 	for {
-		transactionBatch := transactionMode
-		shouldUpdateCP := ro.cfg.EnableResumeFromBreakPoint && transactionMode
+		transactionBatch := false
+		shouldUpdateCP := false
 		select {
 		case item, ok := <-sendBuf:
 			if !ok {
@@ -1713,6 +1734,8 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			if transactionMode {
 				if needFlush {
 					// flush previous data
+					transactionBatch = inTransaction
+					shouldUpdateCP = ro.cfg.EnableResumeFromBreakPoint
 					err := sendFunc(transactionBatch, shouldUpdateCP, lastOffset)
 					if err != nil {
 						return err
@@ -1761,12 +1784,12 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		case <-updateCpTicker.C:
 			// in non-transaction model, should flush pending commands before update checkpoint,
 			// avoid the case that update checkpoint succeeds but the commands execution fails
-			if !inTransaction && !transactionBatch {
+			if !inTransaction {
 				needFlush = true
 				shouldUpdateCP = true
 			}
 		case <-replayWait.Done():
-			if !inTransaction && !transactionBatch {
+			if !inTransaction {
 				needFlush = true
 				shouldUpdateCP = true
 			}
@@ -1780,6 +1803,10 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 
 		if needFlush {
 			// @TODO non-transaction : update checkpoint everytime, update checkpoint is a hotspot operation
+			transactionBatch = inTransaction && transactionMode
+			if ro.cfg.EnableResumeFromBreakPoint {
+				shouldUpdateCP = ro.cfg.EnableResumeFromBreakPoint
+			}
 			err := sendFunc(transactionBatch, shouldUpdateCP, lastOffset)
 			if err != nil {
 				return err

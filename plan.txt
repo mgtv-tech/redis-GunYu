@@ -775,9 +775,42 @@ groups:
 #### 任务6.5：验收测试
 - 异构分片双向同步验证
 
+#### 阶段6补充记录（2026-03-08，异构分片 checkpoint 仅单条问题修复）
+- **问题现象**：
+  - 异构分片双向场景（3->5、5->3）中，checkpoint hash 仅出现 1 条映射，未按分片形成多条 checkpoint。
+- **根因定位**：
+  - 在 `syncer.newOutput()` 中，`output=cluster 且 CanTransaction=false` 的路径回退使用固定 `config.CheckpointKey`，导致多个输入分片共享同一 checkpoint 名。
+- **修复动作**：
+  - 在非事务异构路径引入“按输入 slot 范围区分 checkpoint 前缀”：
+    - 前缀形如：`<base>-slot-<left>_<right>(-...)`
+    - 再通过 `choseKeyInSlots()` 选取目标集群合法 slot key，确保可落盘且分片可区分。
+  - 新增单测校验不同输入 slot 范围生成不同 checkpoint 前缀。
+- **在线复测（双向）**：
+  - A(700x)->B(800x) 与 B(800x)->A(700x) 同时运行，`/syncer/status` 均为 `run`。
+  - 在非事务路径复测中，`transaction=false` 仍可双向收敛。
+  - 双向写入互相可见通过（A 写入 B 可读，B 写入 A 可读）。
+  - checkpoint 数量验证：
+    - `HLEN redis-GunYu-Checkpoint-ClusterA-hash`（目标 B）= `3`
+    - `HLEN redis-GunYu-Checkpoint-ClusterB-hash`（目标 A）= `5`
+  - 结论：不再“只写一个 checkpoint”，已按异构分片规模形成多条映射。
+
+#### 阶段6补充记录（2026-03-08，transaction=true 异构分片稳定性修复）
+- **问题现象**：
+  - 将异构分片场景 `CanTransaction` 放开后，链路仍被 `check typology` 周期性触发重建：
+    - `check typology, restart(transaction mode, the numbers of input nodes(...) and output nodes(...) are not equal)`
+- **根因定位**：
+  - `syncerConfigs()` 已允许 `cluster<->cluster` 异构分片进入 `transaction=true`，但 `diffTypology()` 仍保留“transaction 模式要求输入输出节点数/slot 完全一致，否则重启”的历史门槛。
+- **修复动作**：
+  - 移除 `diffTypology()` 中 transaction+异构分片的重启触发，改为信息日志并保持运行。
+  - 继续保留真实拓扑变化检测与迁移态检测，避免放松必要保护。
+- **在线复测（双向）**：
+  - A/B 两侧 `status` 显示全部分片 `transaction=true` 且持续 `run`。
+  - 日志中不再出现 transaction 模式下因“输入/输出分片数不等”触发的 typology 重启。
+  - 端到端写入验证通过（A 写入 B 可见）。
+
 **完成标准**：
 - [ ] slot 级 checkpoint 完整
-- [ ] 异构分片双向同步可用
+- [x] 异构分片双向同步可用（分片级 checkpoint 映射已验证）
 
 ---
 
