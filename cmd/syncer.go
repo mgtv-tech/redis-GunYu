@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1044,11 +1046,47 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 	allShards := config.GetSyncerConfig().Input.Mode != config.InputModeStatic
 	syncFrom := config.GetSyncerConfig().Input.SyncFrom
 	interval := config.GetSyncerConfig().Server.CheckRedisTypologyTicker
+	prevInTopoSig := topologySignature(prevInRedisCfg)
+	prevOutTopoSig := topologySignature(prevOutRedisCfg)
 
 	sc.logger.Infof("cronjob, check typology of redis cluster : input(%v), output(%v), watch(%v, %v), ticker(%s), txnMode(%v)", prevInRedisCfg.Addresses, prevOutRedisCfg.Addresses, watchIn, watchOut, interval, txnMode)
 
 	util.CronWithCtx(wait.Context(), interval, func(ctx context.Context) {
 		defer util.RecoverCallback(func(e interface{}) { wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("panic : %v", e))) })
+
+		// Fast path: skip full topology diff when both input/output topology snapshots
+		// (including migration state) are unchanged since last successful check.
+		inUnchanged := !watchIn
+		outUnchanged := !watchOut
+		if watchIn {
+			inCfg := prevInRedisCfg.Clone()
+			if err := redis.FixTopology(inCfg); err != nil {
+				sc.logger.Errorf("FixTypology : redis(%s), error(%v)", inCfg.Address(), err)
+				return
+			}
+			curSig := topologySignature(inCfg)
+			inUnchanged = curSig == prevInTopoSig
+			if !inUnchanged {
+				prevInTopoSig = curSig
+			}
+		}
+		if watchOut {
+			outCfg := prevOutRedisCfg.Clone()
+			if err := redis.FixTopology(outCfg); err != nil {
+				sc.logger.Errorf("FixTypology : redis(%s), error(%v)", outCfg.Address(), err)
+				return
+			}
+			curSig := topologySignature(outCfg)
+			outUnchanged = curSig == prevOutTopoSig
+			if !outUnchanged {
+				prevOutTopoSig = curSig
+			}
+		}
+
+		if inUnchanged && outUnchanged {
+			sc.logger.Debugf("skip typology diff: topology unchanged")
+			return
+		}
 
 		sc.logger.Debugf("diff typology")
 
@@ -1061,7 +1099,41 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 			wait.Close(syncer.ErrRestart)
 			return
 		}
+		// Keep fast-path baseline aligned with the latest accepted snapshots.
+		prevInTopoSig = topologySignature(prevInRedisCfg)
+		prevOutTopoSig = topologySignature(prevOutRedisCfg)
 	})
+}
+
+func topologySignature(rc *config.RedisConfig) string {
+	if rc == nil {
+		return "nil"
+	}
+	shards := rc.GetClusterShards()
+	parts := make([]string, 0, len(shards))
+	for _, sh := range shards {
+		if sh == nil {
+			continue
+		}
+		slotParts := make([]string, 0, len(sh.Slots.Ranges))
+		for _, r := range sh.Slots.Ranges {
+			slotParts = append(slotParts, fmt.Sprintf("%d-%d", r.Left, r.Right))
+		}
+		sort.Strings(slotParts)
+
+		slaveAddrs := make([]string, 0, len(sh.Slaves))
+		for _, sl := range sh.Slaves {
+			slaveAddrs = append(slaveAddrs, sl.Address)
+		}
+		sort.Strings(slaveAddrs)
+
+		parts = append(parts, fmt.Sprintf("%s|%s|%s",
+			strings.Join(slotParts, ","),
+			sh.Master.Address,
+			strings.Join(slaveAddrs, ",")))
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("migrating=%t|%s", rc.IsMigrating(), strings.Join(parts, ";"))
 }
 
 func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bool,
