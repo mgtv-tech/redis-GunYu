@@ -90,7 +90,7 @@ func TestSendCmdsBatch_TransactionMode_NoSyntheticMultiExec(t *testing.T) {
 	}
 	close(sendBuf)
 
-	err := ro.sendCmdsBatch(wait, conn, "rid", sendBuf, true, false)
+	err := ro.sendCmdsBatch(wait, conn, "rid", sendBuf, true)
 	if err != nil {
 		t.Fatalf("sendCmdsBatch returned error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestSendCmdsBatch_TransactionMode_WithTxnBoundary(t *testing.T) {
 	sendBuf <- cmdExecution{Cmd: "exec", Offset: 3}
 	close(sendBuf)
 
-	err := ro.sendCmdsBatch(wait, conn, "rid", sendBuf, true, false)
+	err := ro.sendCmdsBatch(wait, conn, "rid", sendBuf, true)
 	if err != nil {
 		t.Fatalf("sendCmdsBatch returned error: %v", err)
 	}

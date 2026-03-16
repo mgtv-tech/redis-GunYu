@@ -638,7 +638,6 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		ReplayRdbParallel:          cfg.Replay.ReplayRdbParallel,
 		ReplayRdbEnableRestore:     *cfg.Replay.ReplayRdbEnableRestore,
 		UpdateCheckpointTicker:     cfg.Replay.UpdateCheckpointTicker,
-		ReplayPipeline:             cfg.Replay.AofPipelineMode,
 		Stats:                      cfg.Replay.Stats,
 		Filter:                     config.GetSyncerConfig().Output.Filter,
 	}

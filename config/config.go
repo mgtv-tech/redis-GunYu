@@ -282,7 +282,6 @@ type ReplayConfig struct {
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 	ReplayTransaction      *bool         `yaml:"replayTransaction" default:"true"`
 	Stats                  OutputStats   `yaml:"stats"`
-	AofPipelineMode        bool          `yaml:"enableAofPipeline"`
 }
 
 func (of *OutputConfig) fix() error {
