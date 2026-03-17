@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -60,7 +59,9 @@ func (or *OutputRunner) Run() error {
 		err := or.output.runOnce(or.wait)
 		if err != nil {
 			or.logger.Errorf("run once error: %v", err)
-			if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
+			action, reason := ClassifyErrorDetail(err)
+			if action == ErrorActionExit {
+				or.logger.Errorf("output runner fatal action(%s), reason(%s): %v", action.String(), reason, err)
 				or.wait.Close(err)
 				break
 			}

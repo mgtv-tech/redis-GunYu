@@ -1,7 +1,6 @@
 package syncer
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
@@ -40,7 +39,9 @@ func (ol *OutputLeader) Run(wait usync.WaitCloser) error {
 		}
 
 		// Fatal data-path errors are linked to the whole syncer lifecycle.
-		if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
+		action, reason := ClassifyErrorDetail(err)
+		if action == ErrorActionExit {
+			ol.logger.Errorf("output leader fatal action(%s), reason(%s): %v", action.String(), reason, err)
 			return err
 		}
 

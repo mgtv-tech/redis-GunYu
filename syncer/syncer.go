@@ -43,6 +43,10 @@ var (
 	ErrQuit = fmt.Errorf("%w %s", ErrBreak, "quit")
 	// restart command
 	ErrRestart = fmt.Errorf("%w %s", ErrBreak, "restart")
+	// restart due to runid convergence not progressing in expected window
+	ErrRunIDStuck = fmt.Errorf("%w %s", ErrRestart, "runid stuck")
+	// restart when output checkpoint write is fenced by newer leader epoch
+	ErrCheckpointFenced = fmt.Errorf("%w %s", ErrRestart, "checkpoint fenced")
 	// restart all syncers
 	ErrRedisTypologyChanged = fmt.Errorf("%w %s", ErrRestart, "redis typology is changed")
 	// leadership

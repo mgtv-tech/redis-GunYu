@@ -1,7 +1,6 @@
 package syncer
 
 import (
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -69,7 +68,9 @@ func (of *OutputFollower) Run(wait usync.WaitCloser) error {
 		if wait.IsClosed() {
 			return nil
 		}
-		if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
+		action, reason := ClassifyErrorDetail(err)
+		if action == ErrorActionExit {
+			of.logger.Errorf("output follower fatal action(%s), reason(%s): %v", action.String(), reason, err)
 			return err
 		}
 		consecutiveFailures++

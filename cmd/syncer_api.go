@@ -135,10 +135,15 @@ func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ApiService_SyncServer) 
 	err := sy.sync.ServiceReplica(req, stream)
 	if err != nil {
 		sc.logger.Errorf("Sync error : addr(%s), err(%v)", addr, err)
-		if errors.Is(err, syncer.ErrBreak) { // restart or quit
+		action, reason := syncer.ClassifyErrorDetail(err)
+		switch action {
+		case syncer.ErrorActionLocalRebuild:
+			// Keep blast radius on current shard when role/restart-level errors happen.
+			sc.logger.Infof("sync api close shard-local wait: addr(%s), action(%s), reason(%s)", addr, action.String(), reason)
+			sy.wait.Close(errors.Join(syncer.ErrRestart, err))
+		case syncer.ErrorActionGlobalRestart, syncer.ErrorActionExit:
+			sc.logger.Infof("sync api close run-level wait: addr(%s), action(%s), reason(%s)", addr, action.String(), reason)
 			sc.getRunWait().Close(err) // stop all syncers
-		} else if errors.Is(err, syncer.ErrRole) {
-			sy.wait.Close(err) // stop current syncer
 		}
 	}
 	return err

@@ -372,3 +372,65 @@ func (ts *typologyTestSuite) TestDiffTypologyMigrating() {
 			txnMode, true, config.SelNodeStrategySlave, true))
 	})
 }
+
+func (ts *typologyTestSuite) TestAffectedSyncersForTopologyLocalRebuild() {
+	ts.Run("single_shard_input_master_changed_only_rebuild_affected", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+
+		// Simulate one input shard failover on the first slot-range.
+		shards := curIn.GetClusterShards()
+		shards[0].Master = shards[0].Slaves[0]
+		curIn.SetClusterShards(shards)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+			"12": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.True(ok)
+		ts.Equal([]string{"11"}, affected)
+	})
+
+	ts.Run("shard_count_changed_fallback_to_non_precise", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+		ts.addShard(curIn)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+			"12": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.False(ok)
+		ts.Len(affected, 0)
+	})
+}

@@ -327,7 +327,7 @@ func (rf *ReplicaFollower) Run() error {
 		} else {
 			state = 1 // restart sync
 			rf.logger.Errorf("RunFollower error : state(%d), error(%v)", state, err)
-			if errors.Is(err, ErrBreak) || errors.Is(err, ErrRole) {
+			if ClassifyError(err) != ErrorActionRetry {
 				rf.wait.Sleep(2 * time.Second)
 				return err
 			}

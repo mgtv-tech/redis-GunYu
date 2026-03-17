@@ -764,7 +764,7 @@ return 1
 				return e
 			}
 			if ok != 1 {
-				return errors.Join(ErrBreak, fmt.Errorf("output checkpoint fenced by newer leader: cp(%s), epoch(%d), token(%s)",
+				return errors.Join(ErrCheckpointFenced, fmt.Errorf("output checkpoint fenced by newer leader: cp(%s), epoch(%d), token(%s)",
 					checkpointKv.Key, epoch, ro.leaderToken))
 			}
 			return nil
@@ -798,7 +798,7 @@ func (ro *RedisOutput) startCheckpointLagCollector(ctx context.Context) {
 	}, nil)
 }
 
-func (ro *RedisOutput) setCheckpointLagInvalid(reason string) {
+func (ro *RedisOutput) setCheckpointLagInvalid(reason ErrorReason) {
 	checkpointLagValidGauge.Set(0, ro.cfg.InputName)
 	checkpointLagOffsetGauge.Set(-1, ro.cfg.InputName)
 	checkpointLagTimeGauge.Set(-1, ro.cfg.InputName)
@@ -823,41 +823,41 @@ func (ro *RedisOutput) readCheckpointByRedis(redisCfg config.RedisConfig, runID 
 func (ro *RedisOutput) collectCheckpointLag() {
 	runID := ro.cfg.RunId
 	if runID == "" || runID == "?" {
-		ro.setCheckpointLagInvalid("runid_empty")
+		ro.setCheckpointLagInvalid(ErrorReasonRunIDEmpty)
 		return
 	}
 
 	inCp, err := ro.readCheckpointByRedis(ro.cfg.InputCheckpointRedis, runID)
 	if err != nil {
-		ro.setCheckpointLagInvalid("read_input_checkpoint_failed")
+		ro.setCheckpointLagInvalid(ErrorReasonReadInputCheckpointFail)
 		return
 	}
 	outCp, err := ro.readCheckpointByRedis(ro.cfg.CheckpointRedis, runID)
 	if err != nil {
-		ro.setCheckpointLagInvalid("read_output_checkpoint_failed")
+		ro.setCheckpointLagInvalid(ErrorReasonReadOutputCheckpointFail)
 		return
 	}
 	if inCp == nil || outCp == nil {
-		ro.setCheckpointLagInvalid("checkpoint_not_found")
+		ro.setCheckpointLagInvalid(ErrorReasonCheckpointNotFound)
 		return
 	}
 	if inCp.RunId == "" || inCp.RunId == "?" || outCp.RunId == "" || outCp.RunId == "?" {
-		ro.setCheckpointLagInvalid("checkpoint_runid_invalid")
+		ro.setCheckpointLagInvalid(ErrorReasonCheckpointRunIDInvalid)
 		return
 	}
 	if inCp.RunId != outCp.RunId {
-		ro.setCheckpointLagInvalid("runid_mismatch")
+		ro.setCheckpointLagInvalid(ErrorReasonRunIDMismatch)
 		return
 	}
 	if inCp.Offset < 0 || outCp.Offset < 0 || inCp.Mtime <= 0 || outCp.Mtime <= 0 {
-		ro.setCheckpointLagInvalid("checkpoint_field_invalid")
+		ro.setCheckpointLagInvalid(ErrorReasonCheckpointFieldInvalid)
 		return
 	}
 
 	lagOffset := inCp.Offset - outCp.Offset
 	lagTime := inCp.Mtime - outCp.Mtime
 	if lagOffset < 0 || lagTime < 0 {
-		ro.setCheckpointLagInvalid("negative_lag")
+		ro.setCheckpointLagInvalid(ErrorReasonNegativeLag)
 		return
 	}
 
@@ -867,7 +867,7 @@ func (ro *RedisOutput) collectCheckpointLag() {
 			ro.lagLastInOff = inCp.Offset
 			ro.lagLastOutOff = outCp.Offset
 			ro.lagGuard.Unlock()
-			ro.setCheckpointLagInvalid("checkpoint_offset_rollback")
+			ro.setCheckpointLagInvalid(ErrorReasonCheckpointOffsetRollback)
 			return
 		}
 	} else {

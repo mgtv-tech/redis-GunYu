@@ -51,6 +51,22 @@ var (
 	})
 )
 
+const (
+	rebuildReasonTopologyRefreshError = string(syncer.ErrorReasonTopologyRefreshError)
+	rebuildReasonMasterRebind         = string(syncer.ErrorReasonMasterRebind)
+	rebuildReasonRoleCheckError       = string(syncer.ErrorReasonRoleCheckError)
+	rebuildReasonCampaignError        = string(syncer.ErrorReasonCampaignError)
+	rebuildReasonRunIDSwitchToNewID   = string(syncer.ErrorReasonRunIDStuck)
+	rebuildReasonTickerRoleNotMaster  = string(syncer.ErrorReasonTickerRoleNotMaster)
+	rebuildReasonTypologyChanged      = string(syncer.ErrorReasonRedisTypologyChange)
+	rebuildReasonRoleChanged          = string(syncer.ErrorReasonRole)
+)
+
+func recordLocalRebuild(input, reason string, durationMs float64) {
+	sourceLocalRebuildCounter.Inc(input, reason)
+	sourceLocalRebuildDurationGauge.Set(durationMs, input, reason)
+}
+
 type syncerInfo struct {
 	sync syncer.Syncer
 	wait usync.WaitCloser
@@ -71,6 +87,8 @@ type SyncerCmd struct {
 
 	// desired state of output pause, persisted in meta redis and re-applied on syncer rebuild.
 	outputPauseDesired atomic.Bool
+	// dedupe repeated "keep running" topology notices.
+	lastTopologyKeepRunningReason string
 }
 
 type runIDConvergeState struct {
@@ -475,15 +493,13 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				oldAddr, newAddr, changed, err := sc.refreshInputShardMasterForLocalRebuild(&cfg)
 				if err != nil {
 					sc.logger.Errorf("refresh input shard master error (local retry) : input(%s), error(%v)", cfg.Input.Address(), err)
-					sourceLocalRebuildCounter.Inc(cfg.Input.Address(), "topology_refresh_error")
-					sourceLocalRebuildDurationGauge.Set(1000, cfg.Input.Address(), "topology_refresh_error")
+					recordLocalRebuild(cfg.Input.Address(), rebuildReasonTopologyRefreshError, 1000)
 					runWait.Sleep(1 * time.Second)
 					continue
 				}
 				if changed {
 					sc.logger.Infof("source shard master rebind for local rebuild: old(%s), new(%s)", oldAddr, newAddr)
-					sourceLocalRebuildCounter.Inc(newAddr, "master_rebind")
-					sourceLocalRebuildDurationGauge.Set(1000, newAddr, "master_rebind")
+					recordLocalRebuild(newAddr, rebuildReasonMasterRebind, 1000)
 					role = cluster.RoleCandidate
 				}
 				shardKey := cfg.Input.Address()
@@ -495,16 +511,14 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				if err != nil {
 					// Source-side role query jitter should only trigger local retry.
 					sc.logger.Errorf("get redis role error (local retry) : key(%s), error(%v)", shardKey, err)
-					sourceLocalRebuildCounter.Inc(cfg.Input.Address(), "role_check_error")
-					sourceLocalRebuildDurationGauge.Set(1000, cfg.Input.Address(), "role_check_error")
+					recordLocalRebuild(cfg.Input.Address(), rebuildReasonRoleCheckError, 1000)
 					runWait.Sleep(1 * time.Second)
 					continue
 				}
 				if shardKeyRole != config.RedisRoleMaster {
 					// Source failover is handled by local rebuild loop; avoid global restart.
 					sc.logger.Infof("role is not master (local rebuild) : key(%s), role(%v)", shardKey, shardKeyRole)
-					sourceLocalRebuildCounter.Inc(cfg.Input.Address(), "role_not_master")
-					sourceLocalRebuildDurationGauge.Set(1000, cfg.Input.Address(), "role_not_master")
+					recordLocalRebuild(cfg.Input.Address(), rebuildReasonRoleChanged, 1000)
 					role = cluster.RoleCandidate
 					runWait.Sleep(1 * time.Second)
 					continue
@@ -515,8 +529,7 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 					newRole, err := sc.clusterCampaign(runWait.Context(), elect)
 					if err != nil {
 						sc.logger.Errorf("campaign error (local retry) : key(%s), err(%v)", key, err)
-						sourceLocalRebuildCounter.Inc(cfg.Input.Address(), "campaign_error")
-						sourceLocalRebuildDurationGauge.Set(1000, cfg.Input.Address(), "campaign_error")
+						recordLocalRebuild(cfg.Input.Address(), rebuildReasonCampaignError, 1000)
 						runWait.Sleep(1 * time.Second)
 						continue
 					} else {
@@ -588,18 +601,22 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 					} else if errors.Is(err, syncer.ErrLeaderTakeover) {
 						// take over
 						time.Sleep(1 * time.Second)
-					} else if errors.Is(err, syncer.ErrRestart) || errors.Is(err, syncer.ErrRedisTypologyChanged) {
-						// Source-side failover/topology changes should be rebuilt locally.
-						sc.logger.Infof("syncer local rebuild on restart-level error: input(%s), err(%v)", cfg.Input.Address(), err)
-						start := time.Now()
-						time.Sleep(1 * time.Second)
-						sourceLocalRebuildCounter.Inc(cfg.Input.Address(), "syncer_restart_error")
-						sourceLocalRebuildDurationGauge.Set(float64(time.Since(start).Milliseconds()), cfg.Input.Address(), "syncer_restart_error")
-					} else if errors.Is(err, syncer.ErrBreak) {
-						runWait.Close(err)
-						return
 					} else {
-						time.Sleep(1 * time.Second)
+						action, reason := syncer.ClassifyErrorDetail(err)
+						switch action {
+						case syncer.ErrorActionLocalRebuild:
+							// Source-side failover/restart-level errors should be rebuilt locally.
+							sc.logger.Infof("syncer local rebuild on error action(%s), reason(%s): input(%s), err(%v)", action.String(), reason, cfg.Input.Address(), err)
+							start := time.Now()
+							time.Sleep(1 * time.Second)
+							recordLocalRebuild(cfg.Input.Address(), string(reason), float64(time.Since(start).Milliseconds()))
+						case syncer.ErrorActionGlobalRestart, syncer.ErrorActionExit:
+							sc.logger.Infof("syncer escalate to run-level close on action(%s), reason(%s): input(%s), err(%v)", action.String(), reason, cfg.Input.Address(), err)
+							runWait.Close(err)
+							return
+						default:
+							time.Sleep(1 * time.Second)
+						}
 					}
 				}
 			}
@@ -776,11 +793,10 @@ func (sc *SyncerCmd) checkRunIDConvergence(wait usync.WaitCloser, role cluster.C
 	_, elapsed := sc.markRunIDConverging(input, expected, active)
 	switchDelay := 10 * time.Second
 	if elapsed >= switchDelay {
-		sourceLocalRebuildCounter.Inc(input, "runid_switch_to_newid")
-		sourceLocalRebuildDurationGauge.Set(float64(elapsed.Milliseconds()), input, "runid_switch_to_newid")
+		recordLocalRebuild(input, rebuildReasonRunIDSwitchToNewID, float64(elapsed.Milliseconds()))
 		sc.logger.Warnf("runid still in T1 after switch delay, trigger local rebuild: input(%s), active(%s), expected(%s), elapsed(%s)",
 			input, active, expected, elapsed.String())
-		wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("runid switch probe: input(%s), active(%s), expected(%s), elapsed(%s)",
+		wait.Close(errors.Join(syncer.ErrRunIDStuck, fmt.Errorf("runid switch probe: input(%s), active(%s), expected(%s), elapsed(%s)",
 			input, active, expected, elapsed.String())))
 		sc.clearRunIDConvergeState(input)
 	}
@@ -856,8 +872,7 @@ func (sc *SyncerCmd) clusterTicker(wait usync.WaitCloser, role cluster.ClusterRo
 		if rerr != nil {
 			sc.logger.Warnf("cluster ticker role check error : input(%s), err(%v)", input, rerr)
 		} else if inputRole != config.RedisRoleMaster {
-			sourceLocalRebuildCounter.Inc(input, "ticker_role_not_master")
-			sourceLocalRebuildDurationGauge.Set(float64(config.GetSyncerConfig().Cluster.LeaseRenewInterval.Milliseconds()), input, "ticker_role_not_master")
+			recordLocalRebuild(input, rebuildReasonTickerRoleNotMaster, float64(config.GetSyncerConfig().Cluster.LeaseRenewInterval.Milliseconds()))
 			sc.clearRunIDConvergeState(input)
 			wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("input is no longer master in clusterTicker: input(%s), role(%v)", input, inputRole)))
 			return
@@ -1096,6 +1111,22 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 			syncFrom, *config.GetSyncerConfig().Output.Replay.ReplayTransaction)
 
 		if restart {
+			if affected, ok := sc.affectedSyncersForTopologyLocalRebuild(
+				prevInRedisCfg, prevOutRedisCfg, watchIn, watchOut, allShards, syncFrom); ok {
+				sc.logger.Infof("check typology, trigger affected local rebuild for syncers: inputs(%v)", affected)
+				sc.restartSyncersLocal(affected, rebuildReasonTypologyChanged)
+				return
+			}
+			// Phase-1 local rebuild:
+			// when input shard count is unchanged, prefer restarting currently running
+			// syncers locally instead of closing the whole run loop.
+			// Dynamic add/remove shard is not handled here; it still falls back to
+			// global restart.
+			if sc.canLocalRebuildWithoutDynamicShards(watchIn, allShards, syncFrom) {
+				sc.logger.Infof("check typology, trigger local rebuild for running syncers (no dynamic shard change)")
+				sc.restartRunningSyncersLocal(rebuildReasonTypologyChanged)
+				return
+			}
 			wait.Close(syncer.ErrRestart)
 			return
 		}
@@ -1103,6 +1134,202 @@ func (sc *SyncerCmd) checkTypology(wait usync.WaitCloser,
 		prevInTopoSig = topologySignature(prevInRedisCfg)
 		prevOutTopoSig = topologySignature(prevOutRedisCfg)
 	})
+}
+
+func (sc *SyncerCmd) currentSyncerInputs() []string {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	inputs := make([]string, 0, len(sc.syncers))
+	for input := range sc.syncers {
+		inputs = append(inputs, input)
+	}
+	return inputs
+}
+
+// canLocalRebuildWithoutDynamicShards returns true when topology change can be
+// absorbed by restarting current syncers only (phase-1), i.e. no input shard
+// add/remove is observed.
+func (sc *SyncerCmd) canLocalRebuildWithoutDynamicShards(watchIn bool, allShards bool, syncFrom config.SelNodeStrategy) bool {
+	if !watchIn {
+		return true
+	}
+	inputs := sc.currentSyncerInputs()
+	if len(inputs) == 0 {
+		return false
+	}
+	inCfg := config.GetSyncerConfig().Input.Redis.Clone()
+	if inCfg == nil {
+		return false
+	}
+	if err := redis.FixTopology(inCfg); err != nil {
+		sc.logger.Errorf("FixTypology : redis(%s), error(%v)", inCfg.Address(), err)
+		return false
+	}
+	latestInputs := inCfg.SelNodes(allShards, syncFrom)
+	return len(latestInputs) == len(inputs)
+}
+
+func (sc *SyncerCmd) restartRunningSyncersLocal(reason string) {
+	sc.restartSyncersLocal(sc.currentSyncerInputs(), reason)
+}
+
+func (sc *SyncerCmd) logTopologyKeepRunning(reason string) {
+	sc.mutex.Lock()
+	same := sc.lastTopologyKeepRunningReason == reason
+	if !same {
+		sc.lastTopologyKeepRunningReason = reason
+	}
+	sc.mutex.Unlock()
+	if same {
+		return
+	}
+	sc.logger.Infof("check typology, %s", reason)
+}
+
+func (sc *SyncerCmd) restartSyncersLocal(inputs []string, reason string) {
+	for _, input := range inputs {
+		si := sc.getSyncer(input)
+		if si.wait == nil || si.wait.IsClosed() {
+			continue
+		}
+		si.wait.Close(errors.Join(syncer.ErrRestart, fmt.Errorf("local rebuild: %s", reason)))
+	}
+}
+
+func slotRangeSignature(slots *config.RedisSlots) string {
+	if slots == nil || len(slots.Ranges) == 0 {
+		return "all"
+	}
+	parts := make([]string, 0, len(slots.Ranges))
+	for _, r := range slots.Ranges {
+		parts = append(parts, fmt.Sprintf("%d-%d", r.Left, r.Right))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func selectedInputBySlot(cfg *config.RedisConfig, allShards bool, syncFrom config.SelNodeStrategy) map[string]config.RedisConfig {
+	out := make(map[string]config.RedisConfig)
+	if cfg == nil {
+		return out
+	}
+	for _, n := range cfg.SelNodes(allShards, syncFrom) {
+		out[slotRangeSignature(n.GetAllSlots())] = n
+	}
+	return out
+}
+
+func selectedOutputBySlot(cfg *config.RedisConfig, allShards bool) map[string]config.RedisConfig {
+	out := make(map[string]config.RedisConfig)
+	if cfg == nil {
+		return out
+	}
+	for _, n := range cfg.SelNodes(allShards, config.SelNodeStrategyMaster) {
+		out[slotRangeSignature(n.GetAllSlots())] = n
+	}
+	return out
+}
+
+// affectedSyncersForTopologyLocalRebuild calculates impacted syncers by slot/input
+// mapping. It returns false when impact cannot be safely narrowed (e.g. shard
+// add/remove), so callers can fallback to broader local/global actions.
+func (sc *SyncerCmd) affectedSyncersForTopologyLocalRebuild(
+	prevInRedisCfg *config.RedisConfig,
+	prevOutRedisCfg *config.RedisConfig,
+	watchIn bool,
+	watchOut bool,
+	allShards bool,
+	syncFrom config.SelNodeStrategy,
+) ([]string, bool) {
+	running := sc.currentSyncerInputs()
+	if len(running) == 0 {
+		return nil, false
+	}
+	runningSet := make(map[string]struct{}, len(running))
+	for _, in := range running {
+		runningSet[in] = struct{}{}
+	}
+	affectedSet := make(map[string]struct{})
+	hasScopedChange := false
+
+	prevInBySlot := selectedInputBySlot(prevInRedisCfg, allShards, syncFrom)
+	curInCfg := config.GetSyncerConfig().Input.Redis.Clone()
+	if curInCfg == nil {
+		return nil, false
+	}
+	if err := redis.FixTopology(curInCfg); err != nil {
+		sc.logger.Errorf("FixTypology : redis(%s), error(%v)", curInCfg.Address(), err)
+		return nil, false
+	}
+	curInBySlot := selectedInputBySlot(curInCfg, allShards, syncFrom)
+
+	if watchIn {
+		if len(prevInBySlot) != len(curInBySlot) {
+			return nil, false
+		}
+		for slotSig, prevNode := range prevInBySlot {
+			curNode, ok := curInBySlot[slotSig]
+			if !ok {
+				return nil, false
+			}
+			if prevNode.Address() == curNode.Address() {
+				continue
+			}
+			hasScopedChange = true
+			if _, ok := runningSet[prevNode.Address()]; ok {
+				affectedSet[prevNode.Address()] = struct{}{}
+			}
+			if _, ok := runningSet[curNode.Address()]; ok {
+				affectedSet[curNode.Address()] = struct{}{}
+			}
+		}
+	}
+
+	if watchOut {
+		prevOutBySlot := selectedOutputBySlot(prevOutRedisCfg, allShards)
+		curOutCfg := config.GetSyncerConfig().Output.Redis.Clone()
+		if curOutCfg == nil {
+			return nil, false
+		}
+		if err := redis.FixTopology(curOutCfg); err != nil {
+			sc.logger.Errorf("FixTypology : redis(%s), error(%v)", curOutCfg.Address(), err)
+			return nil, false
+		}
+		curOutBySlot := selectedOutputBySlot(curOutCfg, allShards)
+		if len(prevOutBySlot) != len(curOutBySlot) {
+			return nil, false
+		}
+		for slotSig, prevNode := range prevOutBySlot {
+			curNode, ok := curOutBySlot[slotSig]
+			if !ok {
+				return nil, false
+			}
+			if prevNode.Address() == curNode.Address() {
+				continue
+			}
+			hasScopedChange = true
+			if inPrev, ok := prevInBySlot[slotSig]; ok {
+				if _, runningOK := runningSet[inPrev.Address()]; runningOK {
+					affectedSet[inPrev.Address()] = struct{}{}
+				}
+			}
+			if inCur, ok := curInBySlot[slotSig]; ok {
+				if _, runningOK := runningSet[inCur.Address()]; runningOK {
+					affectedSet[inCur.Address()] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if !hasScopedChange || len(affectedSet) == 0 {
+		return nil, false
+	}
+	affected := make([]string, 0, len(affectedSet))
+	for in := range affectedSet {
+		affected = append(affected, in)
+	}
+	sort.Strings(affected)
+	return affected, true
 }
 
 func topologySignature(rc *config.RedisConfig) string {
@@ -1162,7 +1389,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			inSelNodes := inRedisCfg.SelNodes(allShards, syncFrom)
 			// check shard
 			if len(inSelNodes) != len(prevInSelNodes) {
-				// @TODO only start affected syncer
+				// Dynamic add/remove shard still falls back to broader restart path.
 				restart = true
 				reason = fmt.Sprintf("the numbers of input nodes were changed : previous(%d), now(%d)", len(prevInSelNodes), len(inSelNodes))
 				return false
@@ -1178,8 +1405,8 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 				}
 				if masterChanged {
-					reason = fmt.Sprintf("input master changed (no full restart): master(%v)", a.Address())
-					sc.logger.Infof("check typology, %s", reason)
+					reason = fmt.Sprintf("topology input master changed, keep running (no full restart): master(%v)", a.Address())
+					sc.logTopologyKeepRunning(reason)
 					// Latch latest topology snapshot so the same master-change event
 					// is logged once instead of being emitted every ticker interval.
 					*prevInRedisCfg = *inRedisCfg.Clone()
@@ -1196,8 +1423,8 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 				}
 				if !find {
-					reason = fmt.Sprintf("input selected nodes changed (no full restart): previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
-					sc.logger.Infof("check typology, %s", reason)
+					reason = fmt.Sprintf("topology input selected nodes changed, keep running (no full restart): previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevInSelNodes), config.GetAddressesFromRedisConfigSlice(inSelNodes))
+					sc.logTopologyKeepRunning(reason)
 					return false
 				}
 			}
@@ -1216,8 +1443,8 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			// Output path can reconnect/retry and self-heal.
 			outSelNodes := outRedisCfg.SelNodes(allShards, config.SelNodeStrategyMaster)
 			if len(outSelNodes) != len(prevOutSelNodes) {
-				reason = fmt.Sprintf("output nodes changed (no full restart): previous(%d), now(%d)", len(prevOutSelNodes), len(outSelNodes))
-				sc.logger.Infof("check typology, %s", reason)
+				reason = fmt.Sprintf("topology output nodes changed, keep running (no full restart): previous(%d), now(%d)", len(prevOutSelNodes), len(outSelNodes))
+				sc.logTopologyKeepRunning(reason)
 				// Latch latest output topology snapshot to avoid repeating
 				// the same no-restart change log on every ticker interval.
 				*prevOutRedisCfg = *outRedisCfg.Clone()
@@ -1232,8 +1459,8 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 					}
 				}
 				if !find {
-					reason = fmt.Sprintf("output nodes changed (no full restart): previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevOutSelNodes), config.GetAddressesFromRedisConfigSlice(outSelNodes))
-					sc.logger.Infof("check typology, %s", reason)
+					reason = fmt.Sprintf("topology output nodes changed, keep running (no full restart): previous(%v), now(%v)", config.GetAddressesFromRedisConfigSlice(prevOutSelNodes), config.GetAddressesFromRedisConfigSlice(outSelNodes))
+					sc.logTopologyKeepRunning(reason)
 					// Latch latest output topology snapshot to avoid repeating
 					// the same no-restart change log on every ticker interval.
 					*prevOutRedisCfg = *outRedisCfg.Clone()
@@ -1301,7 +1528,7 @@ func (sc *SyncerCmd) diffTypology(ctx context.Context, watchIn bool, watchOut bo
 			sc.logger.Errorf("check migrating : %v", err)
 			return false
 		} else {
-			// @TODO only restart affected nodes
+			// Output migrating decision currently follows existing safety rule.
 			if txnMode == migrating { // true == true || false == false
 				restart = true
 			} else if txnMode && !migrating {
