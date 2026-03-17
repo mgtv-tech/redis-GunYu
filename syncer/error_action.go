@@ -37,6 +37,14 @@ const (
 	ErrorReasonCampaignError        ErrorReason = "campaign_error"
 	ErrorReasonRunIDSwitchToNewID   ErrorReason = "runid_switch_to_newid"
 	ErrorReasonTickerRoleNotMaster  ErrorReason = "ticker_role_not_master"
+	// Topology diff reasons.
+	ErrorReasonInputNodeCountChanged     ErrorReason = "input_node_count_changed"
+	ErrorReasonOutputNodeCountChanged    ErrorReason = "output_node_count_changed"
+	ErrorReasonInputMigrationStateChanged ErrorReason = "input_migration_state_changed"
+	ErrorReasonOutputMigrationStateChanged ErrorReason = "output_migration_state_changed"
+	ErrorReasonInputMasterChanged        ErrorReason = "input_master_changed"
+	ErrorReasonInputSelectedNodesChanged ErrorReason = "input_selected_nodes_changed"
+	ErrorReasonOutputNodesChanged        ErrorReason = "output_nodes_changed"
 	// Checkpoint-lag observation reasons.
 	ErrorReasonRunIDEmpty              ErrorReason = "runid_empty"
 	ErrorReasonReadInputCheckpointFail ErrorReason = "read_input_checkpoint_failed"

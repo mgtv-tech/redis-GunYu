@@ -179,7 +179,9 @@ func (ro *RedisOutput) Run(wait usync.WaitCloser) error {
 		err := ro.runOnce(wait)
 		if err != nil {
 			ro.logger.Errorf("run once error: %v", err)
-			if errors.Is(err, ErrBreak) {
+			action, reason := ClassifyErrorDetail(err)
+			if action == ErrorActionExit {
+				ro.logger.Errorf("output fatal action(%s), reason(%s): %v", action.String(), reason, err)
 				return err
 			}
 			wait.Sleep(outputRetryInterval)
@@ -410,7 +412,7 @@ func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error 
 	err := ro.sendRdb(ctx, reader)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			err = errors.Join(err, ErrRestart) // @TODO handle it
+			err = errors.Join(err, ErrRestart)
 			ro.logger.Infof("send rdb done : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
 		} else {
 			ro.logger.Errorf("send rdb done : runId(%s), offset(%d), size(%d), error(%v)", reader.RunId(), reader.Left(), reader.Size(), err)
@@ -1766,7 +1768,7 @@ func handleDirectError(err error) error {
 		return err
 	}
 	if errors.Is(err, common.ErrCrossSlots) {
-		return errors.Join(ErrBreak, err)
+		return errors.Join(ErrRestart, err)
 	}
 	return err
 }

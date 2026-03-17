@@ -11,6 +11,10 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
+	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
+	"github.com/mgtv-tech/redis-GunYu/pkg/cluster"
+	"github.com/mgtv-tech/redis-GunYu/syncer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -433,4 +437,188 @@ func (ts *typologyTestSuite) TestAffectedSyncersForTopologyLocalRebuild() {
 		ts.False(ok)
 		ts.Len(affected, 0)
 	})
+
+	ts.Run("output_changed_only_rebuild_corresponding_input", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+
+		// Simulate output-side master switch on first slot-range only.
+		outShards := curOut.GetClusterShards()
+		outShards[0].Master = outShards[0].Slaves[0]
+		curOut.SetClusterShards(outShards)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+			"12": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.True(ok)
+		ts.Equal([]string{"11"}, affected)
+	})
+
+	ts.Run("input_len_changed_and_running_slot_changed_still_precise", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+
+		// Add a shard and switch first shard master, to ensure len mismatch but
+		// one running slot impact is still precisely identified.
+		ts.addShard(curIn)
+		inShards := curIn.GetClusterShards()
+		inShards[0].Master = inShards[0].Slaves[0]
+		curIn.SetClusterShards(inShards)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.True(ok)
+		ts.Equal([]string{"11"}, affected)
+	})
+
+	ts.Run("multi_shard_input_changed_rebuild_multiple_inputs", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+
+		// Simulate input-side master switch on both slot-ranges.
+		inShards := curIn.GetClusterShards()
+		inShards[0].Master = inShards[0].Slaves[0]
+		inShards[1].Master = inShards[1].Slaves[0]
+		curIn.SetClusterShards(inShards)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+			"12": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.True(ok)
+		ts.Equal([]string{"11", "12"}, affected)
+	})
+
+	ts.Run("multi_shard_output_changed_rebuild_multiple_corresponding_inputs", func() {
+		prevIn := ts.inRedis.Clone()
+		prevOut := ts.outRedis.Clone()
+		curIn := ts.inRedis.Clone()
+		curOut := ts.outRedis.Clone()
+
+		// Simulate output-side master switch on both slot-ranges.
+		outShards := curOut.GetClusterShards()
+		outShards[0].Master = outShards[0].Slaves[0]
+		outShards[1].Master = outShards[1].Slaves[0]
+		curOut.SetClusterShards(outShards)
+
+		ts.cmd.syncers = map[string]syncerInfo{
+			"11": {},
+			"12": {},
+		}
+
+		cfg := config.GetSyncerConfig()
+		oldInput := cfg.Input
+		oldOutput := cfg.Output
+		defer func() {
+			cfg.Input = oldInput
+			cfg.Output = oldOutput
+		}()
+		cfg.Input = &config.InputConfig{Redis: curIn}
+		cfg.Output = &config.OutputConfig{Redis: curOut}
+
+		affected, ok := ts.cmd.affectedSyncersForTopologyLocalRebuild(
+			prevIn, prevOut, true, true, true, config.SelNodeStrategyMaster)
+		ts.True(ok)
+		ts.Equal([]string{"11", "12"}, affected)
+	})
+}
+
+type fakeSyncerForSyncAPITest struct {
+	err error
+}
+
+func (f *fakeSyncerForSyncAPITest) RunLeader() error { return nil }
+func (f *fakeSyncerForSyncAPITest) RunFollower(leader *cluster.RoleInfo) error { return nil }
+func (f *fakeSyncerForSyncAPITest) Stop() {}
+func (f *fakeSyncerForSyncAPITest) ServiceReplica(req *pb.SyncRequest, stream pb.ApiService_SyncServer) error {
+	return f.err
+}
+func (f *fakeSyncerForSyncAPITest) RunIds() []string { return nil }
+func (f *fakeSyncerForSyncAPITest) ActiveRunID() string { return "" }
+func (f *fakeSyncerForSyncAPITest) IsLeader() bool { return true }
+func (f *fakeSyncerForSyncAPITest) Pause() {}
+func (f *fakeSyncerForSyncAPITest) DelRunId() {}
+func (f *fakeSyncerForSyncAPITest) Resume() {}
+func (f *fakeSyncerForSyncAPITest) State() syncer.SyncerState { return syncer.SyncerStateRun }
+func (f *fakeSyncerForSyncAPITest) Role() syncer.SyncerRole { return syncer.SyncerRoleLeader }
+func (f *fakeSyncerForSyncAPITest) TransactionMode() bool { return false }
+
+func TestSyncActionRoutingLocalRebuild(t *testing.T) {
+	sc := &SyncerCmd{
+		logger:  log.WithLogger(""),
+		syncers: make(map[string]syncerInfo),
+	}
+	sc.runWait = usync.NewWaitCloser(nil)
+	localWait := usync.NewWaitCloser(nil)
+	sc.setSyncer("127.0.0.1:6379", &fakeSyncerForSyncAPITest{err: syncer.ErrRestart}, localWait)
+
+	err := sc.Sync(&pb.SyncRequest{
+		Node: &pb.Node{Address: "127.0.0.1:6379"},
+	}, nil)
+	assert.Error(t, err)
+	assert.True(t, localWait.IsClosed(), "local wait should close on local rebuild action")
+	assert.False(t, sc.getRunWait().IsClosed(), "run wait should not close on local rebuild action")
+}
+
+func TestSyncActionRoutingExitCloseRun(t *testing.T) {
+	sc := &SyncerCmd{
+		logger:  log.WithLogger(""),
+		syncers: make(map[string]syncerInfo),
+	}
+	sc.runWait = usync.NewWaitCloser(nil)
+	localWait := usync.NewWaitCloser(nil)
+	sc.setSyncer("127.0.0.1:6380", &fakeSyncerForSyncAPITest{err: syncer.ErrBreak}, localWait)
+
+	err := sc.Sync(&pb.SyncRequest{
+		Node: &pb.Node{Address: "127.0.0.1:6380"},
+	}, nil)
+	assert.Error(t, err)
+	assert.True(t, sc.getRunWait().IsClosed(), "run wait should close on exit/global action")
 }

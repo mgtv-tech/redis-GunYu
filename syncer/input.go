@@ -210,7 +210,7 @@ func (ri *RedisInput) getCheckpointStartPoint(ctx context.Context, ids []string)
 	}, 3, time.Second*2, 0.5)
 	if err != nil {
 		ri.logger.Errorf("get checkpoint error : runIds(%v), err(%v)", ids, err)
-		err = errors.Join(ErrBreak, err)
+		err = errors.Join(ErrRestart, err)
 	}
 	return
 }
@@ -615,7 +615,9 @@ func (ri *RedisInput) Run() (err error) {
 				if errors.Is(err, ErrCorrupted) {
 					ri.channel.DelRunId(ri.channel.RunId())
 				}
-				if errors.Is(err, ErrBreak) {
+				action, reason := ClassifyErrorDetail(err)
+				if action != ErrorActionRetry {
+					ri.logger.Infof("input loop stop on action(%s), reason(%s), err(%v)", action.String(), reason, err)
 					ri.wait.Close(err)
 					break
 				}

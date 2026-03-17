@@ -304,9 +304,19 @@ func (s *syncer) DelRunId() {
 	input := s.input
 	channel := s.channel
 	s.guard.RUnlock()
+	if input == nil || channel == nil {
+		return
+	}
 	runIds := input.RunIds()
-	if len(runIds) > 0 {
-		channel.DelRunId(runIds[0])
+	if len(runIds) == 0 {
+		return
+	}
+	runID := runIds[0]
+	if runID == "" || runID == "?" {
+		return
+	}
+	if err := channel.DelRunId(runID); err != nil {
+		s.logger.Warnf("cleanup runid failed: runId(%s), err(%v)", runID, err)
 	}
 }
 
@@ -498,8 +508,10 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 					return
 				}
 				// Non-recoverable errors should stop the whole syncer.
-				if errors.Is(err, ErrBreak) || errors.Is(err, ErrCorrupted) {
-					s.logger.Errorf("output run fatal error (linkage stop): %v", err)
+				action, reason := ClassifyErrorDetail(err)
+				if action == ErrorActionExit {
+					s.logger.Errorf("output run fatal error (linkage stop), action(%s), reason(%s): %v",
+						action.String(), reason, err)
 					wait.Close(err)
 					return
 				}
