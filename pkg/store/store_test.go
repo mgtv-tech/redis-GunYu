@@ -1,6 +1,8 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
@@ -108,4 +110,30 @@ func TestGcLog(t *testing.T) {
 		assert.Equal(t, int64(3), storer.dataSet.aofSegs[0].left)
 	})
 
+}
+
+func TestResetDataSetEmptyDirSafe(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "store-reset-empty-*")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	originWd, err := os.Getwd()
+	assert.NoError(t, err)
+	defer os.Chdir(originWd)
+	assert.NoError(t, os.Chdir(tmpDir))
+
+	keepFile := filepath.Join(tmpDir, "keep.txt")
+	assert.NoError(t, os.WriteFile(keepFile, []byte("keep"), 0o644))
+
+	s := &Storer{
+		logger:  log.WithLogger(""),
+		dir:     "",
+		dataSet: newDataSet(nil, nil),
+	}
+
+	assert.NotPanics(t, func() {
+		s.resetDataSet()
+	})
+	_, err = os.Stat(keepFile)
+	assert.NoError(t, err)
 }

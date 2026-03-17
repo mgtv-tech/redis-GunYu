@@ -68,6 +68,12 @@ func (c *SyncConfig) fix() error {
 		}
 	}
 
+	// Sync pipeline currently supports cluster -> cluster only.
+	if c.Input.Redis.Type != RedisTypeCluster || c.Output.Redis.Type != RedisTypeCluster {
+		return newConfigError("only support cluster <-> cluster now : input(%v), output(%v)",
+			c.Input.Redis.Type, c.Output.Redis.Type)
+	}
+
 	if c.Output.Redis.Type == RedisTypeCluster {
 		if c.Output.Replay.TargetDb == -1 || c.Output.Replay.TargetDb == 0 {
 			c.Output.Filter.DbBlacklist = []int{}

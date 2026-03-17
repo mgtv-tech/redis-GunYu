@@ -124,10 +124,10 @@ func (rt RedisType) String() string {
 }
 
 func (rt *RedisType) Set(val string) error {
+	val = strings.ToLower(strings.TrimSpace(val))
 	xx, ok := redisTypeMap[val]
 	if !ok {
-		//return newConfigError("invalid redis type : %s", val)
-		xx = RedisTypeStandalone
+		return newConfigError("invalid redis type : %s", val)
 	}
 	*rt = xx
 	return nil
@@ -148,7 +148,6 @@ type InputMode int
 const (
 	InputModeDynamic InputMode = 0
 	InputModeStatic  InputMode = 1
-	InputModeAuto    InputMode = 3
 )
 
 func (rt InputMode) String() string {
@@ -157,20 +156,19 @@ func (rt InputMode) String() string {
 		return "static"
 	case InputModeDynamic:
 		return "dynamic"
-	case InputModeAuto:
-		return "auto"
 	}
 	return "unknown"
 }
 
 func (rt *InputMode) Set(val string) error {
+	val = strings.ToLower(strings.TrimSpace(val))
 	switch val {
 	case "static":
 		*rt = InputModeStatic
-	case "auto":
-		*rt = InputModeAuto
-	default:
+	case "dynamic":
 		*rt = InputModeDynamic
+	default:
+		return newConfigError("invalid input mode : %s", val)
 	}
 	return nil
 }
@@ -206,6 +204,7 @@ func (rt SelNodeStrategy) String() string {
 }
 
 func (rt *SelNodeStrategy) Set(val string) error {
+	val = strings.ToLower(strings.TrimSpace(val))
 	switch val {
 	case "prefer_slave":
 		*rt = SelNodeStrategyPreferSlave
@@ -214,7 +213,7 @@ func (rt *SelNodeStrategy) Set(val string) error {
 	case "slave":
 		*rt = SelNodeStrategySlave
 	default:
-		*rt = SelNodeStrategyPreferSlave
+		return newConfigError("invalid syncFrom : %s", val)
 	}
 	return nil
 }

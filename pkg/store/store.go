@@ -159,15 +159,17 @@ func (s *Storer) DelRunId(id string) error {
 		return err
 	}
 
+	// Reset in-memory dataset before clearing s.dir to avoid path ambiguity.
+	s.resetDataSet()
 	s.dir = ""
 	s.runId = ""
-	s.resetDataSet()
 
 	return nil
 }
 
 func (s *Storer) resetDataSet() {
-	s.logger.Debugf("Storer reset dataset : %s", s.dir)
+	dir := strings.TrimSpace(s.dir)
+	s.logger.Debugf("Storer reset dataset : %s", dir)
 
 	s.dataSetMux.Lock()
 	defer s.dataSetMux.Unlock()
@@ -176,11 +178,16 @@ func (s *Storer) resetDataSet() {
 		ra.Close()
 	}
 
-	filepath.Walk(s.dir, func(path string, info os.FileInfo, err error) error {
+	if dir == "" {
+		s.dataSet = newDataSet(nil, nil)
+		return
+	}
+
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
-		if path == s.dir {
+		if path == dir {
 			return nil
 		}
 		s.logger.Infof("remove path : %s", path)
