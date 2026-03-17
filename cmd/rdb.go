@@ -17,7 +17,6 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"github.com/mgtv-tech/redis-GunYu/pkg/store"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
-	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 	"github.com/mgtv-tech/redis-GunYu/syncer"
 )
 
@@ -47,13 +46,12 @@ func (rc *RdbCmd) Run() error {
 	action := config.GetRdbCmdConfig().Action
 	switch action {
 	case "print":
-		util.PanicIfErr(rc.Print(config.GetRdbCmdConfig().RdbPath, &config.GetRdbCmdConfig().Print))
+		return rc.Print(config.GetRdbCmdConfig().RdbPath, &config.GetRdbCmdConfig().Print)
 	case "load":
-		util.PanicIfErr(rc.Load(config.GetRdbCmdConfig().RdbPath, &config.GetRdbCmdConfig().Load))
+		return rc.Load(config.GetRdbCmdConfig().RdbPath, &config.GetRdbCmdConfig().Load)
 	default:
-		panic(fmt.Errorf("unknown action : %s", action))
+		return fmt.Errorf("unknown action : %s", action)
 	}
-	return nil
 }
 
 func (rc *RdbCmd) Print(rdbPath string, cfg *config.RdbCmdPrint) error {

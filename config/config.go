@@ -977,6 +977,7 @@ type ClusterConfig struct {
 	MetaEtcd           *EtcdConfig   `yaml:"metaEtcd"`
 	LeaseTimeout       time.Duration `yaml:"leaseTimeout"`
 	LeaseRenewInterval time.Duration `yaml:"leaseRenewInterval"`
+	RunIDConvergeDeadline time.Duration `yaml:"runIdConvergeDeadline"`
 }
 
 func (cc *ClusterConfig) fix() error {
@@ -1013,6 +1014,17 @@ func (cc *ClusterConfig) fix() error {
 
 	if cc.MetaEtcd != nil {
 		cc.MetaEtcd.Ttl = int(cc.LeaseTimeout / time.Second)
+	}
+
+	// T1 converge window before declaring runid stuck and triggering local rebuild.
+	// Keep bounded for HA stability tuning in high-pressure scenarios.
+	if cc.RunIDConvergeDeadline == 0 {
+		cc.RunIDConvergeDeadline = 60 * time.Second
+	}
+	if cc.RunIDConvergeDeadline < 30*time.Second {
+		cc.RunIDConvergeDeadline = 30 * time.Second
+	} else if cc.RunIDConvergeDeadline > 90*time.Second {
+		cc.RunIDConvergeDeadline = 90 * time.Second
 	}
 
 	return nil

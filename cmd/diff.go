@@ -36,7 +36,7 @@ func (rc *DiffCmd) Run() error {
 	case "scan":
 		rc.Scan()
 	default:
-		panic(fmt.Errorf("unsupported mode : %s", action))
+		return fmt.Errorf("unsupported mode : %s", action)
 	}
 	return nil
 }
@@ -68,10 +68,10 @@ func (dc *DiffCmd) Scan() {
 
 }
 
-func (dc *DiffCmd) toRedisConfig(a string) *config.RedisConfig {
-	aa := strings.SplitN(a, ":", 1)
+func (dc *DiffCmd) toRedisConfig(a string) (*config.RedisConfig, error) {
+	aa := strings.SplitN(a, ":", 2)
 	if len(aa) != 2 {
-		panic(fmt.Errorf("wrong dsn : %s", a))
+		return nil, fmt.Errorf("wrong dsn : %s", a)
 	}
 	cfg := &config.RedisConfig{
 		Addresses: []string{aa[1]},
@@ -81,7 +81,7 @@ func (dc *DiffCmd) toRedisConfig(a string) *config.RedisConfig {
 	} else if aa[0] == "rediscluster" {
 		cfg.Type = config.RedisTypeCluster
 	} else {
-		panic(fmt.Errorf("unsupported redis type : %s", aa[0]))
+		return nil, fmt.Errorf("unsupported redis type : %s", aa[0])
 	}
-	return cfg
+	return cfg, nil
 }

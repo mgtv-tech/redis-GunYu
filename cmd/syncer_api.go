@@ -184,6 +184,7 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		ExpectedRunID  string `json:"expected_runid,omitempty"`
 		RunIDStage     string `json:"runid_stage,omitempty"`
 		RunIDElapsedMs int64  `json:"runid_elapsed_ms,omitempty"`
+		RunIDDeadlineMs int64 `json:"runid_deadline_ms,omitempty"`
 	}
 	syncerGroup.GET("status", func(ctx *gin.Context) {
 		sys := []syncerStatus{}
@@ -208,6 +209,7 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 					st.RunIDElapsedMs = time.Since(cst.since).Milliseconds()
 				}
 			}
+			st.RunIDDeadlineMs = sc.runIDConvergeDeadline().Milliseconds()
 			if val.sync.IsLeader() {
 				st.Role = "leader"
 			}

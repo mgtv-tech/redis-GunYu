@@ -395,7 +395,10 @@ func (s *syncer) runLeader() error {
 	if err != nil {
 		return err
 	}
-	checkpointRedis := s.inputCheckpointRedis()
+	checkpointRedis, err := s.inputCheckpointRedis()
+	if err != nil {
+		return errors.Join(ErrQuit, err)
+	}
 
 	s.guard.Lock()
 	input := NewRedisInput(s.cfg.Input)
@@ -547,9 +550,14 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 func (s *syncer) runFollower() error {
 	s.logger.Debugf("runFollower")
 
+	checkpointRedis, err := s.inputCheckpointRedis()
+	if err != nil {
+		return errors.Join(ErrQuit, err)
+	}
+
 	s.guard.RLock()
 	leader := s.slaveOf
-	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader, s.inputCheckpointRedis())
+	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader, checkpointRedis)
 	s.guard.RUnlock()
 
 	output, err := s.newOutput()
@@ -630,7 +638,10 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	}
 
 	cfg := config.GetSyncerConfig().Output
-	metaRedis := s.inputCheckpointRedis()
+	metaRedis, err := s.inputCheckpointRedis()
+	if err != nil {
+		return nil, errors.Join(ErrQuit, err)
+	}
 
 	outputCfg := RedisOutputConfig{
 		InputName:                  s.cfg.Input.Address(),
@@ -698,12 +709,15 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	return output, nil
 }
 
-func (s *syncer) inputCheckpointRedis() config.RedisConfig {
+func (s *syncer) inputCheckpointRedis() (config.RedisConfig, error) {
 	cfg := config.GetSyncerConfig().Output
 	if cfg == nil || cfg.MetaRedis == nil {
-		panic("output.metaRedis must be configured")
+		return config.RedisConfig{}, fmt.Errorf("invalid config: output.metaRedis must be configured")
 	}
-	return *cfg.MetaRedis
+	if len(cfg.MetaRedis.Addresses) == 0 {
+		return config.RedisConfig{}, fmt.Errorf("invalid config: output.metaRedis.addresses must not be empty")
+	}
+	return *cfg.MetaRedis, nil
 }
 
 func isSameRedisEndpoint(a, b config.RedisConfig) bool {

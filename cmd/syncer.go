@@ -49,6 +49,24 @@ var (
 		Name:      "source_local_rebuild_duration_ms",
 		Labels:    []string{"input", "reason"},
 	})
+	runIDConvergeElapsedGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "syncer",
+		Name:      "runid_converge_elapsed_ms",
+		Labels:    []string{"input"},
+	})
+	runIDConvergeDeadlineGauge = metric.NewGaugeVec(metric.GaugeVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "syncer",
+		Name:      "runid_converge_deadline_ms",
+		Labels:    []string{"input"},
+	})
+	runIDConvergeTimeoutCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "syncer",
+		Name:      "runid_converge_timeout_total",
+		Labels:    []string{"input"},
+	})
 )
 
 const (
@@ -753,6 +771,7 @@ func (sc *SyncerCmd) clearRunIDConvergeState(input string) {
 	sc.mutex.Lock()
 	delete(sc.runidConverge, input)
 	sc.mutex.Unlock()
+	runIDConvergeElapsedGauge.Set(0, input)
 }
 
 func (sc *SyncerCmd) markRunIDConverging(input, expected, active string) (since time.Time, elapsed time.Duration) {
@@ -797,8 +816,11 @@ func (sc *SyncerCmd) checkRunIDConvergence(wait usync.WaitCloser, role cluster.C
 	}
 	// T1 window: active runid can temporarily remain on replid2/legacy runid.
 	_, elapsed := sc.markRunIDConverging(input, expected, active)
-	switchDelay := 10 * time.Second
+	switchDelay := sc.runIDConvergeDeadline()
+	runIDConvergeElapsedGauge.Set(float64(elapsed.Milliseconds()), input)
+	runIDConvergeDeadlineGauge.Set(float64(switchDelay.Milliseconds()), input)
 	if elapsed >= switchDelay {
+		runIDConvergeTimeoutCounter.Inc(input)
 		recordLocalRebuild(input, rebuildReasonRunIDSwitchToNewID, float64(elapsed.Milliseconds()))
 		sc.logger.Warnf("runid still in T1 after switch delay, trigger local rebuild: input(%s), active(%s), expected(%s), elapsed(%s)",
 			input, active, expected, elapsed.String())
@@ -806,6 +828,14 @@ func (sc *SyncerCmd) checkRunIDConvergence(wait usync.WaitCloser, role cluster.C
 			input, active, expected, elapsed.String())))
 		sc.clearRunIDConvergeState(input)
 	}
+}
+
+func (sc *SyncerCmd) runIDConvergeDeadline() time.Duration {
+	cfg := config.GetSyncerConfig()
+	if cfg != nil && cfg.Cluster != nil && cfg.Cluster.RunIDConvergeDeadline > 0 {
+		return cfg.Cluster.RunIDConvergeDeadline
+	}
+	return 10 * time.Second
 }
 
 func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect cluster.Election) (cluster.ClusterRole, error) {

@@ -111,6 +111,7 @@ type InputRunner struct {
 	input   *RedisInput
 	wait    usync.WaitCloser
 	logger  log.Logger
+	initErr error
 }
 
 type InputRunnerConfig struct {
@@ -136,23 +137,34 @@ func NewInputRunner(cfg InputRunnerConfig) *InputRunner {
 
 	input := NewRedisInput(cfg.RedisConfig)
 	input.SetChannel(channel)
+	initErr := error(nil)
 	if cfg.CheckpointName != "" {
 		if len(cfg.CheckpointRedis.Addresses) == 0 {
-			panic("checkpointRedis must be configured when checkpointName is set")
+			initErr = fmt.Errorf("invalid config: checkpointRedis must be configured when checkpointName is set")
 		}
-		input.SetCheckpointMeta(cfg.CheckpointRedis, cfg.CheckpointName)
+		if initErr == nil {
+			input.SetCheckpointMeta(cfg.CheckpointRedis, cfg.CheckpointName)
+		}
 	}
 
-	return &InputRunner{
+	ir := &InputRunner{
 		cfg:     cfg,
 		channel: channel,
 		input:   input,
 		wait:    usync.NewWaitCloser(nil),
 		logger:  log.WithLogger(config.LogModuleName(fmt.Sprintf("[InputRunner(%s)] ", cfg.InputId))),
+		initErr: initErr,
 	}
+	if initErr != nil {
+		ir.logger.Errorf("%v", initErr)
+	}
+	return ir
 }
 
 func (ir *InputRunner) Run() error {
+	if ir.initErr != nil {
+		return ir.initErr
+	}
 	ir.logger.Infof("InputRunner starting")
 	err := ir.input.Run()
 	ir.channel.Close()

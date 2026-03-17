@@ -13,7 +13,6 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	"github.com/mgtv-tech/redis-GunYu/pkg/store"
-	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type AofCmd struct {
@@ -42,31 +41,34 @@ func (rc *AofCmd) Run() error {
 	action := config.GetFlag().AofCmd.Action
 	switch action {
 	case "parse":
-		rc.Parse()
+		return rc.Parse()
 	case "verify":
-		rc.Verify()
+		return rc.Verify()
 	case "cmd":
-		rc.Cmd()
+		return rc.Cmd()
 	default:
-		panic(fmt.Errorf("unsupported mode : %s", action))
+		return fmt.Errorf("unsupported mode : %s", action)
 	}
-	return nil
 }
 
 const (
 	headerSize = int64(16)
 )
 
-func (rc *AofCmd) Cmd() {
+func (rc *AofCmd) Cmd() error {
 	aofPath := config.GetFlag().AofCmd.Path
 	start := config.GetFlag().AofCmd.Offset
 	size := config.GetFlag().AofCmd.Size
 
 	fi, err := os.Stat(aofPath)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
 
 	left, err := strconv.ParseInt(strings.TrimSuffix(fi.Name(), ".aof"), 10, 64)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
 
 	if size <= 0 {
 		size = fi.Size() - headerSize
@@ -78,11 +80,16 @@ func (rc *AofCmd) Cmd() {
 	}
 
 	file, err := os.OpenFile(aofPath, os.O_RDONLY, 0777)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
 	if start > 0 {
 		_, err = file.Seek(start-left+headerSize, 0)
-		util.PanicIfErr(err)
+		if err != nil {
+			return err
+		}
 	}
 
 	decoder := client.NewDecoder(bufio.NewReader(file))
@@ -90,30 +97,33 @@ func (rc *AofCmd) Cmd() {
 		resp, incrOffset, err := client.MustDecodeOpt(decoder)
 		if err != nil {
 			log.Errorf("%v", err)
-			return
+			return err
 		}
 
 		sCmd, argv, err := client.ParseArgs(resp) // lower case
 		if err != nil {
 			log.Errorf("%v", err)
 			log.Info("offset(%d), cmd(%d), %s", incrOffset, sCmd, argv)
-			return
+			return err
 		}
 
 	}
-
 }
 
-func (rc *AofCmd) Parse() {
+func (rc *AofCmd) Parse() error {
 	aofPath := config.GetFlag().AofCmd.Path
 	start := config.GetFlag().AofCmd.Offset
 	size := config.GetFlag().AofCmd.Size
 
 	fi, err := os.Stat(aofPath)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
 
 	left, err := strconv.ParseInt(strings.TrimSuffix(fi.Name(), ".aof"), 10, 64)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
 
 	if size <= 0 {
 		size = fi.Size() - headerSize
@@ -125,11 +135,16 @@ func (rc *AofCmd) Parse() {
 	}
 
 	file, err := os.OpenFile(aofPath, os.O_RDONLY, 0777)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
 	if start > 0 {
 		_, err = file.Seek(start-left+headerSize, 0)
-		util.PanicIfErr(err)
+		if err != nil {
+			return err
+		}
 	}
 
 	buf := make([]byte, 1024*4)
@@ -137,9 +152,9 @@ func (rc *AofCmd) Parse() {
 		n, err := file.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				return
+				return nil
 			}
-			util.PanicIfErr(err)
+			return err
 		}
 		if n > int(size) {
 			n = int(size)
@@ -147,18 +162,23 @@ func (rc *AofCmd) Parse() {
 		fmt.Print(string(buf[:n]))
 		size -= int64(n)
 	}
+	return nil
 }
 
-func (rc *AofCmd) Verify() {
+func (rc *AofCmd) Verify() error {
 	aofPath := config.GetFlag().AofCmd.Path
 
 	rd, err := store.NewAofReader(aofPath)
-	util.PanicIfErr(err)
+	if err != nil {
+		return err
+	}
 
 	err = rd.Verify()
 	if err != nil {
 		fmt.Printf("aof verify failed : %v", err)
+		return err
 	} else {
 		fmt.Printf("aof verify success")
 	}
+	return nil
 }
