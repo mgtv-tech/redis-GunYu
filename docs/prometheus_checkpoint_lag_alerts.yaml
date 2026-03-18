@@ -1,0 +1,56 @@
+groups:
+  - name: redis-gunyu-checkpoint-lag
+    rules:
+      # Info only: checkpoint idle window (distinguish from stuck lag)
+      - alert: RedisGunYuCheckpointIdleInfo
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and redis_gunyu_output_checkpoint_lag_idle_seconds > 600
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "redis-GunYu checkpoint idle window"
+          description: "input={{ $labels.input }} idle_seconds={{ $value }}. This is likely idle/no-new-data, not output stuck."
+
+      # Warning: true lag under active movement (idle_seconds low)
+      - alert: RedisGunYuCheckpointLagP2
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and (
+            redis_gunyu_output_checkpoint_lag_offset > 100000
+            or redis_gunyu_output_checkpoint_lag_time > 30000000000
+          )
+          and redis_gunyu_output_checkpoint_lag_idle_seconds < 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "redis-GunYu checkpoint lag P2"
+          description: "input={{ $labels.input }} has active lag growth (not idle)."
+
+      # Critical: severe lag under active movement
+      - alert: RedisGunYuCheckpointLagP1
+        expr: |
+          redis_gunyu_output_checkpoint_lag_valid == 1
+          and (
+            redis_gunyu_output_checkpoint_lag_offset > 1000000
+            or redis_gunyu_output_checkpoint_lag_time > 120000000000
+          )
+          and redis_gunyu_output_checkpoint_lag_idle_seconds < 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "redis-GunYu checkpoint lag P1"
+          description: "input={{ $labels.input }} severe lag with active movement (likely true delay)."
+
+      # Observe metric chain health itself
+      - alert: RedisGunYuCheckpointLagInvalid
+        expr: redis_gunyu_output_checkpoint_lag_valid == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "redis-GunYu checkpoint lag metric invalid window"
+          description: "input={{ $labels.input }} lag metrics are invalid for 10m, check checkpoint read path/connectivity."
