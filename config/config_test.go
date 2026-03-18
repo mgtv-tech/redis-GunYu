@@ -110,3 +110,33 @@ func TestSelNodes(t *testing.T) {
 	})
 
 }
+
+func TestRedisConfigFixClusterOptionsDefault(t *testing.T) {
+	rc := &RedisConfig{
+		Addresses: []string{"127.0.0.1:6379"},
+		Type:      RedisTypeCluster,
+	}
+	err := rc.fix()
+	assert.NoError(t, err)
+	if assert.NotNil(t, rc.ClusterOptions) {
+		assert.True(t, rc.ClusterOptions.HandleAskErr)
+		assert.True(t, rc.ClusterOptions.HandleMoveErr)
+	}
+}
+
+func TestRedisConfigFixClusterOptionsPreserveUserSetting(t *testing.T) {
+	rc := &RedisConfig{
+		Addresses: []string{"127.0.0.1:6379"},
+		Type:      RedisTypeCluster,
+		ClusterOptions: &RedisClusterOptions{
+			HandleAskErr:  false,
+			HandleMoveErr: false,
+		},
+	}
+	err := rc.fix()
+	assert.NoError(t, err)
+	if assert.NotNil(t, rc.ClusterOptions) {
+		assert.False(t, rc.ClusterOptions.HandleAskErr)
+		assert.False(t, rc.ClusterOptions.HandleMoveErr)
+	}
+}

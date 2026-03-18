@@ -183,8 +183,19 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 	}
 	syncerGroup.GET("status", func(ctx *gin.Context) {
 		sys := []syncerStatus{}
-		sc.mutex.Lock()
+		sc.mutex.RLock()
+		syncers := make(map[string]syncerInfo, len(sc.syncers))
 		for key, val := range sc.syncers {
+			syncers[key] = val
+		}
+		runidStates := make(map[string]runIDConvergeState, len(sc.runidConverge))
+		for key, val := range sc.runidConverge {
+			runidStates[key] = val
+		}
+		runidDeadlineMs := sc.runIDConvergeDeadline().Milliseconds()
+		sc.mutex.RUnlock()
+
+		for key, val := range syncers {
 			st := syncerStatus{
 				Input:       key,
 				Role:        val.sync.Role().String(),
@@ -200,17 +211,16 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 				st.RunIDStage = "T2"
 			} else if st.ExpectedRunID != "" && st.ActiveRunID != "" {
 				st.RunIDStage = "T1"
-				if cst, ok := sc.runidConverge[key]; ok && !cst.since.IsZero() {
+				if cst, ok := runidStates[key]; ok && !cst.since.IsZero() {
 					st.RunIDElapsedMs = time.Since(cst.since).Milliseconds()
 				}
 			}
-			st.RunIDDeadlineMs = sc.runIDConvergeDeadline().Milliseconds()
+			st.RunIDDeadlineMs = runidDeadlineMs
 			if val.sync.IsLeader() {
 				st.Role = "leader"
 			}
 			sys = append(sys, st)
 		}
-		sc.mutex.Unlock()
 		ctx.JSON(http.StatusOK, sys)
 	})
 

@@ -219,6 +219,7 @@ func (s *syncer) getInputRunIds(wait usync.WaitCloser) (id1 string, id2 string, 
 			s.logger.Errorf("new redis error : redis(%v), err(%v)", s.cfg.Input.Address(), err)
 			return err
 		}
+		defer cli.Close()
 
 		id1, id2, err = redis.GetRunIds(cli)
 		if err != nil {

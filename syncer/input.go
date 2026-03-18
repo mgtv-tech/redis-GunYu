@@ -11,6 +11,7 @@ import (
 	"golang.org/x/exp/slices"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	neterr "github.com/mgtv-tech/redis-GunYu/pkg/io/net"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
@@ -74,6 +75,8 @@ type RedisInput struct {
 	channel         Channel
 	checkpointRedis config.RedisConfig
 	checkpointName  string
+	// test hook: override checkpoint update behavior in unit tests
+	checkpointUpdater func(ctx context.Context, runID, id1, id2 string) error
 	fsm             *SyncFiniteStateMachine
 	logger          log.Logger
 	runIds          []string
@@ -111,6 +114,24 @@ var (
 		Subsystem: "input",
 		Name:      "sync_type",
 		Labels:    []string{"input", "sync_type"},
+	})
+	metricRunIDSwitchCommitFail = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "runid_switch_commit_fail_total",
+		Labels:    []string{"input", "kind"},
+	})
+	metricRunIDSwitchRollback = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "runid_switch_rollback_total",
+		Labels:    []string{"input", "result"},
+	})
+	metricPSyncFallbackFullSync = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "input",
+		Name:      "psync_fallback_fullsync_total",
+		Labels:    []string{"input", "reason"},
 	})
 )
 
@@ -221,6 +242,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	var id1, id2 string
 	synSp := StartPoint{}
 	var forcedSwitchOffset *Offset
+	fullSyncReason := "unknown"
 
 	id1, id2, err = redis.GetRunIds(redisCli.Client())
 	if err != nil {
@@ -268,6 +290,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		// cpSp not in locSp :
 		// 3. channel.right < checkpoint.offset :
 		if ri.channel.IsValidOffset(Offset{RunId: locSp.RunId, Offset: cpSp.Offset}) {
+			fullSyncReason = "local_or_forced_offset"
 			preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
 			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
@@ -281,6 +304,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 			if cpSp.Offset >= 0 && locLeft >= 0 && cpSp.Offset < locLeft {
 				ri.logger.Infof("checkpoint behind local channel, prefer local incremental: runId(%s), cpOffset(%d), localRange(%d,%d)",
 					locSp.RunId, cpSp.Offset, locLeft, locRight)
+				fullSyncReason = "checkpoint_behind_local"
 				preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
 				sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 				if err != nil {
@@ -289,6 +313,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 			} else {
 				// there is a gap between checkpoint and channel [@TODO, @OPTIMIZE : check distance of gap]
 				// channel.Clear(); locSp = cpSp
+				fullSyncReason = "checkpoint_channel_gap"
 				preferOffset := choosePSyncOffset(cpSp.ToOffset(), forcedSwitchOffset)
 				sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 				if err != nil {
@@ -302,6 +327,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		}
 	} else if slices.Contains(inputIds, cpSp.RunId) {
 		// local is stale, set locSp to cpSp
+		fullSyncReason = "local_stale_use_checkpoint"
 		preferOffset := choosePSyncOffset(cpSp.ToOffset(), forcedSwitchOffset)
 		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 		if err != nil {
@@ -316,6 +342,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		// channel has a RDB file, so set offset to zero
 		locRdbLeft, locRdbSize := ri.channel.GetRdb(locSp.RunId)
 		if locRdbLeft != -1 && locRdbSize != -1 { // a valid RDB
+			fullSyncReason = "checkpoint_initial_use_local"
 			preferOffset := choosePSyncOffset(locSp.ToOffset(), forcedSwitchOffset)
 			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
@@ -329,6 +356,7 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 			}
 		} else {
 			synSp.Initialize()
+			fullSyncReason = "checkpoint_initial_no_local"
 			preferOffset := choosePSyncOffset(synSp.ToOffset(), forcedSwitchOffset)
 			sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 			if err != nil {
@@ -337,11 +365,15 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		}
 	} else { // full sync
 		synSp.Initialize()
+		fullSyncReason = "initial_fullsync"
 		preferOffset := choosePSyncOffset(synSp.ToOffset(), forcedSwitchOffset)
 		sOffset, isFullSync, rdbSize, err = ri.pSync(redisCli, preferOffset)
 		if err != nil {
 			return
 		}
+	}
+	if isFullSync {
+		metricPSyncFallbackFullSync.Inc(ri.inputAddr, fullSyncReason)
 	}
 
 	ri.logger.Infof("psync : runId(%s - %s), local(%v), checkpoint(%v), reply(%v), rdb(%d)", id1, id2, locSp, cpSp, sOffset, rdbSize)
@@ -351,35 +383,8 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		ri.setRunIds([]string{sOffset.RunId})
 	}
 
-	if isFullSync || clearLocal {
-		err = ri.channel.DelRunId(ri.channel.RunId())
-		if err != nil {
-			ri.logger.Errorf("channel DelRunId error : rdb(%v), err(%v)", isFullSync, err)
-			return
-		}
-	}
-	err = ri.channel.SetRunId(sOffset.RunId)
-	if err != nil {
-		ri.logger.Errorf("channel SetRunId error : offset(%v), err(%v)", sOffset, err)
+	if err = ri.applyRunIDSwitch(ctx, sOffset, id1, id2, isFullSync, clearLocal); err != nil {
 		return
-	}
-	// update redis checkpoint run id
-	if ri.checkpointName != "" {
-		e := util.RetryLinearJitter(ctx, func() error {
-			cli, ce := client.NewRedis(ri.checkpointRedis)
-			if ce != nil {
-				return ce
-			}
-			defer cli.Close()
-			// Include both replid and replid2 candidates during failover windows,
-			// so checkpoint hash lookup can carry forward existing offsets instead of
-			// falling back to an empty mapping and forcing full sync.
-			return checkpoint.UpdateCheckpoint(cli, ri.checkpointName, []string{sOffset.RunId, id1, id2})
-		}, 3, time.Second*2, 0.5)
-		if e != nil {
-			ri.logger.Errorf("checkpoint UpdateCheckpoint error : offset(%v), err(%v)", sOffset, e)
-			return
-		}
 	}
 
 	locSp.RunId = sOffset.RunId
@@ -399,6 +404,159 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 	}
 
 	return
+}
+
+func (ri *RedisInput) applyRunIDSwitch(ctx context.Context, sOffset Offset, id1, id2 string, isFullSync, clearLocal bool) error {
+	oldRunID := ri.channel.RunId()
+	newRunID := sOffset.RunId
+	needClear := isFullSync || clearLocal
+	validOld := oldRunID != "" && oldRunID != "?"
+
+	// Fallback path: when we must clear and runid does not change, keep legacy
+	// cleanup behavior, but commit checkpoint first to avoid destructive action
+	// before commit.
+	if needClear && validOld && oldRunID == newRunID {
+		if err := ri.updateCheckpointRunID(ctx, newRunID, id1, id2); err != nil {
+			return err
+		}
+		if err := ri.channel.DelRunId(oldRunID); err != nil {
+			ri.logger.Errorf("channel DelRunId error : runId(%s), fullSync(%v), clearLocal(%v), err(%v)",
+				oldRunID, isFullSync, clearLocal, err)
+			return err
+		}
+		if err := ri.channel.SetRunId(newRunID); err != nil {
+			ri.logger.Errorf("channel SetRunId error : runId(%s), err(%v)", newRunID, err)
+			return err
+		}
+		return nil
+	}
+
+	// Phase-1: switch local runid first (prepare/switch).
+	if err := ri.channel.SetRunId(newRunID); err != nil {
+		ri.logger.Errorf("channel SetRunId error : runId(%s), err(%v)", newRunID, err)
+		return err
+	}
+
+	// Phase-2: checkpoint commit. If commit fails, rollback local switch.
+	if err := ri.updateCheckpointRunID(ctx, newRunID, id1, id2); err != nil {
+		if validOld && oldRunID != newRunID {
+			if rbErr := ri.channel.SetRunId(oldRunID); rbErr != nil {
+				metricRunIDSwitchRollback.Inc(ri.inputAddr, "failed")
+				ri.logger.Errorf("runid switch rollback failed : old(%s), new(%s), commitErr(%v), rollbackErr(%v)",
+					oldRunID, newRunID, err, rbErr)
+				return errors.Join(err, rbErr)
+			}
+			metricRunIDSwitchRollback.Inc(ri.inputAddr, "success")
+			ri.logger.Warnf("runid switch rollback success : old(%s), new(%s), commitErr(%v)",
+				oldRunID, newRunID, err)
+		}
+		return err
+	}
+
+	// Commit cleanup: remove stale old runid only after checkpoint commit.
+	if needClear && validOld && oldRunID != newRunID {
+		if shouldDelayOldRunIDCleanup(oldRunID, id1, id2) {
+			ri.logger.Infof("delay stale runid cleanup for psync candidate: old(%s), new(%s), candidates(%s,%s)",
+				oldRunID, newRunID, id1, id2)
+			return nil
+		}
+		if err := ri.channel.DelRunId(oldRunID); err != nil {
+			// Keep running and leave stale data for GC to avoid destructive failure.
+			ri.logger.Warnf("post-commit stale runid cleanup failed : old(%s), new(%s), err(%v)",
+				oldRunID, newRunID, err)
+		}
+	}
+	return nil
+}
+
+func (ri *RedisInput) updateCheckpointRunID(ctx context.Context, runID, id1, id2 string) error {
+	if ri.checkpointName == "" {
+		return nil
+	}
+	if ri.checkpointUpdater != nil {
+		err := ri.checkpointUpdater(ctx, runID, id1, id2)
+		if err != nil {
+			metricRunIDSwitchCommitFail.Inc(ri.inputAddr, checkpointCommitErrKind(err))
+			ri.logger.Errorf("checkpoint UpdateCheckpoint error : runId(%s), err(%v)", runID, err)
+		}
+		return err
+	}
+	const (
+		maxAttempts = 3
+		retryWait   = 2 * time.Second
+	)
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = ri.updateCheckpointRunIDOnce(runID, id1, id2)
+		if err == nil {
+			return nil
+		}
+		// Strategy A: do not waste retries on non-recoverable failures.
+		if !isRecoverableCheckpointCommitErr(err) {
+			break
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		t := time.NewTimer(retryWait)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	if err != nil {
+		metricRunIDSwitchCommitFail.Inc(ri.inputAddr, checkpointCommitErrKind(err))
+		ri.logger.Errorf("checkpoint UpdateCheckpoint error : runId(%s), err(%v)", runID, err)
+	}
+	return err
+}
+
+func (ri *RedisInput) updateCheckpointRunIDOnce(runID, id1, id2 string) error {
+	cli, err := client.NewRedis(ri.checkpointRedis)
+	if err != nil {
+		return err
+	}
+	defer cli.Close()
+	// Include both replid and replid2 candidates during failover windows,
+	// so checkpoint hash lookup can carry forward existing offsets instead of
+	// falling back to an empty mapping and forcing full sync.
+	return checkpoint.UpdateCheckpoint(cli, ri.checkpointName, []string{runID, id1, id2})
+}
+
+func isRecoverableCheckpointCommitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return neterr.CheckHandleNetError(err)
+}
+
+func checkpointCommitErrKind(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case neterr.CheckHandleNetError(err):
+		return "conn"
+	default:
+		return "write"
+	}
+}
+
+func shouldDelayOldRunIDCleanup(oldRunID, id1, id2 string) bool {
+	if oldRunID == "" || oldRunID == "?" {
+		return false
+	}
+	return oldRunID == id1 || oldRunID == id2
 }
 
 func (ri *RedisInput) shouldSwitchToNewReplidNow(id1, id2 string, locSp, cpSp StartPoint) bool {

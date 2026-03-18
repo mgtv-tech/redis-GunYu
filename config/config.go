@@ -581,8 +581,6 @@ func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
 }
 
 func (rco *RedisClusterOptions) fix() error {
-	rco.HandleAskErr = true
-	rco.HandleMoveErr = true
 	return nil
 }
 
@@ -795,8 +793,12 @@ func (rc *RedisConfig) fix() error {
 		return newConfigError("redis.type is sentinel, but masterName is empty")
 	}
 	if rc.ClusterOptions == nil {
-		rc.ClusterOptions = &RedisClusterOptions{}
-		rc.ClusterOptions.fix()
+		rc.ClusterOptions = &RedisClusterOptions{
+			HandleAskErr:  true,
+			HandleMoveErr: true,
+		}
+	} else if err := rc.ClusterOptions.fix(); err != nil {
+		return err
 	}
 	rc.Otype = rc.Type
 	if rc.KeepAlive < 1 {

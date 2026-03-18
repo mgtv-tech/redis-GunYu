@@ -50,6 +50,8 @@ type RedisOutput struct {
 
 	cpGuard         sync.RWMutex
 	checkpointInMem checkpoint.CheckpointInfo
+	cpConnGuard     sync.Mutex
+	cpConn          client.Redis
 
 	outFilter *filter.RedisKeyFilter
 
@@ -161,6 +163,7 @@ var (
 )
 
 func (ro *RedisOutput) Close() {
+	ro.invalidateCheckpointConn(nil)
 }
 
 // SetChannel sets the channel for reading data
@@ -718,22 +721,97 @@ func (ro *RedisOutput) setCheckpoint(ctx context.Context, runId string, offset i
 		return nil
 	}
 
-	// write output checkpoint to target redis
-	err := util.RetryLinearJitter(ctx, func() error {
-		cli, err := ro.NewCheckpointConn(ctx)
-		if err != nil {
+	const (
+		maxAttempts = 5
+		retryWait   = 2 * time.Second
+	)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			t := time.NewTimer(retryWait)
+			select {
+			case <-ctx.Done():
+				if !t.Stop() {
+					<-t.C
+				}
+				if lastErr != nil {
+					return errors.Join(ctx.Err(), lastErr)
+				}
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+
+		err := ro.writeCheckpointWithReuse(ctx, checkpointKv)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, ErrCheckpointFenced) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
-		defer cli.Close()
-		if ro.cpConnLogged.CompareAndSwap(false, true) {
-			ro.logger.Infof("checkpoint conn bound : redisType(%v), addresses(%v)", cli.RedisType(), cli.Addresses())
+		lastErr = err
+		ro.logger.Warnf("checkpoint write failed: cp(%s), runId(%s), offset(%d), attempt(%d/%d), kind(%s), err(%v)",
+			checkpointKv.Key, checkpointKv.RunId, checkpointKv.Offset, attempt, maxAttempts, checkpointErrorKind(err), err)
+	}
+	return lastErr
+}
+
+func (ro *RedisOutput) writeCheckpointWithReuse(ctx context.Context, cp *checkpoint.CheckpointInfo) error {
+	cli, err := ro.getCheckpointConn(ctx)
+	if err != nil {
+		return err
+	}
+	err = ro.writeCheckpointByStrategy(cli, cp)
+	if err != nil {
+		// Keep healthy conn for fencing mismatch; reset for transport/write failures.
+		if !errors.Is(err, ErrCheckpointFenced) {
+			ro.invalidateCheckpointConn(err)
 		}
-		epoch := ro.leaderEpoch.Load()
-		if epoch > 0 {
-			// CAS/Fencing: reject stale leaders whose epoch is lower than current hash epoch.
-			// KEYS[1] = checkpoint hash key
-			// ARGV = runid, version, offset, mtime, epoch, token
-			reply, e := cli.Do("EVAL", `
+		return err
+	}
+	return nil
+}
+
+func (ro *RedisOutput) getCheckpointConn(ctx context.Context) (client.Redis, error) {
+	ro.cpConnGuard.Lock()
+	defer ro.cpConnGuard.Unlock()
+	if ro.cpConn != nil {
+		return ro.cpConn, nil
+	}
+	cli, err := ro.NewCheckpointConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ro.cpConn = cli
+	if ro.cpConnLogged.CompareAndSwap(false, true) {
+		ro.logger.Infof("checkpoint conn bound : redisType(%v), addresses(%v)", cli.RedisType(), cli.Addresses())
+	}
+	return cli, nil
+}
+
+func (ro *RedisOutput) invalidateCheckpointConn(cause error) {
+	ro.cpConnGuard.Lock()
+	cli := ro.cpConn
+	ro.cpConn = nil
+	ro.cpConnGuard.Unlock()
+	if cli != nil {
+		_ = cli.Close()
+		if cause != nil {
+			ro.logger.Warnf("checkpoint conn reset: kind(%s), err(%v)", checkpointErrorKind(cause), cause)
+		}
+	}
+	ro.cpConnLogged.Store(false)
+}
+
+func (ro *RedisOutput) writeCheckpointByStrategy(cli client.Redis, cp *checkpoint.CheckpointInfo) error {
+	epoch := ro.leaderEpoch.Load()
+	if epoch <= 0 {
+		return checkpoint.SetCheckpoint(cli, cp)
+	}
+	// CAS/Fencing: reject stale leaders whose epoch is lower than current hash epoch.
+	// KEYS[1] = checkpoint hash key
+	// ARGV = runid, version, offset, mtime, epoch, token
+	reply, err := cli.Do("EVAL", `
 local key = KEYS[1]
 local runid = ARGV[1]
 local version = ARGV[2]
@@ -754,27 +832,39 @@ redis.call('HSET', key,
   '__leader_token', token
 )
 return 1
-`, []byte("1"), checkpointKv.Key, checkpointKv.RunId, checkpointKv.Version,
-				strconv.FormatInt(checkpointKv.Offset, 10),
-				strconv.FormatInt(time.Now().UnixNano(), 10),
-				strconv.FormatInt(epoch, 10), ro.leaderToken)
-			if e != nil {
-				return e
-			}
-			ok, e := common.Int64(reply, nil)
-			if e != nil {
-				return e
-			}
-			if ok != 1 {
-				return errors.Join(ErrCheckpointFenced, fmt.Errorf("output checkpoint fenced by newer leader: cp(%s), epoch(%d), token(%s)",
-					checkpointKv.Key, epoch, ro.leaderToken))
-			}
-			return nil
-		}
-		return checkpoint.SetCheckpoint(cli, checkpointKv)
-	}, 5, time.Second*2, 0.3)
-	//ro.logger.Log(err, "set checkpoint : checkpoint(%v), err(%v)", checkpointKv, err)
-	return err
+`, []byte("1"), cp.Key, cp.RunId, cp.Version,
+		strconv.FormatInt(cp.Offset, 10),
+		strconv.FormatInt(time.Now().UnixNano(), 10),
+		strconv.FormatInt(epoch, 10), ro.leaderToken)
+	if err != nil {
+		return err
+	}
+	ok, err := common.Int64(reply, nil)
+	if err != nil {
+		return err
+	}
+	if ok != 1 {
+		return errors.Join(ErrCheckpointFenced, fmt.Errorf("output checkpoint fenced by newer leader: cp(%s), epoch(%d), token(%s)",
+			cp.Key, epoch, ro.leaderToken))
+	}
+	return nil
+}
+
+func checkpointErrorKind(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, ErrCheckpointFenced):
+		return "fenced"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case net.CheckHandleNetError(err):
+		return "conn"
+	default:
+		return "write"
+	}
 }
 
 func (ro *RedisOutput) startCheckpointLagCollector(ctx context.Context) {
@@ -893,6 +983,7 @@ func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err
 }
 
 func (ro *RedisOutput) NewCheckpointConn(ctx context.Context) (client.Redis, error) {
+	_ = ctx
 	cfg := ro.cfg.CheckpointRedis
 	conn, err := client.NewRedis(cfg)
 	if err != nil {
@@ -1078,7 +1169,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			}
 			if inTransaction {
 				// 检查事务中的命令是否包含 CHECKPOINT 关键字
-				if bytes.Contains(bytes.Join(argv, []byte{' '}), []byte(config.FilterCheckpointKey)) {
+				if containsFilterCheckpointKey(argv, config.FilterCheckpointKey) {
 					shouldIgnore = true
 					filterCnt++
 					continue
@@ -1110,7 +1201,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			// recognized by FilterCmdKey command key positions; apply a raw payload
 			// guard to prevent filter checkpoint commands from loopback replay.
 			if config.FilterCheckpointKey != "" &&
-				bytes.Contains(bytes.Join(argv, []byte{' '}), []byte(config.FilterCheckpointKey)) {
+				containsFilterCheckpointKey(argv, config.FilterCheckpointKey) {
 				filterCnt++
 				if filterCnt > 50000 {
 					ro.logger.Infof("Contains Filter Checkpoint Key: %s, ignore cmd(%s)...", config.FilterCheckpointKey, sCmd)
@@ -1745,6 +1836,22 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			return nil
 		}
 	}
+}
+
+func containsFilterCheckpointKey(argv [][]byte, marker string) bool {
+	if marker == "" || len(argv) == 0 {
+		return false
+	}
+	key := []byte(marker)
+	for _, arg := range argv {
+		if len(arg) == 0 {
+			continue
+		}
+		if bytes.Contains(arg, key) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ro *RedisOutput) selectDB(currentDB int, originDB int) (int, bool) {

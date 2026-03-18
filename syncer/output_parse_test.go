@@ -126,3 +126,26 @@ func TestParseAofCommand_DropEvalContainingFilterCheckpoint(t *testing.T) {
 		t.Fatalf("expected eval command to be dropped, got %d cmds", len(sendBuf))
 	}
 }
+
+func TestContainsFilterCheckpointKey(t *testing.T) {
+	marker := "redis-GunYu-Filter-Checkpoint"
+	argv := [][]byte{
+		[]byte("EVAL"),
+		[]byte("return redis.call('set', KEYS[1], ARGV[1])"),
+		[]byte("1"),
+		[]byte(marker + ":k"),
+		[]byte("v1"),
+	}
+	if !containsFilterCheckpointKey(argv, marker) {
+		t.Fatalf("expected marker to be detected")
+	}
+	if containsFilterCheckpointKey(argv, "other-marker") {
+		t.Fatalf("did not expect other marker to be detected")
+	}
+	if containsFilterCheckpointKey(nil, marker) {
+		t.Fatalf("nil argv should not match")
+	}
+	if containsFilterCheckpointKey(argv, "") {
+		t.Fatalf("empty marker should not match")
+	}
+}
