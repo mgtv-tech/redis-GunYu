@@ -1692,7 +1692,14 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 
 		for _, ce := range cmdQueue {
 			if config.GetSyncerConfig().Input.PrintCmdToTarget {
-				if len(ce.Args) > 0 {
+				// SELECT 0 is high-frequency/noise in cluster replay, skip it in command print.
+				skipPrint := false
+				if ce.Cmd == "select" && len(ce.Args) == 1 {
+					if dbb, ok := ce.Args[0].([]byte); ok && string(dbb) == "0" {
+						skipPrint = true
+					}
+				}
+				if !skipPrint && len(ce.Args) > 0 {
 					argsStr := make([]string, len(ce.Args))
 					for i, arg := range ce.Args {
 						switch v := arg.(type) {
