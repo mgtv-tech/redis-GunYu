@@ -1663,6 +1663,7 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	var queuedByteSize uint64
 	var txnStatus txnStatus // transaction status
 	var needFlush bool
+	committedOffset := int64(-1)
 
 	cmdQueue := make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
 	batchTicker := time.NewTicker(time.Duration(ro.cfg.BatchTicker))
@@ -1739,15 +1740,21 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
 
 		if shouldUpdateCP {
-			if ro.cfg.EnableResumeFromBreakPoint {
-				err = ro.setCheckpoint(replayWait.Context(), runId, lastOffset, config.Version)
-				if err != nil {
-					return err
+			// Guard checkpoint write with monotonic valid offsets.
+			// This avoids keepalive-only flush writing invalid -1 and
+			// reduces hotspot writes when offset does not advance.
+			if lastOffset >= 0 && lastOffset > committedOffset {
+				if ro.cfg.EnableResumeFromBreakPoint {
+					err = ro.setCheckpoint(replayWait.Context(), runId, lastOffset, config.Version)
+					if err != nil {
+						return err
+					}
+				} else {
+					ro.cpGuard.Lock()
+					ro.checkpointInMem.Offset = lastOffset
+					ro.cpGuard.Unlock()
 				}
-			} else {
-				ro.cpGuard.Lock()
-				ro.checkpointInMem.Offset = lastOffset
-				ro.cpGuard.Unlock()
+				committedOffset = lastOffset
 			}
 		}
 

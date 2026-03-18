@@ -75,6 +75,10 @@ type RedisInput struct {
 	channel         Channel
 	checkpointRedis config.RedisConfig
 	checkpointName  string
+	cpWriteGuard    sync.Mutex
+	cpWriteConn     client.Redis
+	cpWriteRunID    string
+	cpWriteOffset   int64
 	// test hook: override checkpoint update behavior in unit tests
 	checkpointUpdater func(ctx context.Context, runID, id1, id2 string) error
 	fsm             *SyncFiniteStateMachine
@@ -98,6 +102,7 @@ func NewRedisInput(redisCfg config.RedisConfig) *RedisInput {
 		wait:      usync.NewWaitCloser(nil),
 		fsm:       NewSyncFiniteStateMachine(),
 		cfg:       redisCfg,
+		cpWriteOffset: -1,
 		logger:    log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisInput(%s)] ", redisCfg.Address()))),
 	}
 }
@@ -257,6 +262,9 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 		// may cause full sync if does not return
 		// else, can not ingest input to local if checkpoint is fail
 		return
+	}
+	if cpSp.RunId != "" && cpSp.RunId != "?" && cpSp.Offset >= 0 {
+		ri.channel.SetGCProtectOffset(cpSp.RunId, cpSp.Offset)
 	}
 	locSp, err = ri.channel.StartPoint(inputIds)
 	if err != nil {
@@ -537,6 +545,16 @@ func isRecoverableCheckpointCommitErr(err error) bool {
 	return neterr.CheckHandleNetError(err)
 }
 
+func isRecoverableMetaCheckpointErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return neterr.CheckHandleNetError(err)
+}
+
 func checkpointCommitErrKind(err error) string {
 	switch {
 	case err == nil:
@@ -709,6 +727,14 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 	usync.SafeGo(func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+		const (
+			metaFailGrace     = 20 * time.Second
+			metaFailMaxStreak = 8
+		)
+		var (
+			metaFailStreak int
+			metaFirstFail  time.Time
+		)
 		for {
 			select {
 			case <-ticker.C:
@@ -729,11 +755,31 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 			}
 			// Persist input checkpoint to meta redis for input restart/reconnect.
 			if ackOffset > 0 {
-				if err := ri.setCheckpointOffset(wait.Context(), ri.channel.RunId(), ackOffset); err != nil {
-					ri.logger.Errorf("set input checkpoint offset error : runId(%s), offset(%d), err(%v)", ri.channel.RunId(), ackOffset, err)
-					wait.Close(err)
-					return
+				runID := ri.channel.RunId()
+				if err := ri.setCheckpointOffset(wait.Context(), runID, ackOffset); err != nil {
+					now := time.Now()
+					if metaFailStreak == 0 {
+						metaFirstFail = now
+					}
+					metaFailStreak++
+					elapsed := now.Sub(metaFirstFail)
+					if isRecoverableMetaCheckpointErr(err) &&
+						(metaFailStreak < metaFailMaxStreak || elapsed < metaFailGrace) {
+						ri.logger.Warnf("set input checkpoint offset degraded: runId(%s), offset(%d), streak(%d), elapsed(%s), err(%v)",
+							runID, ackOffset, metaFailStreak, elapsed, err)
+					} else {
+						ri.logger.Errorf("set input checkpoint offset hard-fail: runId(%s), offset(%d), streak(%d), elapsed(%s), err(%v)",
+							runID, ackOffset, metaFailStreak, elapsed, err)
+						wait.Close(err)
+						return
+					}
+				} else if metaFailStreak > 0 {
+					ri.logger.Infof("set input checkpoint offset recovered: runId(%s), offset(%d), previous_streak(%d)",
+						runID, ackOffset, metaFailStreak)
+					metaFailStreak = 0
+					metaFirstFail = time.Time{}
 				}
+				ri.channel.SetGCProtectOffset(runID, ackOffset)
 			}
 		}
 	}, func(i interface{}) { wait.Close(fmt.Errorf("panic : %v", i)) })
@@ -749,14 +795,50 @@ func (ri *RedisInput) setCheckpointOffset(ctx context.Context, runId string, off
 		Offset:  offset,
 		Version: config.Version,
 	}
-	return util.RetryLinearJitter(ctx, func() error {
-		cli, err := client.NewRedis(ri.checkpointRedis)
+
+	ri.cpWriteGuard.Lock()
+	defer ri.cpWriteGuard.Unlock()
+	// Conservative dedupe: only skip when runid is unchanged and offset does not advance.
+	if ri.cpWriteRunID == runId && offset <= ri.cpWriteOffset {
+		return nil
+	}
+
+	const (
+		maxAttempts = 3
+		retryWait   = time.Second
+	)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		cli, err := ri.getCheckpointWriteConnLocked()
 		if err != nil {
-			return err
+			lastErr = err
+		} else {
+			err = checkpoint.SetCheckpoint(cli, cp)
+			if err == nil {
+				ri.cpWriteRunID = runId
+				ri.cpWriteOffset = offset
+				return nil
+			}
+			lastErr = err
+			ri.invalidateCheckpointWriteConnLocked(err)
 		}
-		defer cli.Close()
-		return checkpoint.SetCheckpoint(cli, cp)
-	}, 3, time.Second, 0.3)
+		if attempt == maxAttempts {
+			break
+		}
+		t := time.NewTimer(retryWait)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
+			if lastErr != nil {
+				return errors.Join(ctx.Err(), lastErr)
+			}
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return lastErr
 }
 
 func (ri *RedisInput) Run() (err error) {
@@ -837,7 +919,33 @@ func (ri *RedisInput) GetChannelReader(wait usync.WaitCloser, readerOffset Start
 func (ri *RedisInput) Stop() error {
 	ri.logger.Debugf("Stop")
 	ri.wait.Close(nil)
+	ri.cpWriteGuard.Lock()
+	ri.invalidateCheckpointWriteConnLocked(nil)
+	ri.cpWriteGuard.Unlock()
 	return nil
+}
+
+func (ri *RedisInput) getCheckpointWriteConnLocked() (client.Redis, error) {
+	if ri.cpWriteConn != nil {
+		return ri.cpWriteConn, nil
+	}
+	cli, err := client.NewRedis(ri.checkpointRedis)
+	if err != nil {
+		return nil, err
+	}
+	ri.cpWriteConn = cli
+	return cli, nil
+}
+
+func (ri *RedisInput) invalidateCheckpointWriteConnLocked(cause error) {
+	if ri.cpWriteConn != nil {
+		_ = ri.cpWriteConn.Close()
+		ri.cpWriteConn = nil
+		if cause != nil {
+			ri.logger.Warnf("input checkpoint conn reset : runId(%s), offset(%d), err(%v)",
+				ri.cpWriteRunID, ri.cpWriteOffset, cause)
+		}
+	}
 }
 
 func (ri *RedisInput) StateNotify(state SyncState) usync.WaitChannel {

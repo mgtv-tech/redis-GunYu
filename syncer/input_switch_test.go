@@ -88,6 +88,7 @@ func (m *mockChannelForRunIDSwitch) DelRunId(id string) error {
 	}
 	return nil
 }
+func (m *mockChannelForRunIDSwitch) SetGCProtectOffset(string, int64) {}
 func (m *mockChannelForRunIDSwitch) RunId() string { return m.runID }
 func (m *mockChannelForRunIDSwitch) IsValidOffset(Offset) bool { return true }
 func (m *mockChannelForRunIDSwitch) GetOffsetRange(string) (int64, int64) { return -1, -1 }

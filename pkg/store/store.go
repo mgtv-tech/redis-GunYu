@@ -31,6 +31,8 @@ type Storer struct {
 	closer      usync.WaitCloser
 	logger      log.Logger
 	flush       config.FlushPolicy
+	gcProtectRunID  string
+	gcProtectOffset int64
 }
 
 func NewStorer(id string, baseDir string, maxSize, logSize int64, flush config.FlushPolicy) *Storer {
@@ -44,6 +46,7 @@ func NewStorer(id string, baseDir string, maxSize, logSize int64, flush config.F
 		logger:      log.WithLogger(config.LogModuleName(fmt.Sprintf("[Storer(%s)] ", id))),
 		dataSet:     newDataSet(nil, nil),
 		flush:       flush,
+		gcProtectOffset: -1,
 	}
 
 	usync.SafeGo(func() {
@@ -610,5 +613,28 @@ func (s *Storer) gcDataSet() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 
-	s.getDataSet().gcLogs(s.dir, s.maxSize)
+	protectOffset := int64(-1)
+	if s.gcProtectRunID == s.runId {
+		protectOffset = s.gcProtectOffset
+	}
+	const minKeepAofSegments = 2
+	s.getDataSet().gcLogs(s.dir, s.maxSize, protectOffset, minKeepAofSegments)
+}
+
+// SetGCProtectOffset updates the local GC protection watermark for the current runid.
+// GC will not remove segments that may truncate below this offset.
+func (s *Storer) SetGCProtectOffset(runId string, offset int64) {
+	if runId == "" || runId == "?" || offset < 0 {
+		return
+	}
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	if s.gcProtectRunID != runId {
+		s.gcProtectRunID = runId
+		s.gcProtectOffset = offset
+		return
+	}
+	if offset > s.gcProtectOffset {
+		s.gcProtectOffset = offset
+	}
 }

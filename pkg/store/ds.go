@@ -418,9 +418,12 @@ func (ds *dataSet) Right() int64 {
 	return int64(-1)
 }
 
-func (ds *dataSet) gcLogs(dir string, maxSize int64) {
+func (ds *dataSet) gcLogs(dir string, maxSize int64, protectOffset int64, minKeepAofSegments int) {
 	ds.mux.Lock()
 	defer ds.mux.Unlock()
+	if minKeepAofSegments < 0 {
+		minKeepAofSegments = 0
+	}
 
 	size := int64(0)
 
@@ -448,6 +451,13 @@ func (ds *dataSet) gcLogs(dir string, maxSize int64) {
 		rdb.mux.Lock()
 		if size > maxSize {
 			if rdb.rwRef.Load() == 0 {
+				if protectOffset > 0 && protectOffset <= rdb.left {
+					ref0 = false
+					log.Warnf("GC Logs, keep rdb by checkpoint watermark : protectOffset(%d), rdbLeft(%d)",
+						protectOffset, rdb.left)
+					rdb.mux.Unlock()
+					goto gcAof
+				}
 				rdbfn := rdbFilePath(dir, rdb.left, rdb.rdbSize)
 				if err := os.RemoveAll(rdbfn); err != nil {
 					log.Errorf("GC Logs, remove rdb file error : file(%s), error(%v)", rdbfn, err)
@@ -465,11 +475,21 @@ func (ds *dataSet) gcLogs(dir string, maxSize int64) {
 		rdb.mux.Unlock()
 	}
 
+gcAof:
 	if ref0 {
 		// oldest to newest
 		for z := 0; z <= aofLast; z++ {
 			aof := ds.aofSegs[z]
 			aof.mux.Lock()
+			remaining := len(ds.aofSegs) - z
+			if remaining <= minKeepAofSegments {
+				aof.mux.Unlock()
+				break
+			}
+			if protectOffset > 0 && aof.Right() >= protectOffset {
+				aof.mux.Unlock()
+				break
+			}
 			if aof.Ref() > 0 {
 				ref0 = false
 				aof.mux.Unlock()

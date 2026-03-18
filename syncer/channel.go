@@ -15,6 +15,7 @@ type Channel interface {
 	StartPoint([]string) (StartPoint, error)
 	SetRunId(string) error
 	DelRunId(string) error
+	SetGCProtectOffset(string, int64)
 	RunId() string
 	IsValidOffset(Offset) bool
 	GetOffsetRange(string) (int64, int64)
@@ -136,6 +137,10 @@ func (sc *StoreChannel) DelRunId(runId string) error {
 		sc.logger.Infof("DelRunId : runId(%s)", runId)
 	}
 	return err
+}
+
+func (sc *StoreChannel) SetGCProtectOffset(runId string, offset int64) {
+	sc.storer.SetGCProtectOffset(runId, offset)
 }
 
 func (sc *StoreChannel) RunId() string {
