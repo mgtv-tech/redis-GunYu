@@ -188,12 +188,14 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		for key, val := range sc.syncers {
 			syncers[key] = val
 		}
+		runWait := sc.runWait
 		runidStates := make(map[string]runIDConvergeState, len(sc.runidConverge))
 		for key, val := range sc.runidConverge {
 			runidStates[key] = val
 		}
 		runidDeadlineMs := sc.runIDConvergeDeadline().Milliseconds()
 		sc.mutex.RUnlock()
+		runClosing := runWait == nil || runWait.IsClosed()
 
 		for key, val := range syncers {
 			st := syncerStatus{
@@ -229,6 +231,11 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 			st.RunIDDeadlineMs = runidDeadlineMs
 			if val.sync.IsLeader() {
 				st.Role = "leader"
+			}
+			// A shard can be intentionally closed for local rebuild while the whole
+			// run-loop is still alive. Expose this transitional state explicitly.
+			if st.State == "stop" && !runClosing && val.wait != nil && val.wait.IsClosed() {
+				st.State = "rebuilding"
 			}
 			sys = append(sys, st)
 		}

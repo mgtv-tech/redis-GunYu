@@ -995,35 +995,52 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 		cli.Close()
 	}
 
-	gcStaleCp := func(cli client.Redis) {
-		data, err := checkpoint.GetAllCheckpointHash(cli)
-		if err != nil {
-			sc.logger.Errorf("get checkpoint from hash error : redis(%v), err(%v)", cli.Addresses(), err)
-			return
+	checkpointNames := make(map[string]struct{})
+	sc.mutex.RLock()
+	for _, si := range sc.syncers {
+		namer, ok := si.sync.(interface{ CheckpointName() string })
+		if !ok {
+			continue
 		}
-		if len(data)%2 == 1 {
-			sc.logger.Errorf("the number of values of checkpoint hash is not even : addr(%v)", data)
-			return
+		checkpointName := strings.TrimSpace(namer.CheckpointName())
+		if checkpointName != "" {
+			checkpointNames[checkpointName] = struct{}{}
 		}
-		for i := 0; i < len(data)-1; i += 2 {
-			runId := data[i]
-			cpn := data[i+1]
-			_, exist := runIdMap[runId]
+	}
+	sc.mutex.RUnlock()
 
+	if len(checkpointNames) == 0 {
+		sc.logger.Debugf("skip stale checkpoint gc: no checkpoint name found from active syncers")
+		return
+	}
+
+	gcStaleCp := func(cli client.Redis, checkpointName string) {
+		err := checkpoint.ScanCheckpointHashByName(cli, checkpointName, 200, func(runId, cpn string) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			_, exist := runIdMap[runId]
 			// run id maybe obsolete or a new run id
 			// delete stale checkpoints that have not been updated in the last 12 hours
 			total, deleted, err := checkpoint.DelStaleCheckpoint(cli, cpn, runId, config.GetSyncerConfig().Channel.StaleCheckpointDuration, exist)
 			if err != nil {
 				sc.logger.Errorf("DelStaleCheckpoint : cp(%s), runId(%s), error(%v)", cpn, runId, err)
+				return nil
 			}
 			if !exist && total == deleted {
-				err = checkpoint.DelCheckpointHash(cli, runId)
+				err = checkpoint.DelCheckpointHashByName(cli, checkpointName, runId)
 				if err == nil {
-					sc.logger.Infof("delete runId from checkpoint hash : runId(%s), err(%v)", runId)
+					sc.logger.Infof("delete runId from checkpoint map : cp(%s), runId(%s), err(%v)", checkpointName, runId, err)
 				} else {
-					sc.logger.Errorf("delete runId from checkpoint hash error : runId(%s), err(%v)", runId, err)
+					sc.logger.Errorf("delete runId from checkpoint map error : cp(%s), runId(%s), err(%v)", checkpointName, runId, err)
 				}
 			}
+			return nil
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			sc.logger.Errorf("scan checkpoint map error : cp(%s), redis(%v), err(%v)", checkpointName, cli.Addresses(), err)
 		}
 	}
 
@@ -1033,7 +1050,9 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 			sc.logger.Errorf("new redis error : addr(%s), err(%v)", config.GetSyncerConfig().Output.Redis.Address(), err)
 			return
 		}
-		gcStaleCp(cli)
+		for checkpointName := range checkpointNames {
+			gcStaleCp(cli, checkpointName)
+		}
 		cli.Close()
 	} else if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeStandalone {
 		outputs := config.GetSyncerConfig().Output.Redis.SelNodes(true, config.SelNodeStrategyMaster)
@@ -1042,7 +1061,9 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 			if err != nil {
 				return
 			}
-			gcStaleCp(cli)
+			for checkpointName := range checkpointNames {
+				gcStaleCp(cli, checkpointName)
+			}
 			cli.Close()
 		}
 	}

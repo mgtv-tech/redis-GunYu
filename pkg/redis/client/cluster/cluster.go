@@ -500,7 +500,7 @@ func (cluster *Cluster) handleConnTimeout(node *redisNode, cmd string, args []in
 		return nil, fmt.Errorf("random node[%v] connection still failed: %w, previous node[%v]",
 			node.address, err, node.address)
 	} else if common.CheckReply(reply) == common.KrespConnTimeout {
-		return fmt.Errorf("%v. previous node[%v]", reply, node.address), nil
+		return nil, fmt.Errorf("%v. previous node[%v]", reply, node.address)
 	}
 
 	if _, ok := reply.(common.RedisError); !ok {

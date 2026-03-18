@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,14 +54,16 @@ type ReplicaLeader struct {
 	input           Input
 	channel         Channel
 	checkpointRedis config.RedisConfig
+	checkpointName  string
 }
 
-func NewReplicaLeader(input Input, channel Channel, checkpointRedis config.RedisConfig) *ReplicaLeader {
+func NewReplicaLeader(input Input, channel Channel, checkpointRedis config.RedisConfig, checkpointName string) *ReplicaLeader {
 	replica := &ReplicaLeader{
 		logger:          log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaLeader(%s)] ", input.Id()))),
 		input:           input,
 		channel:         channel,
 		checkpointRedis: checkpointRedis,
+		checkpointName:  checkpointName,
 	}
 	return replica
 }
@@ -253,11 +256,12 @@ type ReplicaFollower struct {
 	channel         Channel
 	leader          *cluster.RoleInfo
 	checkpointRedis config.RedisConfig
+	checkpointName  string
 	mux             sync.RWMutex
 	conn            *grpc.ClientConn
 }
 
-func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo, checkpointRedis config.RedisConfig) *ReplicaFollower {
+func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cluster.RoleInfo, checkpointRedis config.RedisConfig, checkpointName string) *ReplicaFollower {
 	replica := &ReplicaFollower{
 		logger:          log.WithLogger(config.LogModuleName(fmt.Sprintf("[ReplicaFollower(%s)] ", inputAddress))),
 		wait:            usync.NewWaitCloser(nil),
@@ -265,6 +269,7 @@ func NewReplicaFollower(id int, inputAddress string, channel Channel, leader *cl
 		leader:          leader,
 		inputAddress:    inputAddress,
 		checkpointRedis: checkpointRedis,
+		checkpointName:  checkpointName,
 	}
 	return replica
 }
@@ -446,13 +451,16 @@ func (rl *ReplicaLeader) loadCheckpointStartPoint(runIds []string) (StartPoint, 
 	if len(runIds) == 0 {
 		return StartPoint{}, false, nil
 	}
+	if strings.TrimSpace(rl.checkpointName) == "" {
+		return StartPoint{}, false, nil
+	}
 	cli, err := client.NewRedis(rl.checkpointRedis)
 	if err != nil {
 		return StartPoint{}, false, err
 	}
 	defer cli.Close()
 
-	cpName, _, err := checkpoint.GetCheckpointHash(cli, runIds)
+	cpName, _, err := checkpoint.GetCheckpointHashByName(cli, rl.checkpointName, runIds)
 	if err != nil {
 		return StartPoint{}, false, err
 	}
@@ -474,13 +482,16 @@ func (rf *ReplicaFollower) loadCheckpointStartPoint(runIds []string) (StartPoint
 	if len(runIds) == 0 {
 		return StartPoint{}, false, nil
 	}
+	if strings.TrimSpace(rf.checkpointName) == "" {
+		return StartPoint{}, false, nil
+	}
 	cli, err := client.NewRedis(rf.checkpointRedis)
 	if err != nil {
 		return StartPoint{}, false, err
 	}
 	defer cli.Close()
 
-	cpName, _, err := checkpoint.GetCheckpointHash(cli, runIds)
+	cpName, _, err := checkpoint.GetCheckpointHashByName(cli, rf.checkpointName, runIds)
 	if err != nil {
 		return StartPoint{}, false, err
 	}

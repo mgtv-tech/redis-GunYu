@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
@@ -189,7 +190,8 @@ func (node *redisNode) shutdown() {
 func (node *redisNode) do(cmd string, args ...interface{}) (interface{}, error) {
 	conn, err := node.getConn()
 	if err != nil {
-		return fmt.Sprintf("ECONNTIMEOUT: %v", err), nil
+		// Return as redis error reply so upper layers can classify and retry.
+		return common.RedisError(fmt.Sprintf("ECONNTIMEOUT: %v", err)), nil
 	}
 
 	if err = conn.send(cmd, args...); err != nil {

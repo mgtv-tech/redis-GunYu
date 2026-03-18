@@ -303,6 +303,12 @@ func (of *OutputConfig) fix() error {
 	if err := of.MetaRedis.fix(); err != nil {
 		return err
 	}
+	if of.MetaRedis.Type != RedisTypeSentinel {
+		return newConfigError("output.metaRedis must be sentinel : type(%v)", of.MetaRedis.Type)
+	}
+	if of.MetaRedis.IsSameEndpoint(of.Redis) {
+		return newConfigError("output.metaRedis must be isolated from output.redis")
+	}
 
 	return of.Replay.fix()
 }
@@ -557,6 +563,36 @@ func (rc *RedisConfig) Clone() *RedisConfig {
 		cloned.slotsMap[k] = v.Clone()
 	}
 	return cloned
+}
+
+func (rc *RedisConfig) IsSameEndpoint(other *RedisConfig) bool {
+	if rc == nil || other == nil {
+		return false
+	}
+	if rc.Type != other.Type ||
+		rc.MasterName != other.MasterName ||
+		rc.UserName != other.UserName ||
+		rc.Password != other.Password ||
+		rc.SentinelUser != other.SentinelUser ||
+		rc.SentinelPass != other.SentinelPass ||
+		rc.TlsEnable != other.TlsEnable {
+		return false
+	}
+	if len(rc.Addresses) != len(other.Addresses) {
+		return false
+	}
+	left := make([]string, len(rc.Addresses))
+	right := make([]string, len(other.Addresses))
+	copy(left, rc.Addresses)
+	copy(right, other.Addresses)
+	sort.Strings(left)
+	sort.Strings(right)
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (rc *RedisConfig) IsMigrating() bool {

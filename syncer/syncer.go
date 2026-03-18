@@ -206,6 +206,16 @@ func (s *syncer) ActiveRunID() string {
 	return s.channel.RunId()
 }
 
+// CheckpointName returns current output checkpoint name for maintenance tasks.
+func (s *syncer) CheckpointName() string {
+	s.guard.RLock()
+	defer s.guard.RUnlock()
+	if s.output == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.output.cfg.CheckpointName)
+}
+
 func (s *syncer) getState() SyncerState {
 	s.guard.RLock()
 	defer s.guard.RUnlock()
@@ -411,7 +421,7 @@ func (s *syncer) runLeader() error {
 	// Set channel for output (decoupled architecture)
 	output.SetChannel(s.channel)
 
-	leader := NewReplicaLeader(input, s.channel, checkpointRedis)
+	leader := NewReplicaLeader(input, s.channel, checkpointRedis, output.cfg.CheckpointName)
 	outLeader := NewOutputLeader(s.cfg.Input.Address(), output)
 	s.input = input
 	s.output = output
@@ -556,17 +566,17 @@ func (s *syncer) runFollower() error {
 		return errors.Join(ErrQuit, err)
 	}
 
-	s.guard.RLock()
-	leader := s.slaveOf
-	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader, checkpointRedis)
-	s.guard.RUnlock()
-
 	output, err := s.newOutput()
 	if err != nil {
 		return err
 	}
 	output.SetChannel(s.channel)
 	outFollower := NewOutputFollower(s.cfg.Input.Address(), output)
+
+	s.guard.RLock()
+	leader := s.slaveOf
+	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader, checkpointRedis, output.cfg.CheckpointName)
+	s.guard.RUnlock()
 
 	s.guard.Lock()
 	s.state = SyncerStateRun
@@ -694,13 +704,11 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		if err != nil {
 			return nil, errors.Join(ErrRestart, err)
 		}
-		// When metadata redis is dedicated, output-side checkpoint mapping must
-		// also be initialized on target redis for loopback filtering/restart.
-		if !isSameRedisEndpoint(metaRedis, s.cfg.Output) {
-			err = s.updateCheckpoint(wait, s.cfg.Output, localCheckpoint, ids)
-			if err != nil {
-				return nil, errors.Join(ErrRestart, err)
-			}
+		// Output-side checkpoint mapping must also be initialized on target redis
+		// for loopback filtering/restart.
+		err = s.updateCheckpoint(wait, s.cfg.Output, localCheckpoint, ids)
+		if err != nil {
+			return nil, errors.Join(ErrRestart, err)
 		}
 		outputCfg.CheckpointName = localCheckpoint
 		s.logger.Debugf("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
@@ -719,24 +727,6 @@ func (s *syncer) inputCheckpointRedis() (config.RedisConfig, error) {
 		return config.RedisConfig{}, fmt.Errorf("invalid config: output.metaRedis.addresses must not be empty")
 	}
 	return *cfg.MetaRedis, nil
-}
-
-func isSameRedisEndpoint(a, b config.RedisConfig) bool {
-	if a.Type != b.Type ||
-		a.MasterName != b.MasterName ||
-		a.UserName != b.UserName ||
-		a.Password != b.Password ||
-		a.SentinelUser != b.SentinelUser ||
-		a.SentinelPass != b.SentinelPass ||
-		len(a.Addresses) != len(b.Addresses) {
-		return false
-	}
-	for i := range a.Addresses {
-		if a.Addresses[i] != b.Addresses[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *syncer) updateCheckpoint(wait usync.WaitCloser, metaRedis config.RedisConfig, localCheckpoint string, ids []string) error {

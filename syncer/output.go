@@ -52,6 +52,9 @@ type RedisOutput struct {
 	checkpointInMem checkpoint.CheckpointInfo
 	cpConnGuard     sync.Mutex
 	cpConn          client.Redis
+	lagConnGuard    sync.Mutex
+	lagInConn       client.Redis
+	lagOutConn      client.Redis
 
 	outFilter *filter.RedisKeyFilter
 
@@ -164,6 +167,8 @@ var (
 
 func (ro *RedisOutput) Close() {
 	ro.invalidateCheckpointConn(nil)
+	ro.invalidateLagConn(true, nil)
+	ro.invalidateLagConn(false, nil)
 }
 
 // SetChannel sets the channel for reading data
@@ -278,6 +283,9 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	ro.outFilter.InsertCmdBlackList(cfg.Filter.CmdBlacklist, true)
 
 	ro.outFilter.InsertPrefixKeyBlackList([]string{config.CheckpointKey, config.NamespacePrefixKey})
+	// Phase-2 checkpoint keys are no longer prefixed with config.CheckpointKey.
+	// Guard them explicitly to avoid loopback replay in bidirectional setups.
+	ro.outFilter.InsertPrefixKeyBlackList([]string{"cpmap:{", "cpent:{", "cpepoch:{"})
 	keyFilter := cfg.Filter.KeyFilter
 	if keyFilter != nil {
 		ro.outFilter.InsertPrefixKeyBlackList(keyFilter.PrefixKeyBlacklist)
@@ -307,13 +315,14 @@ func (ro *RedisOutput) StartLeaderEpoch(ctx context.Context) error {
 			return err
 		}
 		defer cli.Close()
-		epoch, err := common.Int64(cli.Do("INCR", ro.cfg.CheckpointName+":leader_epoch"))
+		epochKey := checkpoint.CheckpointEpochKey(ro.cfg.CheckpointName)
+		epoch, err := common.Int64(cli.Do("INCR", epochKey))
 		if err != nil {
 			return err
 		}
 		ro.leaderEpoch.Store(epoch)
-		ro.logger.Infof("output leader epoch acquired : cp(%s), epoch(%d), token(%s)",
-			ro.cfg.CheckpointName, epoch, ro.leaderToken)
+		ro.logger.Infof("output leader epoch acquired : cp(%s), epochKey(%s), epoch(%d), token(%s)",
+			ro.cfg.CheckpointName, epochKey, epoch, ro.leaderToken)
 		return nil
 	}, 5, time.Second, 0.3)
 }
@@ -808,8 +817,9 @@ func (ro *RedisOutput) writeCheckpointByStrategy(cli client.Redis, cp *checkpoin
 	if epoch <= 0 {
 		return checkpoint.SetCheckpoint(cli, cp)
 	}
+	entityKey := checkpoint.CheckpointEntityKey(cp.Key)
 	// CAS/Fencing: reject stale leaders whose epoch is lower than current hash epoch.
-	// KEYS[1] = checkpoint hash key
+	// KEYS[1] = checkpoint entity key
 	// ARGV = runid, version, offset, mtime, epoch, token
 	reply, err := cli.Do("EVAL", `
 local key = KEYS[1]
@@ -832,7 +842,7 @@ redis.call('HSET', key,
   '__leader_token', token
 )
 return 1
-`, []byte("1"), cp.Key, cp.RunId, cp.Version,
+`, []byte("1"), entityKey, cp.RunId, cp.Version,
 		strconv.FormatInt(cp.Offset, 10),
 		strconv.FormatInt(time.Now().UnixNano(), 10),
 		strconv.FormatInt(epoch, 10), ro.leaderToken)
@@ -899,15 +909,14 @@ func (ro *RedisOutput) setCheckpointLagInvalid(reason ErrorReason) {
 	}
 }
 
-func (ro *RedisOutput) readCheckpointByRedis(redisCfg config.RedisConfig, runID string) (*checkpoint.CheckpointInfo, error) {
+func (ro *RedisOutput) readCheckpointByRedis(inputSide bool, redisCfg config.RedisConfig, runID string) (*checkpoint.CheckpointInfo, error) {
 	if len(redisCfg.Addresses) == 0 || ro.cfg.CheckpointName == "" || runID == "" || runID == "?" {
 		return nil, nil
 	}
-	cli, err := client.NewRedis(redisCfg)
+	cli, err := ro.getLagConn(inputSide, redisCfg)
 	if err != nil {
 		return nil, err
 	}
-	defer cli.Close()
 	cp, _, err := checkpoint.GetCheckpoint(cli, ro.cfg.CheckpointName, []string{runID})
 	return cp, err
 }
@@ -919,13 +928,15 @@ func (ro *RedisOutput) collectCheckpointLag() {
 		return
 	}
 
-	inCp, err := ro.readCheckpointByRedis(ro.cfg.InputCheckpointRedis, runID)
+	inCp, err := ro.readCheckpointByRedis(true, ro.cfg.InputCheckpointRedis, runID)
 	if err != nil {
+		ro.invalidateLagConn(true, err)
 		ro.setCheckpointLagInvalid(ErrorReasonReadInputCheckpointFail)
 		return
 	}
-	outCp, err := ro.readCheckpointByRedis(ro.cfg.CheckpointRedis, runID)
+	outCp, err := ro.readCheckpointByRedis(false, ro.cfg.CheckpointRedis, runID)
 	if err != nil {
+		ro.invalidateLagConn(false, err)
 		ro.setCheckpointLagInvalid(ErrorReasonReadOutputCheckpointFail)
 		return
 	}
@@ -972,6 +983,57 @@ func (ro *RedisOutput) collectCheckpointLag() {
 	checkpointLagValidGauge.Set(1, ro.cfg.InputName)
 	checkpointLagOffsetGauge.Set(float64(lagOffset), ro.cfg.InputName)
 	checkpointLagTimeGauge.Set(float64(lagTime), ro.cfg.InputName)
+}
+
+func (ro *RedisOutput) getLagConn(inputSide bool, redisCfg config.RedisConfig) (client.Redis, error) {
+	ro.lagConnGuard.Lock()
+	defer ro.lagConnGuard.Unlock()
+
+	if inputSide {
+		if ro.lagInConn != nil {
+			return ro.lagInConn, nil
+		}
+		conn, err := client.NewRedis(redisCfg)
+		if err != nil {
+			return nil, err
+		}
+		ro.lagInConn = conn
+		return conn, nil
+	}
+
+	if ro.lagOutConn != nil {
+		return ro.lagOutConn, nil
+	}
+	conn, err := client.NewRedis(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	ro.lagOutConn = conn
+	return conn, nil
+}
+
+func (ro *RedisOutput) invalidateLagConn(inputSide bool, cause error) {
+	ro.lagConnGuard.Lock()
+	var conn client.Redis
+	if inputSide {
+		conn = ro.lagInConn
+		ro.lagInConn = nil
+	} else {
+		conn = ro.lagOutConn
+		ro.lagOutConn = nil
+	}
+	ro.lagConnGuard.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+		if cause != nil {
+			side := "output"
+			if inputSide {
+				side = "input"
+			}
+			ro.logger.Warnf("checkpoint lag conn reset: side(%s), kind(%s), err(%v)", side, checkpointErrorKind(cause), cause)
+		}
+	}
 }
 
 func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err error) {

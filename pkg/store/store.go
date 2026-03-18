@@ -127,11 +127,45 @@ func (s *Storer) SetRunId(new string) error {
 	if new == "" || ExistReplId(s.baseDir, new) {
 		return s.newRunId(new)
 	}
-	err := changeReplId(s.baseDir, old, new)
+
+	// Windows may keep file handles alive briefly during runid switch.
+	// Release current dataset first, then rename with retry.
+	s.releaseDataSetForRunIDSwitch()
+	err := retryChangeReplId(s.baseDir, old, new)
 	if err != nil {
 		return err
 	}
 	return s.newRunId(new)
+}
+
+func (s *Storer) releaseDataSetForRunIDSwitch() {
+	s.dataSetMux.Lock()
+	defer s.dataSetMux.Unlock()
+	if s.dataSet != nil {
+		s.dataSet.Close()
+	}
+	s.dataSet = newDataSet(nil, nil)
+}
+
+func retryChangeReplId(baseDir, oldRunID, newRunID string) error {
+	const (
+		maxRetry = 20
+		backoff  = 200 * time.Millisecond
+	)
+	var lastErr error
+	for i := 0; i < maxRetry; i++ {
+		if err := changeReplId(baseDir, oldRunID, newRunID); err != nil {
+			lastErr = err
+			errS := strings.ToLower(err.Error())
+			if !strings.Contains(errS, "access is denied") && !strings.Contains(errS, "permission denied") {
+				return err
+			}
+			time.Sleep(backoff)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("change runid dir failed after retries: old(%s), new(%s), err(%w)", oldRunID, newRunID, lastErr)
 }
 
 func (s *Storer) DelRunId(id string) error {
