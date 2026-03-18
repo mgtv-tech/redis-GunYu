@@ -617,7 +617,10 @@ func (s *Storer) gcDataSet() {
 	if s.gcProtectRunID == s.runId {
 		protectOffset = s.gcProtectOffset
 	}
-	const minKeepAofSegments = 2
+	// Keep a slightly larger default retention window to reduce
+	// rebuild/fullsync risk under bursty traffic without introducing
+	// extra config complexity.
+	const minKeepAofSegments = 4
 	s.getDataSet().gcLogs(s.dir, s.maxSize, protectOffset, minKeepAofSegments)
 }
 

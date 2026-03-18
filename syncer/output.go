@@ -170,6 +170,13 @@ var (
 		Name:      "checkpoint_lag_idle_seconds",
 		Labels:    []string{"input"},
 	})
+	checkpointFilterGuardHitCounter = metric.NewCounterVec(metric.CounterVecOpts{
+		Namespace: config.AppName,
+		Subsystem: "output",
+		Name:      "checkpoint_filter_guard_hit_total",
+		Labels:    []string{"input", "cmd", "reason"},
+	})
+	checkpointMarkerFilterCache sync.Map // map[string]*filter.RedisKeyFilter
 )
 
 func (ro *RedisOutput) Close() {
@@ -1248,10 +1255,16 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				continue
 			}
 			if inTransaction {
-				// 检查事务中的命令是否包含 CHECKPOINT 关键字
-				if containsFilterCheckpointKey(argv, config.FilterCheckpointKey) {
+				// For script/function commands, only inspect declared key args to avoid
+				// false positives from business payload text.
+				hit, reason := shouldFilterCheckpointCommandByKeys(sCmd, argv, config.FilterCheckpointKey)
+				if hit {
 					shouldIgnore = true
 					filterCnt++
+					checkpointFilterGuardHitCounter.Inc(ro.cfg.InputName, sCmd, reason)
+					// Keep legacy "filterCmd" stats intuitive: transaction guard hits
+					// also count as filtered commands in periodic stats output.
+					ro.filterCounterAdd(1)
 					continue
 				}
 				// 过滤filter的命令
@@ -1277,16 +1290,17 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				})
 				continue
 			}
-			// Some checkpoint writes (for example Lua/EVAL based writes) are not
-			// recognized by FilterCmdKey command key positions; apply a raw payload
-			// guard to prevent filter checkpoint commands from loopback replay.
-			if config.FilterCheckpointKey != "" &&
-				containsFilterCheckpointKey(argv, config.FilterCheckpointKey) {
+			// Some script/function commands (for example EVAL/FCALL) are not
+			// covered by static FilterCmdKey key positions; inspect only their key
+			// argument segment to guard against checkpoint loopback replay.
+			hit, reason := shouldFilterCheckpointCommandByKeys(sCmd, argv, config.FilterCheckpointKey)
+			if hit {
 				filterCnt++
 				if filterCnt > 50000 {
 					ro.logger.Infof("Contains Filter Checkpoint Key: %s, ignore cmd(%s)...", config.FilterCheckpointKey, sCmd)
 					filterCnt = 0
 				}
+				checkpointFilterGuardHitCounter.Inc(ro.cfg.InputName, sCmd, reason)
 				ro.filterCounterAdd(1)
 				continue
 			}
@@ -1932,20 +1946,122 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	}
 }
 
-func containsFilterCheckpointKey(argv [][]byte, marker string) bool {
-	if marker == "" || len(argv) == 0 {
+func shouldFilterCheckpointCommandByKeys(cmd string, argv [][]byte, marker string) (bool, string) {
+	if len(argv) == 0 {
+		return false, ""
+	}
+	prefixes := checkpointGuardPrefixes(marker)
+	if len(prefixes) == 0 {
+		return false, ""
+	}
+	// 1) Script/function commands: parse only declared key segment.
+	switch strings.ToLower(cmd) {
+	case "eval", "evalsha", "fcall", "fcall_ro":
+		if containsCheckpointPrefixInDeclaredKeys(argv, 1, prefixes) {
+			return true, "script_keys"
+		}
+		return false, ""
+	}
+
+	// 2) Regular commands: detect checkpoint marker only on command key positions.
+	// Reuse filter command key-position table to avoid payload substring matching.
+	for _, prefix := range prefixes {
+		markerFilter := getCheckpointMarkerFilter(prefix)
+		newArgv, reject := markerFilter.FilterCmdKey(cmd, argv)
+		if reject {
+			return true, "cmd_keys"
+		}
+		if len(newArgv) != len(argv) {
+			return true, "cmd_keys"
+		}
+	}
+	return false, ""
+}
+
+func getCheckpointMarkerFilter(marker string) *filter.RedisKeyFilter {
+	if v, ok := checkpointMarkerFilterCache.Load(marker); ok {
+		return v.(*filter.RedisKeyFilter)
+	}
+	f := &filter.RedisKeyFilter{}
+	f.InsertPrefixKeyBlackList([]string{marker})
+	actual, _ := checkpointMarkerFilterCache.LoadOrStore(marker, f)
+	return actual.(*filter.RedisKeyFilter)
+}
+
+func containsCheckpointPrefixInDeclaredKeys(argv [][]byte, keyCountPos int, prefixes []string) bool {
+	if len(prefixes) == 0 {
 		return false
 	}
-	key := []byte(marker)
-	for _, arg := range argv {
+	if len(argv) <= keyCountPos {
+		return false
+	}
+	n, err := strconv.Atoi(util.BytesToString(argv[keyCountPos]))
+	if err != nil || n <= 0 {
+		return false
+	}
+	firstKey := keyCountPos + 1
+	lastKey := firstKey + n
+	if firstKey >= len(argv) || lastKey > len(argv) {
+		return false
+	}
+
+	prefixBytes := make([][]byte, 0, len(prefixes))
+	for _, p := range prefixes {
+		if p == "" {
+			continue
+		}
+		prefixBytes = append(prefixBytes, []byte(p))
+	}
+	if len(prefixBytes) == 0 {
+		return false
+	}
+	for _, arg := range argv[firstKey:lastKey] {
 		if len(arg) == 0 {
 			continue
 		}
-		if bytes.Contains(arg, key) {
-			return true
+		for _, p := range prefixBytes {
+			if bytes.HasPrefix(arg, p) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func checkpointGuardPrefixes(explicitMarker string) []string {
+	seen := map[string]struct{}{}
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+	}
+
+	// Explicit and global markers.
+	add(explicitMarker)
+	add(config.FilterCheckpointKey)
+	add(config.CheckpointKey)
+
+	// Phase-2 checkpoint internal keys.
+	add("cpmap:{")
+	add("cpent:{")
+	add("cpepoch:{")
+
+	// Current sync config markers.
+	syncCfg := config.GetSyncerConfig()
+	if syncCfg != nil && syncCfg.Input != nil {
+		add(syncCfg.Input.SyncCheckPointKey)
+		add(syncCfg.Input.FilterCheckPointKey)
+	}
+
+	ret := make([]string, 0, len(seen))
+	for p := range seen {
+		ret = append(ret, p)
+	}
+	return ret
 }
 
 func (ro *RedisOutput) selectDB(currentDB int, originDB int) (int, bool) {

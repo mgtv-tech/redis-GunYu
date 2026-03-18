@@ -33,7 +33,7 @@ func respArray(args ...string) string {
 	return buf.String()
 }
 
-func TestParseAofCommand_DropWholeTransactionOnFilterCheckpoint(t *testing.T) {
+func TestParseAofCommand_KeepTransactionWhenMarkerOnlyInValue(t *testing.T) {
 	oldMarker := config.FilterCheckpointKey
 	config.FilterCheckpointKey = "redis-GunYu-Filter-Checkpoint"
 	t.Cleanup(func() {
@@ -44,10 +44,40 @@ func TestParseAofCommand_DropWholeTransactionOnFilterCheckpoint(t *testing.T) {
 	wait := usync.NewWaitCloser(nil)
 	defer wait.Close(nil)
 
-	// MULTI; SET k1 <marker>; SET k2 v2; EXEC
+	// MULTI; SET k1 <marker in value>; SET k2 v2; EXEC
+	// Marker only appears in payload value, should not be treated as checkpoint key.
 	payload := bytes.NewBuffer(nil)
 	payload.WriteString(respArray("MULTI"))
 	payload.WriteString(respArray("SET", "k1", config.FilterCheckpointKey))
+	payload.WriteString(respArray("SET", "k2", "v2"))
+	payload.WriteString(respArray("EXEC"))
+
+	sendBuf := make(chan cmdExecution, 8)
+	err := ro.parseAofCommand(wait, bufio.NewReader(payload), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sendBuf) != 4 {
+		t.Fatalf("expected whole transaction to be kept, got %d cmds", len(sendBuf))
+	}
+}
+
+func TestParseAofCommand_DropWholeTransactionOnFilterCheckpointKey(t *testing.T) {
+	oldMarker := config.FilterCheckpointKey
+	config.FilterCheckpointKey = "redis-GunYu-Filter-Checkpoint"
+	t.Cleanup(func() {
+		config.FilterCheckpointKey = oldMarker
+	})
+
+	ro := newTestOutput()
+	wait := usync.NewWaitCloser(nil)
+	defer wait.Close(nil)
+
+	// MULTI; SET <marker:key> v1; SET k2 v2; EXEC
+	payload := bytes.NewBuffer(nil)
+	payload.WriteString(respArray("MULTI"))
+	payload.WriteString(respArray("SET", config.FilterCheckpointKey+":k1", "v1"))
 	payload.WriteString(respArray("SET", "k2", "v2"))
 	payload.WriteString(respArray("EXEC"))
 
@@ -127,26 +157,97 @@ func TestParseAofCommand_DropEvalContainingFilterCheckpoint(t *testing.T) {
 	}
 }
 
-func TestContainsFilterCheckpointKey(t *testing.T) {
+func TestParseAofCommand_DropEvalContainingPhase2CheckpointKey(t *testing.T) {
+	oldMarker := config.FilterCheckpointKey
+	config.FilterCheckpointKey = "redis-GunYu-Filter-Checkpoint"
+	t.Cleanup(func() {
+		config.FilterCheckpointKey = oldMarker
+	})
+
+	ro := newTestOutput()
+	wait := usync.NewWaitCloser(nil)
+	defer wait.Close(nil)
+
+	payload := bytes.NewBuffer(nil)
+	// Even if marker differs, phase-2 checkpoint key prefixes should be guarded.
+	payload.WriteString(respArray("EVAL", "return redis.call('hset', KEYS[1], ARGV[1], ARGV[2])", "1", "cpent:{redis-GunYu-Checkpoint-ClusterB-slot-0_3276}", "k", "v1"))
+
+	sendBuf := make(chan cmdExecution, 8)
+	err := ro.parseAofCommand(wait, bufio.NewReader(payload), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sendBuf) != 0 {
+		t.Fatalf("expected phase-2 checkpoint eval command to be dropped, got %d cmds", len(sendBuf))
+	}
+}
+
+func TestParseAofCommand_KeepEvalWhenMarkerOnlyInScriptPayload(t *testing.T) {
+	oldMarker := config.FilterCheckpointKey
+	config.FilterCheckpointKey = "redis-GunYu-Filter-Checkpoint"
+	t.Cleanup(func() {
+		config.FilterCheckpointKey = oldMarker
+	})
+
+	ro := newTestOutput()
+	wait := usync.NewWaitCloser(nil)
+	defer wait.Close(nil)
+
+	payload := bytes.NewBuffer(nil)
+	// Marker appears in Lua script text, not in KEYS segment.
+	payload.WriteString(respArray(
+		"EVAL",
+		"return redis.call('set', 'redis-GunYu-Filter-Checkpoint:in-script', ARGV[1])",
+		"1",
+		"biz:key",
+		"v1",
+	))
+
+	sendBuf := make(chan cmdExecution, 8)
+	err := ro.parseAofCommand(wait, bufio.NewReader(payload), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sendBuf) != 1 {
+		t.Fatalf("expected eval command to be kept, got %d cmds", len(sendBuf))
+	}
+}
+
+func TestShouldFilterCheckpointCommandByKeys(t *testing.T) {
 	marker := "redis-GunYu-Filter-Checkpoint"
-	argv := [][]byte{
-		[]byte("EVAL"),
+	evalArgv := [][]byte{
 		[]byte("return redis.call('set', KEYS[1], ARGV[1])"),
 		[]byte("1"),
 		[]byte(marker + ":k"),
 		[]byte("v1"),
 	}
-	if !containsFilterCheckpointKey(argv, marker) {
+	hit, reason := shouldFilterCheckpointCommandByKeys("eval", evalArgv, marker)
+	if !hit {
 		t.Fatalf("expected marker to be detected")
 	}
-	if containsFilterCheckpointKey(argv, "other-marker") {
+	if reason != "script_keys" {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+	if hit, _ := shouldFilterCheckpointCommandByKeys("eval", evalArgv, "other-marker"); hit {
 		t.Fatalf("did not expect other marker to be detected")
 	}
-	if containsFilterCheckpointKey(nil, marker) {
+	if hit, _ := shouldFilterCheckpointCommandByKeys("eval", nil, marker); hit {
 		t.Fatalf("nil argv should not match")
 	}
-	if containsFilterCheckpointKey(argv, "") {
+	if hit, _ := shouldFilterCheckpointCommandByKeys("eval", evalArgv, ""); hit {
 		t.Fatalf("empty marker should not match")
+	}
+	hit, reason = shouldFilterCheckpointCommandByKeys("set", [][]byte{[]byte(marker + ":k"), []byte("v")}, marker)
+	if !hit {
+		t.Fatalf("expected non-script command key marker to be detected")
+	}
+	if reason != "cmd_keys" {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+	if hit, _ := shouldFilterCheckpointCommandByKeys("set", [][]byte{[]byte("k"), []byte(marker)}, marker); hit {
+		t.Fatalf("marker in value should not be treated as key match")
 	}
 }
 
