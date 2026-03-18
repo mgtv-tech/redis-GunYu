@@ -267,33 +267,56 @@ func UpdateCheckpoint(outCli client.Redis, localCheckpoint string, ids []string)
 			}
 		}
 
-		oldId := cpKv.RunId
+		oldId := cpRunId
+		if oldId == "" || oldId == "?" {
+			oldId = cpKv.RunId
+		}
 		cpKv.Key = localCheckpoint
 		cpKv.RunId = id1
-		err = SetCheckpoint(outCli, cpKv)
+		err = commitCheckpointSwitchAtomic(outCli, cpKv, oldId, cpName)
 		if err != nil {
 			return err
-		}
-		err = SetCheckpointHash(outCli, id1, localCheckpoint) // runId : checkpointName
-		if err != nil {
-			return err
-		}
-
-		if len(oldId) > 0 && oldId != "?" {
-			// delete old checkpoint
-			err = DelCheckpoint(outCli, cpName, oldId)
-			if err != nil {
-				return err
-			}
-			if oldId != id1 { // delete old runid from checkpoint hash
-				err = DelCheckpointHash(outCli, oldId)
-				if err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
+}
+
+func commitCheckpointSwitchAtomic(cli client.Redis, cp *CheckpointInfo, oldRunID, oldCPName string) error {
+	// Cluster-safe path:
+	// Redis cluster Lua requires all KEYS in the same hash slot.
+	// checkpoint_hash key and checkpoint entity key are currently in different slots,
+	// so we keep single-key atomic hash switch + entity write/cleanup steps.
+	if err := SetCheckpoint(cli, cp); err != nil {
+		return err
+	}
+	if err := updateCheckpointHashAtomic(cli, cp.RunId, cp.Key, oldRunID); err != nil {
+		return err
+	}
+	if len(oldRunID) > 0 && oldRunID != "?" {
+		if err := DelCheckpoint(cli, oldCPName, oldRunID); err != nil {
+			log.Warnf("best-effort cleanup old checkpoint failed: cpName(%s), runId(%s), err(%v)", oldCPName, oldRunID, err)
+		}
+	}
+	return nil
+}
+
+func updateCheckpointHashAtomic(cli client.Redis, newRunID, cpName, oldRunID string) error {
+	// config.CheckpointKeyHashKey must be stored in DB 0
+	if err := redis.SelectDB(cli, 0); err != nil {
+		return err
+	}
+	_, err := cli.Do("EVAL", `
+local key = KEYS[1]
+local newRunID = ARGV[1]
+local cpName = ARGV[2]
+local oldRunID = ARGV[3]
+redis.call('HSET', key, newRunID, cpName)
+if oldRunID ~= '' and oldRunID ~= '?' and oldRunID ~= newRunID then
+  redis.call('HDEL', key, oldRunID)
+end
+return 1
+`, []byte("1"), config.CheckpointKeyHashKey, newRunID, cpName, oldRunID)
+	return err
 }
 
 func DelStaleCheckpoint(cli client.Redis, checkpointName string, runId string, beforeNow time.Duration, exceptNewest bool) (int, int, error) {

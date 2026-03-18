@@ -779,7 +779,7 @@ func (sc *SyncerCmd) markRunIDConverging(input, expected, active string) (since 
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
 	st, ok := sc.runidConverge[input]
-	if !ok || st.expected != expected || st.active != active || st.since.IsZero() {
+	if !ok || st.since.IsZero() {
 		st = runIDConvergeState{
 			expected: expected,
 			active:   active,
@@ -787,6 +787,14 @@ func (sc *SyncerCmd) markRunIDConverging(input, expected, active string) (since 
 		}
 		sc.runidConverge[input] = st
 		return st.since, 0
+	}
+	// Keep convergence timer monotonic for this input. Otherwise expected/active
+	// pair flapping (e.g. selected source node changes) can keep resetting timer
+	// and hide long-lived T1 windows.
+	if st.expected != expected || st.active != active {
+		st.expected = expected
+		st.active = active
+		sc.runidConverge[input] = st
 	}
 	return st.since, now.Sub(st.since)
 }

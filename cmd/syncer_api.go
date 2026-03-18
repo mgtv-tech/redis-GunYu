@@ -178,8 +178,8 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		ActiveRunID    string `json:"active_runid,omitempty"`
 		ExpectedRunID  string `json:"expected_runid,omitempty"`
 		RunIDStage     string `json:"runid_stage,omitempty"`
-		RunIDElapsedMs int64  `json:"runid_elapsed_ms,omitempty"`
-		RunIDDeadlineMs int64 `json:"runid_deadline_ms,omitempty"`
+		RunIDElapsedMs int64  `json:"runid_elapsed_ms"`
+		RunIDDeadlineMs int64 `json:"runid_deadline_ms"`
 	}
 	syncerGroup.GET("status", func(ctx *gin.Context) {
 		sys := []syncerStatus{}
@@ -207,13 +207,24 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 			if len(runIDs) > 0 {
 				st.ExpectedRunID = runIDs[0]
 			}
-			if st.ExpectedRunID != "" && st.ActiveRunID != "" && st.ExpectedRunID == st.ActiveRunID {
-				st.RunIDStage = "T2"
-			} else if st.ExpectedRunID != "" && st.ActiveRunID != "" {
-				st.RunIDStage = "T1"
-				if cst, ok := runidStates[key]; ok && !cst.since.IsZero() {
-					st.RunIDElapsedMs = time.Since(cst.since).Milliseconds()
+			if cst, ok := runidStates[key]; ok && !cst.since.IsZero() {
+				// Prefer tracked pair in convergence window to avoid status flapping
+				// when selected source nodes change.
+				if cst.expected != "" {
+					st.ExpectedRunID = cst.expected
 				}
+				if st.ActiveRunID == "" && cst.active != "" {
+					st.ActiveRunID = cst.active
+				}
+				st.RunIDElapsedMs = time.Since(cst.since).Milliseconds()
+				if st.ExpectedRunID != "" && st.ActiveRunID != "" && st.ExpectedRunID == st.ActiveRunID {
+					st.RunIDStage = "T2"
+				} else if st.ExpectedRunID != "" && st.ActiveRunID != "" {
+					st.RunIDStage = "T1"
+				}
+			} else if st.ExpectedRunID != "" && st.ActiveRunID != "" && st.ExpectedRunID == st.ActiveRunID {
+				// No convergence tracking state and runids already aligned.
+				st.RunIDStage = "T2"
 			}
 			st.RunIDDeadlineMs = runidDeadlineMs
 			if val.sync.IsLeader() {
