@@ -328,7 +328,7 @@ func (ds *dataSet) CloseAofWriter() {
 	aof := ds.aofSegs
 	ds.mux.Unlock()
 	for _, a := range aof {
-		a.Close()
+		a.CloseWriter()
 	}
 }
 

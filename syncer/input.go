@@ -756,6 +756,7 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 			// Persist input checkpoint to meta redis for input restart/reconnect.
 			if ackOffset > 0 {
 				runID := ri.channel.RunId()
+				persisted := false
 				if err := ri.setCheckpointOffset(wait.Context(), runID, ackOffset); err != nil {
 					now := time.Now()
 					if metaFailStreak == 0 {
@@ -778,8 +779,14 @@ func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWrite
 						runID, ackOffset, metaFailStreak)
 					metaFailStreak = 0
 					metaFirstFail = time.Time{}
+					persisted = true
+				} else {
+					persisted = true
 				}
-				ri.channel.SetGCProtectOffset(runID, ackOffset)
+				// Only advance GC watermark when checkpoint persistence succeeds.
+				if persisted {
+					ri.channel.SetGCProtectOffset(runID, ackOffset)
+				}
 			}
 		}
 	}, func(i interface{}) { wait.Close(fmt.Errorf("panic : %v", i)) })

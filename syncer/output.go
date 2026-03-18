@@ -1133,7 +1133,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		select {
 		case sendBuf <- cmdExecution{
 			Cmd:    "select",
-			Args:   []interface{}{[]byte{byte(ro.startDbId + '0')}},
+			Args:   []interface{}{[]byte(strconv.Itoa(ro.startDbId))},
 			Offset: startOffset,
 			Db:     ro.startDbId,
 		}:
@@ -1310,7 +1310,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				select {
 				case sendBuf <- cmdExecution{
 					Cmd:    "select",
-					Args:   []interface{}{[]byte{byte(currentDB + '0')}},
+					Args:   []interface{}{[]byte(strconv.Itoa(currentDB))},
 					Offset: startOffset + incrOffset,
 					Db:     currentDB,
 				}:

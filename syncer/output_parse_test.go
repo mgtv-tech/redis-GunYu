@@ -149,3 +149,41 @@ func TestContainsFilterCheckpointKey(t *testing.T) {
 		t.Fatalf("empty marker should not match")
 	}
 }
+
+func TestParseAofCommand_SelectEncodingForDoubleDigitDB(t *testing.T) {
+	ro := newTestOutput()
+	ro.startDbId = 10
+	ro.cfg.TargetDb = -1
+	wait := usync.NewWaitCloser(nil)
+	defer wait.Close(nil)
+
+	payload := bytes.NewBuffer(nil)
+	payload.WriteString(respArray("SELECT", "15"))
+	payload.WriteString(respArray("SET", "k", "v"))
+
+	sendBuf := make(chan cmdExecution, 8)
+	err := ro.parseAofCommand(wait, bufio.NewReader(payload), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sendBuf) < 2 {
+		t.Fatalf("expected at least 2 commands, got %d", len(sendBuf))
+	}
+
+	startSelect := <-sendBuf
+	if startSelect.Cmd != "select" {
+		t.Fatalf("unexpected first cmd: %s", startSelect.Cmd)
+	}
+	if got, ok := startSelect.Args[0].([]byte); !ok || string(got) != "10" {
+		t.Fatalf("unexpected start select arg: %v", startSelect.Args[0])
+	}
+
+	selectCmd := <-sendBuf
+	if selectCmd.Cmd != "select" {
+		t.Fatalf("unexpected second cmd: %s", selectCmd.Cmd)
+	}
+	if got, ok := selectCmd.Args[0].([]byte); !ok || string(got) != "15" {
+		t.Fatalf("unexpected select arg: %v", selectCmd.Args[0])
+	}
+}
