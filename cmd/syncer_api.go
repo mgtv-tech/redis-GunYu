@@ -171,15 +171,15 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 
 	syncerGroup := engine.Group("/syncer/")
 	type syncerStatus struct {
-		Input          string `json:"input"`
-		Role           string `json:"role"`
-		Transaction    bool   `json:"transaction"`
-		State          string `json:"state"`
-		ActiveRunID    string `json:"active_runid,omitempty"`
-		ExpectedRunID  string `json:"expected_runid,omitempty"`
-		RunIDStage     string `json:"runid_stage,omitempty"`
-		RunIDElapsedMs int64  `json:"runid_elapsed_ms"`
-		RunIDDeadlineMs int64 `json:"runid_deadline_ms"`
+		Input           string `json:"input"`
+		Role            string `json:"role"`
+		Transaction     bool   `json:"transaction"`
+		State           string `json:"state"`
+		ActiveRunID     string `json:"active_runid,omitempty"`
+		ExpectedRunID   string `json:"expected_runid,omitempty"`
+		RunIDStage      string `json:"runid_stage,omitempty"`
+		RunIDElapsedMs  int64  `json:"runid_elapsed_ms"`
+		RunIDDeadlineMs int64  `json:"runid_deadline_ms"`
 	}
 	syncerGroup.GET("status", func(ctx *gin.Context) {
 		sys := []syncerStatus{}
@@ -261,6 +261,26 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 		} else if enable == "no" || enable == "false" || enable == "0" {
 			cfg.Input.PrintCmdToTarget = false
 		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"printCmdToTarget": cfg.Input.PrintCmdToTarget,
+			"enable":           enable,
+		})
+	})
+
+	syncerGroup.POST("skip-reply-rdb", func(ctx *gin.Context) {
+		// Runtime switch for bidirectional sync: skip or enable RDB replay.
+		cfg := config.GetSyncerConfig()
+		enable := ctx.Query("enable")
+		switch enable {
+		case "yes", "true", "1":
+			cfg.Input.SkipReplyRdb = true
+		case "no", "false", "0":
+			cfg.Input.SkipReplyRdb = false
+		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"skipReplyRdb": cfg.Input.SkipReplyRdb,
+			"enable":       enable,
+		})
 	})
 
 	syncerGroup.POST("restart", func(ctx *gin.Context) {
@@ -429,4 +449,3 @@ func (sc *SyncerCmd) allInputs(ctx context.Context) []string {
 	}
 	return addrs
 }
-

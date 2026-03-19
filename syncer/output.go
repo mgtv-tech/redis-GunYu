@@ -603,7 +603,7 @@ func (ro *RedisOutput) isSyncCheckpointKey(key string) bool {
 func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
 	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.ReplayRdbParallel)
 	// 跳过rdb回放，直接将checkpoint写入目标端
-	if config.SkipReplyRdb {
+	if config.GetSyncerConfig().Input.SkipReplyRdb {
 		ro.logger.Infof("Skipping RDB replay for runId: %s", reader.RunId())
 		return ro.setCheckpoint(pctx, reader.RunId(), reader.Left(), config.Version)
 	}
