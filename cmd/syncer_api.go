@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/audit"
 	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
@@ -281,6 +282,105 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 			"skipReplyRdb": cfg.Input.SkipReplyRdb,
 			"enable":       enable,
 		})
+	})
+
+	// Runtime enable/disable ClickHouse audit (same semantics as audit.enabled in config).
+	// Enable may lazily start the async writer if the process started with audit off.
+	effectiveEnableRecordFiltered := func(ac *config.AuditConfig) bool {
+		if ac == nil || ac.EnableRecordFiltered == nil {
+			return true
+		}
+		return *ac.EnableRecordFiltered
+	}
+
+	syncerGroup.GET("audit", func(ctx *gin.Context) {
+		cfg := config.GetSyncerConfig()
+		if cfg.Audit == nil {
+			ctx.JSON(http.StatusOK, gin.H{
+				"auditEnabled":           false,
+				"enableRecordFiltered":   true,
+				"enqueueAllowed":         audit.EnqueueAllowed(),
+			})
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"auditEnabled":           cfg.Audit.Enabled,
+			"enableRecordFiltered":   effectiveEnableRecordFiltered(cfg.Audit),
+			"enqueueAllowed":         audit.EnqueueAllowed(),
+		})
+	})
+
+	// POST /syncer/audit: single runtime API. Pass one or both query params:
+	//   enable=yes|no              -> audit.enabled + ClickHouse 投递门闸
+	//   enableRecordFiltered=yes|no -> 是否写 sync_cmd_filtered（不影响 sent 表）
+	syncerGroup.POST("audit", func(ctx *gin.Context) {
+		cfg := config.GetSyncerConfig()
+		if cfg.Audit == nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "audit config is nil"})
+			return
+		}
+		enableStr := ctx.Query("enable")
+		filtStr := ctx.Query("enableRecordFiltered")
+		if enableStr == "" && filtStr == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "specify enable=yes|no and/or enableRecordFiltered=yes|no",
+			})
+			return
+		}
+
+		if enableStr != "" {
+			switch enableStr {
+			case "yes", "true", "1":
+				cfg.Audit.Enabled = true
+				if err := cfg.Audit.PrepareRuntime(); err != nil {
+					cfg.Audit.Enabled = false
+					ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+			case "no", "false", "0":
+				cfg.Audit.Enabled = false
+			default:
+				ctx.JSON(http.StatusBadRequest, gin.H{
+					"error": "invalid enable=; use yes|no (or true/false, 1/0)",
+				})
+				return
+			}
+			if err := audit.ApplyRuntimeConfig(cfg.Audit, sc.logger); err != nil {
+				ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+
+		if filtStr != "" {
+			var v bool
+			switch filtStr {
+			case "yes", "true", "1":
+				v = true
+			case "no", "false", "0":
+				v = false
+			default:
+				ctx.JSON(http.StatusBadRequest, gin.H{
+					"error": "invalid enableRecordFiltered=; use yes|no (or true/false, 1/0)",
+				})
+				return
+			}
+			p := new(bool)
+			*p = v
+			cfg.Audit.EnableRecordFiltered = p
+		}
+
+		out := gin.H{
+			"auditEnabled":         cfg.Audit.Enabled,
+			"enableRecordFiltered": effectiveEnableRecordFiltered(cfg.Audit),
+			"enqueueAllowed":       audit.EnqueueAllowed(),
+		}
+		if enableStr != "" {
+			out["enable"] = enableStr
+		}
+		if filtStr != "" {
+			out["enableRecordFilteredParam"] = filtStr
+		}
+		ctx.JSON(http.StatusOK, out)
 	})
 
 	syncerGroup.POST("restart", func(ctx *gin.Context) {

@@ -818,6 +818,31 @@ groups:
 
 阶段7详细规划已拆分至独立文档：`management_platform/plan/plan_web.txt`。
 
+#### 任务7.x：GunYu 状态变更事件主通道上报（低侵入）
+- **目标**：源端/目标端发生切换时，由 GunYu 主动推送事件到管理平台，避免管理平台定时扫描。
+- **范围**：仅实现“主通道事件推送”，不实现兜底对账/扫描通道。
+- **侵入控制**：在 GunYu 内增加轻量 `EventReporter` 抽象；默认 noop，不影响现有同步链路。
+- **开关控制**：新增配置参数控制是否开启上报（如 `event_report.enabled`）；关闭时不发送任何事件。
+- **上报字段（最小集）**：`task_id`、`instance_id`、`event_type`、`old_endpoint`、`new_endpoint`、`detected_at`、`event_id`（幂等去重）。
+- **平台接入**：管理平台提供事件接收接口（如 `/api/v1/events`），用于更新任务拓扑状态与审计。
+- **非目标（7A/当前阶段）**：不做管理平台兜底扫描、不做低频对账补偿。
+- **子任务拆分（可执行）**：
+  - **后端接口子任务（管理平台）**
+    - 新增事件接收接口：`POST /api/v1/events`（仅接收拓扑切换类事件）。
+    - 入参校验与幂等：基于 `event_id` 去重，重复请求返回成功且标记 duplicate。
+    - 落库与审计：写入事件表（或扩展现有审计/事件表），并关联 `task_id`、`instance_id`、`request_id`。
+    - 错误语义：参数错误/幂等冲突/内部错误分级返回，便于 GunYu 重试策略判定。
+  - **GunYu 埋点子任务（低侵入）**
+    - 在源端/目标端切换确认点触发事件构造（包含 old/new endpoint 与 detected_at）。
+    - 增加 `EventReporter` 抽象：默认 noop，实现 `HTTPReporter`（异步发送 + 超时 + 有限重试）。
+    - 增加配置项：`event_report.enabled`、`event_report.endpoint`、`event_report.timeout_ms`、`event_report.retry`。
+    - 开关策略：`enabled=false` 时不初始化 reporter、不发送上报、无额外运行开销。
+  - **联调验收子任务**
+    - 用例1：源端切换触发上报，管理平台可查到事件，任务拓扑状态更新。
+    - 用例2：目标端切换触发上报，事件不丢失，重复上报可被 `event_id` 幂等吸收。
+    - 用例3：关闭 `event_report.enabled` 后不产生上报，现有同步链路与性能基线不退化。
+    - 用例4：接口异常时 GunYu 仅记录告警与重试，不影响主同步流程。
+
 **索引说明**：
 - 目标与范围：见 `management_platform/plan/plan_web.txt` 的“阶段7目标与边界”
 - 分期里程碑（7A/7B/7C）：见 `management_platform/plan/plan_web.txt` 的“阶段7分期里程碑”

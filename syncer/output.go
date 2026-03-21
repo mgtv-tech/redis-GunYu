@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdnet "net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/audit"
 	pkgCommon "github.com/mgtv-tech/redis-GunYu/pkg/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/filter"
 	"github.com/mgtv-tech/redis-GunYu/pkg/io/net"
@@ -70,6 +73,10 @@ type RedisOutput struct {
 	lagLastInOff  int64
 	lagLastOutOff int64
 	lagLastMoveAt time.Time
+
+	auditWriter audit.Writer
+	auditNode   string
+	auditCfg    *config.AuditConfig // same pointer as config.GetSyncerConfig().Audit; Enabled may change at runtime (HTTP API).
 }
 
 var (
@@ -315,8 +322,69 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	if len(dbBlackList) > 0 {
 		ro.outFilter.InsertDbBlackList(dbBlackList)
 	}
+	if sc := config.GetSyncerConfig(); sc != nil {
+		ro.auditCfg = sc.Audit
+	}
+	ro.auditWriter = audit.InitGlobal(ro.auditCfg, ro.logger)
+	ro.auditNode = buildAuditNode(resolveAuditNodeHost())
 
 	return ro
+}
+
+// resolveAuditNodeHost prefers the first non-loopback IPv4 for ClickHouse node attribution;
+// falls back to hostname, then "unknown".
+func resolveAuditNodeHost() string {
+	if ip := firstNonLoopbackIPv4(); ip != "" {
+		return ip
+	}
+	hn, _ := os.Hostname()
+	if s := strings.TrimSpace(hn); s != "" {
+		return s
+	}
+	return "unknown"
+}
+
+func firstNonLoopbackIPv4() string {
+	addrs, err := stdnet.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*stdnet.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+		ip := ipNet.IP.To4()
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			continue
+		}
+		return ip.String()
+	}
+	return ""
+}
+
+func buildAuditNode(hostname string) string {
+	node := strings.TrimSpace(hostname)
+	if node == "" {
+		node = "unknown"
+	}
+	cfg := config.GetSyncerConfig()
+	if cfg == nil {
+		return node
+	}
+	port := cfg.Server.ListenPort
+	if port <= 0 {
+		ls := strings.TrimSpace(cfg.Server.Listen)
+		if idx := strings.LastIndex(ls, ":"); idx >= 0 && idx+1 < len(ls) {
+			if p, err := strconv.Atoi(strings.TrimSpace(ls[idx+1:])); err == nil && p > 0 {
+				port = p
+			}
+		}
+	}
+	if port <= 0 {
+		return node
+	}
+	return fmt.Sprintf("%s:%d", node, port)
 }
 
 func (ro *RedisOutput) StartLeaderEpoch(ctx context.Context) error {
@@ -1169,6 +1237,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 
 	inTransaction := false                         // 标记是否在处理MULTI-EXEC块
 	shouldIgnore := false                          // 标记事务是否应整包丢弃（用于回环过滤）
+	txnIgnoreReason := ""                          // 记录事务被整包丢弃的原因
 	transactionCommands := make([]cmdExecution, 0) // 存储事务中的命令
 	filterCnt := 0                                 // 当filter的checkpoint达到50000时，打印一次日志,减少日志输出
 
@@ -1206,6 +1275,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			if strings.EqualFold(sCmd, "multi") {
 				inTransaction = true
 				shouldIgnore = false
+				txnIgnoreReason = ""
 				transactionCommands = transactionCommands[:0] // 清空之前的事务命令
 				continue
 			} else if strings.EqualFold(sCmd, "exec") {
@@ -1215,7 +1285,15 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 				inTransaction = false
 				if shouldIgnore {
+					// For txn_guard drops, keep only business-command evidence.
+					// The checkpoint/internal guard command itself is intentionally excluded.
+					if ro.auditFilteredEnabled() && shouldRecordFilteredAudit(ro.auditCfg, txnIgnoreReason, "txn_guard") {
+						for _, cmd := range transactionCommands {
+							ro.auditFiltered(cmd.Cmd, cmdExecArgsToByteArgs(cmd.Args), txnIgnoreReason, "txn_guard")
+						}
+					}
 					transactionCommands = transactionCommands[:0] // 命中过滤标记则整包事务丢弃
+					txnIgnoreReason = ""
 					continue
 				}
 
@@ -1260,6 +1338,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				hit, reason := shouldFilterCheckpointCommandByKeys(sCmd, argv, config.FilterCheckpointKey)
 				if hit {
 					shouldIgnore = true
+					txnIgnoreReason = reason
 					filterCnt++
 					checkpointFilterGuardHitCounter.Inc(ro.cfg.InputName, sCmd, reason)
 					// Keep legacy "filterCmd" stats intuitive: transaction guard hits
@@ -1270,12 +1349,14 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				// 过滤filter的命令
 				if ro.outFilter.FilterCmd(sCmd) {
 					ro.filterCounterAdd(1)
+					ro.auditFiltered(sCmd, argv, "cmd_blacklist", "parse_aof")
 					continue
 				}
 				// 过滤filter中的key
 				newArgv, reject = ro.outFilter.FilterCmdKey(sCmd, argv)
 				if reject {
 					ro.filterCounterAdd(1)
+					ro.auditFiltered(sCmd, argv, "key_filter", "parse_aof")
 					continue
 				}
 				data := make([]interface{}, 0, len(newArgv))
@@ -1302,6 +1383,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 				checkpointFilterGuardHitCounter.Inc(ro.cfg.InputName, sCmd, reason)
 				ro.filterCounterAdd(1)
+				ro.auditFiltered(sCmd, argv, reason, "parse_aof")
 				continue
 			}
 			if strings.EqualFold(sCmd, "select") {
@@ -1326,6 +1408,13 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 
 			if bypass || ignoreCmd || ignoresentinel {
 				ro.filterCounterAdd(1)
+				rsn := "cmd_filtered"
+				if bypass {
+					rsn = "db_filtered"
+				} else if ignoresentinel {
+					rsn = "sentinel_hello"
+				}
+				ro.auditFiltered(sCmd, argv, rsn, "parse_aof")
 				continue
 			}
 		}
@@ -1333,6 +1422,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 		newArgv, reject = ro.outFilter.FilterCmdKey(sCmd, argv)
 		if bypass || reject {
 			ro.filterCounterAdd(1)
+			ro.auditFiltered(sCmd, argv, "key_filter", "parse_aof")
 			continue
 		}
 
@@ -1351,6 +1441,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 				}
 			} else {
 				ro.filterCounterAdd(1)
+				ro.auditFiltered(sCmd, argv, "select_db_filtered", "parse_aof")
 			}
 			continue
 		}
@@ -1777,6 +1868,11 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		succCounter.Add(float64(cmdCounter), ro.cfg.InputName)
 		batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "ok")
 		ackOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
+		if ro.auditSentEnabled() {
+			for _, ce := range cmdQueue {
+				ro.auditSent(ce)
+			}
+		}
 
 		if shouldUpdateCP {
 			// Guard checkpoint write with monotonic valid offsets.
@@ -1944,6 +2040,161 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 			return nil
 		}
 	}
+}
+
+func nowMilli() string {
+	return time.Now().Format("2006-01-02 15:04:05.000")
+}
+
+func buildCmdKeyValue(cmd string, argv [][]byte) string {
+	if cmd == "" {
+		return ""
+	}
+	parts := make([]string, 0, len(argv)+1)
+	parts = append(parts, cmd)
+	for _, a := range argv {
+		parts = append(parts, util.BytesToString(a))
+	}
+	v := strings.Join(parts, " ")
+	if len(v) > 1024 {
+		return v[:1024] + "...(truncated)"
+	}
+	return v
+}
+
+func buildCmdKeyValueFromExec(ce cmdExecution) string {
+	parts := make([]string, 0, len(ce.Args)+1)
+	parts = append(parts, ce.Cmd)
+	for _, a := range ce.Args {
+		switch vv := a.(type) {
+		case []byte:
+			parts = append(parts, util.BytesToString(vv))
+		default:
+			parts = append(parts, fmt.Sprintf("%v", vv))
+		}
+	}
+	v := strings.Join(parts, " ")
+	if len(v) > 1024 {
+		return v[:1024] + "...(truncated)"
+	}
+	return v
+}
+
+func cmdExecArgsToByteArgs(args []interface{}) [][]byte {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make([][]byte, 0, len(args))
+	for _, a := range args {
+		switch vv := a.(type) {
+		case []byte:
+			out = append(out, vv)
+		case string:
+			out = append(out, []byte(vv))
+		default:
+			out = append(out, []byte(fmt.Sprintf("%v", vv)))
+		}
+	}
+	return out
+}
+
+func (ro *RedisOutput) auditSentEnabled() bool {
+	return ro.auditCfg != nil && ro.auditCfg.Enabled
+}
+
+func (ro *RedisOutput) auditFilteredEnabled() bool {
+	return ro.auditSentEnabled() && isAuditFilteredEnabled(ro.auditCfg)
+}
+
+func (ro *RedisOutput) auditFiltered(cmd string, argv [][]byte, reason, stage string) {
+	if !ro.auditFilteredEnabled() {
+		return
+	}
+	if !shouldRecordFilteredAudit(ro.auditCfg, reason, stage) {
+		return
+	}
+	ro.auditWriter.EnqueueFiltered(audit.FilteredEvent{
+		Dt:       nowMilli(),
+		Input:    ro.cfg.InputName,
+		Cmd:      cmd,
+		KeyValue: buildCmdKeyValue(cmd, argv),
+		Reason:   reason,
+		Stage:    stage,
+		Node:     ro.auditNode,
+	})
+}
+
+func isAuditFilteredEnabled(ac *config.AuditConfig) bool {
+	if ac != nil && ac.EnableRecordFiltered != nil && !*ac.EnableRecordFiltered {
+		return false
+	}
+	return true
+}
+
+func shouldRecordFilteredAudit(ac *config.AuditConfig, reason, stage string) bool {
+	if ac != nil && ac.EnableRecordFiltered != nil && !*ac.EnableRecordFiltered {
+		return false
+	}
+	// Keep transaction-guard drops observable by default. These are the key
+	// evidence when business transactions are discarded due to checkpoint keys.
+	if strings.EqualFold(stage, "txn_guard") {
+		return true
+	}
+	// Internal anti-loop/infra noise: never write to CH (use metrics / logs instead).
+	switch reason {
+	case "script_keys", "cmd_keys", "sentinel_hello":
+		return false
+	default:
+		return true
+	}
+}
+
+func (ro *RedisOutput) auditSent(ce cmdExecution) {
+	if !ro.auditSentEnabled() || !shouldRecordSentAudit(ce) {
+		return
+	}
+	ro.auditWriter.EnqueueSent(audit.SentEvent{
+		Dt:       nowMilli(),
+		Input:    ro.cfg.InputName,
+		Target:   ro.cfg.Redis.Address(),
+		Cmd:      ce.Cmd,
+		KeyValue: buildCmdKeyValueFromExec(ce),
+		Node:     ro.auditNode,
+	})
+}
+
+func shouldRecordSentAudit(ce cmdExecution) bool {
+	cmd := strings.ToLower(strings.TrimSpace(ce.Cmd))
+	if cmd == "" || cmd == "ping" {
+		return false
+	}
+	// Internal bootstrap/checkpoint script payload is too noisy for CH sent-audit.
+	if cmd == "script" && len(ce.Args) > 0 {
+		switch vv := ce.Args[0].(type) {
+		case []byte:
+			if strings.EqualFold(strings.TrimSpace(util.BytesToString(vv)), "load") {
+				return false
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(vv), "load") {
+				return false
+			}
+		}
+	}
+	// SELECT 0 is a routine context switch command; skip to reduce noise.
+	if cmd == "select" && len(ce.Args) > 0 {
+		switch vv := ce.Args[0].(type) {
+		case []byte:
+			if strings.TrimSpace(util.BytesToString(vv)) == "0" {
+				return false
+			}
+		case string:
+			if strings.TrimSpace(vv) == "0" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func shouldFilterCheckpointCommandByKeys(cmd string, argv [][]byte, marker string) (bool, string) {

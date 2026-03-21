@@ -37,6 +37,7 @@ type SyncConfig struct {
 	Input   *InputConfig
 	Output  *OutputConfig
 	Channel *ChannelConfig
+	Audit   *AuditConfig `yaml:"audit"`
 
 	Cluster *ClusterConfig
 	Log     *LogConfig   `yaml:"log"`
@@ -66,6 +67,12 @@ func (c *SyncConfig) fix() error {
 		if err := fix.fix(); err != nil {
 			return err
 		}
+	}
+	if c.Audit == nil {
+		c.Audit = &AuditConfig{}
+	}
+	if err := c.Audit.fix(); err != nil {
+		return err
 	}
 
 	// Sync pipeline currently supports cluster -> cluster only.
@@ -404,6 +411,64 @@ type FilterKeyConfig struct {
 type FilterSlotConfig struct {
 	KeySlotWhitelist DoubleSliceUint16 `yaml:"keySlotWhitelist"`
 	KeySlotBlacklist DoubleSliceUint16 `yaml:"keySlotBlacklist"`
+}
+
+type AuditConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	Endpoint      string        `yaml:"endpoint"`
+	Database      string        `yaml:"database"`
+	User          string        `yaml:"user"`
+	Password      string        `yaml:"password"`
+	FilteredTable string        `yaml:"filteredTable"`
+	SentTable     string        `yaml:"sentTable"`
+	EnableRecordFiltered *bool `yaml:"enableRecordFiltered"`
+	QueueSize     int           `yaml:"queueSize"`
+	BatchSize     int           `yaml:"batchSize"`
+	FlushInterval time.Duration `yaml:"flushInterval"`
+	Timeout       time.Duration `yaml:"timeout"`
+}
+
+func (ac *AuditConfig) fix() error {
+	if !ac.Enabled {
+		return nil
+	}
+	if ac.Endpoint == "" {
+		return newConfigError("audit.enabled is true, but audit.endpoint is empty")
+	}
+	if ac.Database == "" {
+		ac.Database = "default"
+	}
+	if ac.FilteredTable == "" {
+		ac.FilteredTable = "sync_cmd_filtered"
+	}
+	if ac.SentTable == "" {
+		ac.SentTable = "sync_cmd_sent"
+	}
+	if ac.EnableRecordFiltered == nil {
+		v := true
+		ac.EnableRecordFiltered = &v
+	}
+	if ac.QueueSize <= 0 {
+		ac.QueueSize = 50000
+	}
+	if ac.BatchSize <= 0 {
+		ac.BatchSize = 1000
+	}
+	if ac.FlushInterval <= 0 {
+		ac.FlushInterval = time.Second
+	}
+	if ac.Timeout <= 0 {
+		ac.Timeout = 3 * time.Second
+	}
+	return nil
+}
+
+// PrepareRuntime applies audit defaults and validation after toggling Enabled at runtime (e.g. HTTP API).
+func (ac *AuditConfig) PrepareRuntime() error {
+	if ac == nil {
+		return newConfigError("audit config is nil")
+	}
+	return ac.fix()
 }
 
 type LogHandlerFileConfig struct {

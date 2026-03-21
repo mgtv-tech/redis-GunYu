@@ -521,6 +521,19 @@ func (s *syncer) runOutputLoop(wait usync.WaitCloser, output *RedisOutput) {
 				if wait.IsClosed() {
 					return
 				}
+				if errors.Is(err, ErrCheckpointFenced) {
+					// A stale in-memory epoch can happen after failover/restart races.
+					// Refresh epoch once before treating it as a hard consecutive failure.
+					output.invalidateCheckpointConn(err)
+					if epochErr := output.StartLeaderEpoch(wait.Context()); epochErr == nil {
+						s.logger.Warnf("output fenced once; leader epoch refreshed and retrying")
+						consecutiveFailures = 0
+						wait.Sleep(200 * time.Millisecond)
+						break
+					} else {
+						s.logger.Errorf("output fenced and failed to refresh epoch: %v", epochErr)
+					}
+				}
 				// Non-recoverable errors should stop the whole syncer.
 				action, reason := ClassifyErrorDetail(err)
 				if action == ErrorActionExit {
