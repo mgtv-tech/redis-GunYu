@@ -187,6 +187,16 @@ func replicaPreferAofAtRdbBoundary(sp StartPoint, rdbLeft int64) bool {
 	return sp.Offset > rdbLeft
 }
 
+func replicaPreferAofWithMeta(sp StartPoint, rdbLeft int64, expectAofFromMeta bool) bool {
+	if rdbLeft < 0 {
+		return true
+	}
+	if sp.Offset < rdbLeft {
+		return false
+	}
+	return expectAofFromMeta || replicaPreferAofAtRdbBoundary(sp, rdbLeft)
+}
+
 func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint, expectAofFromMeta bool) error {
 
 	// the offset of follower is invalid
@@ -195,7 +205,7 @@ func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, stream pb.ApiService_Sy
 	}
 
 	rdbLeft, _ := rl.channel.GetRdb(reqSp.RunId)
-	preferAof := expectAofFromMeta || replicaPreferAofAtRdbBoundary(reqSp, rdbLeft)
+	preferAof := replicaPreferAofWithMeta(reqSp, rdbLeft, expectAofFromMeta)
 
 	// pump data from storer
 	reader, err := rl.channel.NewReader(Offset{

@@ -82,12 +82,13 @@ func TestVerificationNext4_replicaExpectAofMetadata(t *testing.T) {
 		}{
 			{"rdb_phase_boundary_no_meta", false, 100, 100, false},
 			{"aof_phase_boundary_with_meta", true, 100, 100, true},
+			{"rdb_phase_before_boundary_even_with_meta", true, 99, 100, false},
 			{"incr_ahead_no_meta", false, 200, 100, true},
 			{"no_rdb_segment", false, 100, -1, true},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				got := tc.meta || replicaPreferAofAtRdbBoundary(StartPoint{RunId: "r", Offset: tc.offset}, tc.rdbLeft)
+				got := replicaPreferAofWithMeta(StartPoint{RunId: "r", Offset: tc.offset}, tc.rdbLeft, tc.meta)
 				if got != tc.want {
 					t.Fatalf("preferAof got %v want %v", got, tc.want)
 				}
