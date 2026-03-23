@@ -200,7 +200,7 @@ func buildAsyncWriter(cfg *config.AuditConfig, logger log.Logger) (Writer, error
 	}
 	bs := cfg.BatchSize
 	if bs <= 0 {
-		bs = 1000
+		bs = 10000
 	}
 	interval := cfg.FlushInterval
 	if interval <= 0 {

@@ -220,6 +220,25 @@ func (ro *RedisOutput) Run(wait usync.WaitCloser) error {
 	return wait.Error()
 }
 
+// preferAofAtRdbBoundaryForOutput selects AOF vs RDB when replication offset equals rdb.left (snapshot boundary).
+// After RDB lands, Input may append an AOF segment at the same offset while Output still replays RDB; we must
+// not open AOF until the target checkpoint has passed the snapshot (or we intentionally start from channel left).
+func preferAofAtRdbBoundaryForOutput(startPoint StartPoint, rdbLeft int64, usedChannelLeftFallback bool) bool {
+	if rdbLeft < 0 {
+		return true
+	}
+	if startPoint.Offset > rdbLeft {
+		return true
+	}
+	if startPoint.Offset < rdbLeft {
+		return false
+	}
+	if usedChannelLeftFallback {
+		return false
+	}
+	return !startPoint.IsInitial()
+}
+
 // runOnce executes one cycle of reading from channel and sending to output
 func (ro *RedisOutput) runOnce(wait usync.WaitCloser) error {
 	ctx := wait.Context()
@@ -227,6 +246,7 @@ func (ro *RedisOutput) runOnce(wait usync.WaitCloser) error {
 	// Get start point from redis checkpoint or channel
 	var startPoint StartPoint
 	var err error
+	usedChannelLeftFallback := false
 
 	runId := ro.channel.RunId()
 	if runId == "" || runId == "?" {
@@ -238,6 +258,7 @@ func (ro *RedisOutput) runOnce(wait usync.WaitCloser) error {
 		return fmt.Errorf("get redis checkpoint start point error: %w", err)
 	}
 	if startPoint.RunId == "" || startPoint.RunId == "?" {
+		usedChannelLeftFallback = true
 		left, _ := ro.channel.GetOffsetRange(runId)
 		if left <= 0 {
 			wait.Sleep(1 * time.Second)
@@ -254,6 +275,7 @@ func (ro *RedisOutput) runOnce(wait usync.WaitCloser) error {
 		// Offset not valid, need to wait or start from channel's left
 		left, _ := ro.channel.GetOffsetRange(startPoint.RunId)
 		if left > 0 {
+			usedChannelLeftFallback = true
 			startPoint.Offset = left
 		} else {
 			wait.Sleep(1 * time.Second)
@@ -261,8 +283,11 @@ func (ro *RedisOutput) runOnce(wait usync.WaitCloser) error {
 		}
 	}
 
+	rdbLeft, _ := ro.channel.GetRdb(runId)
+	preferAof := preferAofAtRdbBoundaryForOutput(startPoint, rdbLeft, usedChannelLeftFallback)
+
 	// Create reader from channel
-	reader, err := ro.channel.NewReader(startPoint.ToOffset())
+	reader, err := ro.channel.NewReader(startPoint.ToOffset(), preferAof)
 	if err != nil {
 		return fmt.Errorf("create channel reader error: %w", err)
 	}

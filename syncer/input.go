@@ -912,7 +912,7 @@ func (ri *RedisInput) GetChannelReader(wait usync.WaitCloser, readerOffset Start
 	if wait.IsClosed() {
 		return nil
 	}
-	reader, err := ri.channel.NewReader(readerOffset.ToOffset())
+	reader, err := ri.channel.NewReader(readerOffset.ToOffset(), true)
 	ri.logger.Debugf("channel.NewReader : offset(%v), err(%v)", readerOffset, err)
 	if err != nil {
 		wait.Close(err)

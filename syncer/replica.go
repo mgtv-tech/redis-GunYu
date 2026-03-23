@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	pb "github.com/mgtv-tech/redis-GunYu/pkg/api/golang"
@@ -169,21 +170,38 @@ func (rl *ReplicaLeader) Handle(wait usync.WaitCloser, req *pb.SyncRequest, stre
 		return ErrLeaderHandover
 	}
 
-	return rl.sendData(wait, stream, StartPoint{RunId: followerRunId, Offset: followerOffset}, sp)
+	expectAofMeta := false
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		if v := md.Get("x-gunyu-expect-aof"); len(v) > 0 && v[0] == "1" {
+			expectAofMeta = true
+		}
+	}
+
+	return rl.sendData(wait, stream, StartPoint{RunId: followerRunId, Offset: followerOffset}, sp, expectAofMeta)
 }
 
-func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint) error {
+func replicaPreferAofAtRdbBoundary(sp StartPoint, rdbLeft int64) bool {
+	if rdbLeft < 0 {
+		return true
+	}
+	return sp.Offset > rdbLeft
+}
+
+func (rl *ReplicaLeader) sendData(wait usync.WaitCloser, stream pb.ApiService_SyncServer, reqSp StartPoint, channelSp StartPoint, expectAofFromMeta bool) error {
 
 	// the offset of follower is invalid
 	if !rl.channel.IsValidOffset(Offset{RunId: reqSp.RunId, Offset: reqSp.Offset}) {
 		reqSp.Offset = channelSp.Offset
 	}
 
+	rdbLeft, _ := rl.channel.GetRdb(reqSp.RunId)
+	preferAof := expectAofFromMeta || replicaPreferAofAtRdbBoundary(reqSp, rdbLeft)
+
 	// pump data from storer
 	reader, err := rl.channel.NewReader(Offset{
 		RunId:  reqSp.RunId,
 		Offset: reqSp.Offset,
-	})
+	}, preferAof)
 	if err != nil {
 		err = errors.Join(fmt.Errorf("channel.NewReader error : offset(%s:%d), error(%w)", reqSp.RunId, reqSp.Offset, err))
 		return rl.handleError(stream, err, pb.SyncResponse_CLEAR, "internal error", "")
@@ -291,6 +309,7 @@ func (rf *ReplicaFollower) Run() error {
 	var leaderSp, followerSp StartPoint
 	var stream pb.ApiService_SyncClient
 	var resp *pb.SyncResponse
+	var expectAofOnNextMeta bool
 	rf.wait.WgAdd(1)
 	defer rf.wait.WgDone()
 
@@ -301,7 +320,8 @@ func (rf *ReplicaFollower) Run() error {
 		case 2: // prepare
 			followerSp, err = rf.preSync(leaderSp)
 		case 3: // meta sync
-			stream, resp, err = rf.metaSync(followerSp, cli)
+			stream, resp, err = rf.metaSync(followerSp, cli, expectAofOnNextMeta)
+			expectAofOnNextMeta = false
 			if err == nil {
 				if resp.GetMeta().GetAof() {
 					state = 5
@@ -318,6 +338,7 @@ func (rf *ReplicaFollower) Run() error {
 					err = errors.Join(ErrRestart, fmt.Errorf("channel.StartPoint error : runId(%s), error(%v)", leaderSp.RunId, err))
 					return err
 				}
+				expectAofOnNextMeta = true
 				state = 3 // meta sync
 				continue
 			}
@@ -509,8 +530,16 @@ func (rf *ReplicaFollower) loadCheckpointStartPoint(runIds []string) (StartPoint
 	return StartPoint{RunId: cpInfo.RunId, Offset: cpInfo.Offset}, true, nil
 }
 
-func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ApiServiceClient) (pb.ApiService_SyncClient, *pb.SyncResponse, error) {
-	stream, err := cli.Sync(rf.wait.Context(), &pb.SyncRequest{
+func (rf *ReplicaFollower) metaSyncCtx(expectAof bool) context.Context {
+	ctx := rf.wait.Context()
+	if expectAof {
+		return metadata.AppendToOutgoingContext(ctx, "x-gunyu-expect-aof", "1")
+	}
+	return ctx
+}
+
+func (rf *ReplicaFollower) metaSync(sp StartPoint, cli pb.ApiServiceClient, expectAof bool) (pb.ApiService_SyncClient, *pb.SyncResponse, error) {
+	stream, err := cli.Sync(rf.metaSyncCtx(expectAof), &pb.SyncRequest{
 		Node:   &pb.Node{RunId: sp.RunId, Address: rf.inputAddress},
 		Offset: sp.Offset,
 	})

@@ -99,7 +99,7 @@ func (m *mockChannelForRunIDSwitch) NewRdbWriter(io.Reader, int64, int64) (*stor
 func (m *mockChannelForRunIDSwitch) NewAofWritter(io.Reader, int64) (*store.AofWriter, error) {
 	return nil, nil
 }
-func (m *mockChannelForRunIDSwitch) NewReader(Offset) (*store.Reader, error) { return nil, nil }
+func (m *mockChannelForRunIDSwitch) NewReader(Offset, bool) (*store.Reader, error) { return nil, nil }
 func (m *mockChannelForRunIDSwitch) Close() error { return nil }
 
 func TestApplyRunIDSwitchRollbackOnCheckpointCommitFailure(t *testing.T) {

@@ -22,7 +22,8 @@ type Channel interface {
 	GetRdb(string) (int64, int64)
 	NewRdbWriter(io.Reader, int64, int64) (*store.RdbWriter, error)
 	NewAofWritter(r io.Reader, offset int64) (*store.AofWriter, error)
-	NewReader(Offset) (*store.Reader, error)
+	// preferAof: see store.Storer.GetReader — false for first snapshot replay at rdb.left when AOF segment already exists.
+	NewReader(off Offset, preferAof bool) (*store.Reader, error)
 	Close() error
 }
 
@@ -88,7 +89,7 @@ func (sc *StoreChannel) GetRdb(runId string) (int64, int64) {
 	return sc.storer.GetRdb()
 }
 
-func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {
+func (sc *StoreChannel) NewReader(offset Offset, preferAof bool) (*store.Reader, error) {
 	// if offset.RunId != sc.storer.RunId() {
 	// 	err := sc.storer.SetRunId(offset.RunId)
 	// 	if err != nil {
@@ -96,7 +97,7 @@ func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {
 	// 		return nil, err
 	// 	}
 	// }
-	r, err := sc.storer.GetReader(offset.Offset, config.GetSyncerConfig().Channel.VerifyCrc)
+	r, err := sc.storer.GetReader(offset.Offset, config.GetSyncerConfig().Channel.VerifyCrc, preferAof)
 	if err != nil {
 		sc.logger.Errorf("storer.GetReader error : offset(%v), err(%v)", offset, err)
 	}

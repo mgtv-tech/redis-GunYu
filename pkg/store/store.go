@@ -287,7 +287,11 @@ func (s *Storer) GetRdb() (int64, int64) {
 
 // for a rdb writer, Reader returns io.EOF when data has been drained
 // for a aof writer, it's endless unless encounter an error
-func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
+//
+// preferAofAtRdbBoundary: at replication offset rdb.left, both snapshot RDB and the first AOF segment
+// may exist. When false, open RDB reader first so Output can replay the snapshot before incr.
+// When true, open AOF (legacy ordering: IndexAof wins), e.g. after target checkpoint passed the snapshot.
+func (s *Storer) GetReader(offset int64, verifyCrc bool, preferAofAtRdbBoundary bool) (*Reader, error) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 
@@ -305,25 +309,47 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 	piper, pipew := pipe.NewSize(s.readBufSize)
 	reader := bufio.NewReaderSize(piper, s.readBufSize)
 
-	aof := ds.IndexAof(offset) // try get AOF reader first
+	rdbObj := ds.GetRdb()
+	// Barrier: do not let an (often empty) AOF segment at the same repl offset hide the RDB file.
+	if !preferAofAtRdbBoundary && rdbObj != nil {
+		left := rdbObj.Left()
+		if offset <= left {
+			rr, err := NewRdbReader(pipew, s.dir, left, rdbObj.Size(), verifyCrc)
+			if err != nil {
+				return nil, err
+			}
+			rd.rdb = rr
+			rd.reader = reader
+			rd.closedCb = append(rd.closedCb, piper.Close)
+			rd.size = rdbObj.Size()
+			rd.left = left
+			rd.logger = log.WithLogger(config.LogModuleName("[Reader(rdb)] "))
+			rdbObj.AddReader(rr)
+			rr.SetObserver(&observerProxy{
+				close: s.newRdbRCloseObserver(rr, rdbObj),
+			})
+			return rd, nil
+		}
+	}
+
+	aof := ds.IndexAof(offset) // try get AOF reader first when preferAofAtRdbBoundary
 	if aof == nil {
-		rdb := ds.GetRdb()
-		if rdb != nil {
-			left := rdb.Left()
+		if rdbObj != nil {
+			left := rdbObj.Left()
 			if offset <= left {
-				rr, err := NewRdbReader(pipew, s.dir, left, rdb.Size(), verifyCrc)
+				rr, err := NewRdbReader(pipew, s.dir, left, rdbObj.Size(), verifyCrc)
 				if err != nil {
 					return nil, err
 				}
 				rd.rdb = rr
 				rd.reader = reader
 				rd.closedCb = append(rd.closedCb, piper.Close)
-				rd.size = rdb.Size()
+				rd.size = rdbObj.Size()
 				rd.left = left
 				rd.logger = log.WithLogger(config.LogModuleName("[Reader(rdb)] "))
-				rdb.AddReader(rr)
+				rdbObj.AddReader(rr)
 				rr.SetObserver(&observerProxy{
-					close: s.newRdbRCloseObserver(rr, rdb),
+					close: s.newRdbRCloseObserver(rr, rdbObj),
 				})
 				return rd, nil
 			}
