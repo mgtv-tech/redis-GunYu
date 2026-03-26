@@ -29,7 +29,7 @@ audit:
   enableRecordFiltered: true        # 是否写 sync_cmd_filtered，默认 true（也可用 HTTP 动态改）
 
   queueSize: 50000
-  batchSize: 1000
+  batchSize: 10000
   flushInterval: 1s
   timeout: 3s
 ```

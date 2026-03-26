@@ -1,0 +1,43 @@
+server:
+  listen: 127.0.0.1:18012
+  listenPeer: 127.0.0.1:18012
+  gracefullStopTimeout: 1s
+  checkRedisTypologyTicker: 10s
+input:
+  redis:
+    addresses: [127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006]
+    password: "123456"
+    type: cluster
+  mode: dynamic
+  syncFrom: prefer_slave
+  # 注意：syncCheckPointKey/filterCheckPointKey 必须使用“非业务”key前缀，
+  # 不要与业务真实key重名或共用前缀，否则可能影响业务逻辑与回环过滤判断。
+  syncCheckPointKey: redis-GunYu-Checkpoint-ClusterA
+  filterCheckPointKey: redis-GunYu-Checkpoint-ClusterB
+channel:
+  storer:
+    dirPath: /tmp/redisgunyu-cluster2-runtime-a
+    maxSize: 209715200
+    logSize: 20971520
+  staleCheckpointDuration: 10m
+output:
+  redis:
+    addresses: [127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003,127.0.0.1:8004,127.0.0.1:8005,127.0.0.1:8006,127.0.0.1:8007,127.0.0.1:8008,127.0.0.1:8009,127.0.0.1:8010]
+    password: "123456"
+    type: cluster
+  metaRedis:
+    addresses: [127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381]
+    password: "123456"
+    type: sentinel
+    masterName: mymaster
+  replay:
+    resumeFromBreakPoint: true
+log:
+  level: info
+  handler:
+    stdout: true
+  withCaller: false
+  withFunc: false
+cluster:
+  groupName: group-AtoB
+  leaseTimeout: 9s
