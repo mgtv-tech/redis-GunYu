@@ -42,8 +42,6 @@ Redis configuration:
 - type: Redis type.
   - standalone: Synchronize based on the addresses in the `addresses` field.
   - cluster: Redis cluster
-- clusterOptions:
-  - replayTransaction: Whether to attempt using transactions (pseudo-transactions, not based on multi/exec, but sending Redis commands as a package) for synchronization. Enabled by default.
 - keepAlive: Maximum number of connections per Redis node.
 - aliveTime: Connection keep-alive timeout.
 
@@ -97,7 +95,17 @@ The output configuration is as follows:
   - replayRdbParallel: Number of threads used for replaying RDB. The default is the CPU count multiplied by 4.
   - updateCheckpointTicker: Default: 1 second.
   - keepaliveTicker: Default: 3 seconds. Interval for keeping the heartbeat.
+  - replayTransaction: Whether to prefer transactional replay. Enabled by default.
+    - When output is `standalone`: use real `MULTI/EXEC`
+    - When output is `cluster` and the current topology allows transactional replay: use the real transaction batcher
+    - When output is `cluster` but the current topology is not eligible for transactional replay: automatically fall back to normal batched replay
+    - This flag only controls transactional behavior for the normal replay path; it does not decide whether bisync is enabled
+  - bisyncEnabled: Whether to enable the bisync control plane. Disabled by default.
+    - Bisync is enabled only by this config field; it is no longer inferred from `replayTransaction` or runtime `CanTransaction`
+    - When enabled, AOF/RDB replay uses the bisync replay-unit, marker, and checkpoint/frontier recovery flow
+    - `replayTransaction` is still recommended to stay `true`, but it is no longer the bisync switch
   - enableAofPipeline : Replay commands in a pipeline. Send command and receive reply in different threads, while it can speed up data synchronization, may lead to data inconsistency. Enable this feature with caution.
+    - In bisync mode, `enableAofPipeline` is also a recovery-mode switch: it decides whether startup recovery reads `latest checkpoint` or `commit journal + frontier`
 
 
 #### Filter configuration
@@ -286,5 +294,3 @@ output:
 The corresponding command line argument would be`--sync.output.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 You can use `redisGunYu -h` to view all available arguments.
-
-

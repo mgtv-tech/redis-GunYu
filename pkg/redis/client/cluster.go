@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"strings"
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
@@ -13,6 +14,22 @@ import (
 var (
 	RecvChanSize = 4096
 )
+
+func normalizeClusterRedisConfig(cfg config.RedisConfig) config.RedisConfig {
+	if cfg.KeepAlive < 1 {
+		cfg.KeepAlive = 32
+	}
+	if cfg.AliveTime < time.Minute {
+		cfg.AliveTime = time.Minute
+	}
+	if cfg.ClusterOptions == nil {
+		cfg.ClusterOptions = &config.RedisClusterOptions{
+			HandleMoveErr: true,
+			HandleAskErr:  true,
+		}
+	}
+	return cfg
+}
 
 type ClusterRedis struct {
 	client   *cluster.Cluster
@@ -28,6 +45,8 @@ type reply struct {
 }
 
 func NewRedisCluster(cfg config.RedisConfig) (Redis, error) {
+	cfg = normalizeClusterRedisConfig(cfg)
+
 	options := &cluster.Options{
 		StartNodes:  cfg.Addresses,
 		Password:    cfg.Password,
@@ -97,14 +116,29 @@ func (cc *ClusterRedis) NewBatcher(pipeline bool) common.CmdBatcher {
 	return cc.client.NewBatcher(pipeline)
 }
 
+func (cc *ClusterRedis) NewTxnBatcher() common.CmdBatcher {
+	return cc.client.NewTxnBatcher()
+}
+
 // @TODO
 // multi/exec : if slots are crossing, doesn't return error
 func (cc *ClusterRedis) Send(cmd string, args ...interface{}) error {
+	if strings.EqualFold(cmd, "select") {
+		// Redis Cluster only supports DB 0. Keep the standalone client contract by
+		// returning a synthetic OK reply instead of leaving Receive blocked.
+		if cc.batcher != nil && cc.batcher.Len() > 0 {
+			if err := cc.Flush(); err != nil {
+				return err
+			}
+		}
+		cc.recvChan <- reply{answer: common.ReplyOk}
+		return nil
+	}
 	return cc.getBatcher().Put(cmd, args...)
 }
 
 func (cc *ClusterRedis) SendAndFlush(cmd string, args ...interface{}) error {
-	err := cc.getBatcher().Put(cmd, args...)
+	err := cc.Send(cmd, args...)
 	if err != nil {
 		return err
 	}
@@ -148,7 +182,9 @@ func (cc *ClusterRedis) BufioWriter() *bufio.Writer {
 // send batcher and put the return into recvChan
 func (cc *ClusterRedis) Flush() error {
 	if cc.batcher == nil {
-		cc.logger.Infof("batcher is empty, no need to flush")
+		if cc.logger != nil {
+			cc.logger.Infof("batcher is empty, no need to flush")
+		}
 		return nil
 	}
 

@@ -583,6 +583,11 @@ func (ri *RedisInput) pSync(cli *redis.StandaloneRedis, offset Offset) (
 		ri.logger.Errorf("psync error : offset(%v), err(%v)", offset, err)
 		return
 	}
+	err = cli.SendPSyncCapabilities()
+	if err != nil {
+		ri.logger.Errorf("psync capability error : offset(%v), err(%v)", offset, err)
+		return
+	}
 
 	off, fullSync, rdbSize, err = ri.sendPsync(cli, offset)
 	return
@@ -605,6 +610,9 @@ func (ri *RedisInput) sendPsync(cli *redis.StandaloneRedis, offset Offset) (Offs
 	for rdbSize == 0 {
 		select {
 		case x := <-wait:
+			if x.Err != nil {
+				return Offset{}, false, 0, x.Err
+			}
 			rdbSize = x.Size
 		case <-time.After(time.Second):
 		}

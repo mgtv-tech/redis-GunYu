@@ -2,7 +2,9 @@ package conn
 
 import (
 	"log"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -14,7 +16,20 @@ const (
 	testRedis = "127.0.1.1:6379"
 )
 
+// isRedisAvailable checks if a Redis instance is reachable at the given address
+func isRedisAvailable(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 func TestNilErr(t *testing.T) {
+	if !isRedisAvailable(testRedis) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedis)
+	}
 
 	conn, err := NewRedisConn(config.RedisConfig{
 		Addresses: []string{testRedis},
@@ -31,6 +46,10 @@ func TestNilErr(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
+	if !isRedisAvailable(testRedis) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedis)
+	}
+
 	conn, err := NewRedisConn(config.RedisConfig{
 		Addresses: []string{testRedis},
 		Type:      config.RedisTypeCluster,

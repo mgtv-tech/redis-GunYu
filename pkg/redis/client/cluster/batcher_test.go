@@ -2,7 +2,9 @@ package redis
 
 import (
 	"fmt"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	"github.com/stretchr/testify/assert"
@@ -13,7 +15,20 @@ const (
 	testRedisCluster = "127.0.0.1:16300"
 )
 
+func isRedisAvailable(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 func TestBatcherKeysCmd(t *testing.T) {
+	if !isRedisAvailable(testRedisCluster) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisCluster)
+	}
+
 	cases := map[string]string{
 		"aa1": "1", "aa2": "2", "aa3": "3",
 	}
@@ -48,6 +63,10 @@ func TestBatcherKeysCmd(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
+	if !isRedisAvailable(testRedisCluster) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisCluster)
+	}
+
 	cluster := newRedisNodeCluster(t)
 
 	t.Run("", func(t *testing.T) {

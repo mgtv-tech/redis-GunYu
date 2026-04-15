@@ -273,9 +273,11 @@ type ReplayConfig struct {
 	BatchBufferSize        uint64        `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
+	BisyncPipelineParallel int           `yaml:"bisyncPipelineParallel"`
 	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore" default:"true"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 	ReplayTransaction      *bool         `yaml:"replayTransaction" default:"true"`
+	BisyncEnabled          *bool         `yaml:"bisyncEnabled" default:"false"`
 	Stats                  OutputStats   `yaml:"stats"`
 	AofPipelineMode        bool          `yaml:"enableAofPipeline"`
 }
@@ -322,6 +324,10 @@ func (of *ReplayConfig) fix() error {
 	if of.ReplayTransaction == nil {
 		txn := true
 		of.ReplayTransaction = &txn
+	}
+	if of.BisyncEnabled == nil {
+		bisync := false
+		of.BisyncEnabled = &bisync
 	}
 
 	of.KeyExists = strings.ToLower(of.KeyExists)

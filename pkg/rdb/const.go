@@ -1,7 +1,7 @@
 package rdb
 
 // var RdbVersion int64 = 10 // redis:7.0.0
-var RdbVersion int64 = 11 // redis:7.2.0
+var RdbVersion int64 = 13 // redis:8.x
 
 const (
 	RdbObjectString   = iota
@@ -48,7 +48,9 @@ const (
 
 	RdbTypeSetListpack      = 20
 	RdbTypeStreamListPacks3 = 21 // RDB_TYPE_STREAM_LISTPACKS_3
+	RdbTypeStreamListPacks4 = 26 // RDB_TYPE_STREAM_LISTPACKS_4, stream with IDMP support
 
+	RdbFlagSlotInfo  = 0xf4 // Redis 8 cluster slot metadata
 	RdbTypeFunction2 = 0xf5
 	RdbTypeFunction  = 0xf6
 	RdbFlagModuleAux = 0xf7

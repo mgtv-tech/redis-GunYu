@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 )
+
+const BisyncCheckpointKeyPrefix = config.CheckpointKey + "-bisync"
 
 func SetCheckpointHash(cli client.Redis, runId string, cpName string) error {
 	// config.CheckpointKeyHashKey must be stored in DB 0
@@ -43,6 +46,55 @@ func GetCheckpointHash(cli client.Redis, runIds []string) (cpName string, runId 
 		return cpName, runIds[1], err
 	}
 	return cpName, runIds[0], err
+}
+
+func NewBisyncCheckpointName() (string, error) {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:%x", BisyncCheckpointKeyPrefix, buf), nil
+}
+
+func ResolveOrCreateBisyncCheckpointName(cli client.Redis, runIds []string) (string, error) {
+	if len(runIds) == 0 || runIds[0] == "" {
+		return "", fmt.Errorf("resolve bisync checkpoint name: empty run id")
+	}
+
+	cpName, _, err := GetCheckpointHash(cli, runIds)
+	if err != nil {
+		return "", err
+	}
+	if cpName != "" {
+		return cpName, nil
+	}
+
+	candidate, err := NewBisyncCheckpointName()
+	if err != nil {
+		return "", err
+	}
+
+	err = redis.SelectDB(cli, 0)
+	if err != nil {
+		return "", err
+	}
+
+	created, err := common.Bool(cli.Do("hsetnx", config.CheckpointKeyHashKey, runIds[0], candidate))
+	if err != nil {
+		return "", err
+	}
+	if created {
+		return candidate, nil
+	}
+
+	cpName, err = redis.HGet(cli, config.CheckpointKeyHashKey, runIds[0])
+	if err != nil {
+		return "", err
+	}
+	if cpName == "" {
+		return "", fmt.Errorf("resolve bisync checkpoint name: checkpoint hash empty for run id %s", runIds[0])
+	}
+	return cpName, nil
 }
 
 func DelCheckpointHash(cli client.Redis, runId string) error {

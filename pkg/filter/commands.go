@@ -1,77 +1,15 @@
 package filter
 
-type getkeys_proc func(args []string) []int
-type redisKeyPosition struct {
-	first, last, step int
+import "github.com/mgtv-tech/redis-GunYu/pkg/redis/keyspec"
+
+func CommandKeys(cmd string, args [][]byte) ([]string, bool) {
+	return keyspec.CommandKeys(cmd, args)
 }
 
-var genericKeyPos = redisKeyPosition{1, 1, 1}
+func CommandKeyIndexes(cmd string, args [][]byte) ([]int, bool) {
+	return keyspec.CommandKeyIndexes(cmd, args)
+}
 
-// refers to redisShake, under MIT LICENSE
-var commandKeyPositions = map[string]redisKeyPosition{
-	"set":              genericKeyPos,
-	"setnx":            genericKeyPos,
-	"setex":            genericKeyPos,
-	"psetex":           genericKeyPos,
-	"append":           genericKeyPos,
-	"setbit":           genericKeyPos,
-	"bitfield":         genericKeyPos,
-	"setrange":         genericKeyPos,
-	"move":             genericKeyPos,
-	"incr":             genericKeyPos,
-	"decr":             genericKeyPos,
-	"rpush":            genericKeyPos,
-	"lpush":            genericKeyPos,
-	"rpushx":           genericKeyPos,
-	"lpushx":           genericKeyPos,
-	"linsert":          genericKeyPos,
-	"rpop":             genericKeyPos,
-	"lpop":             genericKeyPos,
-	"brpop":            {1, -2, 1},
-	"brpoplpush":       {1, 2, 1},
-	"blpop":            {1, -2, 1},
-	"lset":             genericKeyPos,
-	"ltrim":            genericKeyPos,
-	"lrem":             genericKeyPos,
-	"rpoplpush":        {1, 2, 1},
-	"sadd":             genericKeyPos,
-	"srem":             genericKeyPos,
-	"smove":            {1, 2, 1},
-	"spop":             genericKeyPos,
-	"sinterstore":      {1, -1, 1},
-	"sunionstore":      {1, -1, 1},
-	"sdiffstore":       {1, -1, 1},
-	"zadd":             genericKeyPos,
-	"zincrby":          genericKeyPos,
-	"zrem":             genericKeyPos,
-	"zremrangebyscore": genericKeyPos,
-	"zremrangebyrank":  genericKeyPos,
-	"zremrangebylex":   genericKeyPos,
-	"hset":             genericKeyPos,
-	"hsetnx":           genericKeyPos,
-	"hmset":            genericKeyPos,
-	"hincrby":          genericKeyPos,
-	"hincrbyfloat":     genericKeyPos,
-	"hdel":             genericKeyPos,
-	"incrby":           genericKeyPos,
-	"decrby":           genericKeyPos,
-	"incrbyfloat":      genericKeyPos,
-	"getset":           genericKeyPos,
-	"mset":             {1, -1, 2},
-	"msetnx":           {1, -1, 2},
-	"rename":           {1, 2, 1},
-	"renamenx":         {1, 2, 1},
-	"expire":           genericKeyPos,
-	"expireat":         genericKeyPos,
-	"pexpire":          genericKeyPos,
-	"pexpireat":        genericKeyPos,
-	"persist":          genericKeyPos,
-	"restore":          genericKeyPos,
-	"restore-asking":   genericKeyPos,
-	"bitop":            {2, -1, 1},
-	"geoadd":           genericKeyPos,
-	"pfadd":            genericKeyPos,
-	"pfmerge":          {1, -1, 1},
-	"del":              {1, 0, 1},
-	"unlink":           {1, -1, 1},
+func CommandAllowsPartialProjection(cmd string) bool {
+	return keyspec.CommandAllowsPartialProjection(cmd)
 }

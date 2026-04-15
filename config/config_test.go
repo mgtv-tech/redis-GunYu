@@ -110,3 +110,36 @@ func TestSelNodes(t *testing.T) {
 	})
 
 }
+
+func TestReplayConfigFixSetsBisyncDefaultDisabled(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	if assert.NotNil(t, cfg.BisyncEnabled) {
+		assert.False(t, *cfg.BisyncEnabled)
+	}
+}
+
+func TestReplayConfigFixPreservesBisyncSetting(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		BisyncEnabled:          boolPtr(true),
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	if assert.NotNil(t, cfg.BisyncEnabled) {
+		assert.True(t, *cfg.BisyncEnabled)
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}

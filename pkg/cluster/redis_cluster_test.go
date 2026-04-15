@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -9,6 +10,15 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 	"github.com/stretchr/testify/assert"
 )
+
+func isRedisAvailable(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
 
 func TestRegistry(t *testing.T) {
 
@@ -27,6 +37,10 @@ func TestRegistry(t *testing.T) {
 		cfg := temp
 
 		t.Run("", func(t *testing.T) {
+			if !isRedisAvailable(cfg.Addresses[0]) {
+				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
+			}
+
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
 			assert.Nil(t, err)
@@ -123,6 +137,10 @@ func TestCampaign(t *testing.T) {
 		cfg := temp
 
 		t.Run("", func(t *testing.T) {
+			if !isRedisAvailable(cfg.Addresses[0]) {
+				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
+			}
+
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
 			assert.Nil(t, err)

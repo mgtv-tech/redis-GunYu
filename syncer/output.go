@@ -48,8 +48,13 @@ type RedisOutput struct {
 
 	cpGuard         sync.RWMutex
 	checkpointInMem checkpoint.CheckpointInfo
+	bisyncSeq       atomic.Int64
+	bisyncOffset    atomic.Int64
 
 	outFilter *filter.RedisKeyFilter
+
+	newRedisConn          func(context.Context) (client.Redis, error)
+	newRedisConnToAddress func(context.Context, string) (client.Redis, error)
 }
 
 var (
@@ -143,7 +148,8 @@ func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 		cfg:    cfg,
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisOutput(%s)] ", cfg.InputName))),
 	}
-	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() {
+	ro.bisyncOffset.Store(-1)
+	if ro.cfg.CanTransaction && ro.cfg.Redis.IsCluster() && !ro.bisyncEnabled() {
 		ro.cfg.Redis.GetClusterOptions().HandleMoveErr = false
 		ro.cfg.Redis.GetClusterOptions().HandleAskErr = false
 	}
@@ -177,6 +183,7 @@ type RedisOutputConfig struct {
 	InputName                  string
 	CheckpointName             string
 	RunId                      string
+	BisyncEnabled              bool
 	CanTransaction             bool
 	Redis                      config.RedisConfig
 	EnableResumeFromBreakPoint bool
@@ -193,6 +200,7 @@ type RedisOutputConfig struct {
 	BatchBufferSize        uint64             `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration      `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int                `yaml:"replayRdbParallel"`
+	BisyncPipelineParallel int                `yaml:"bisyncPipelineParallel"`
 	ReplayRdbEnableRestore bool               `yaml:"replayRdbEnableRestore" default:"true"`
 	ReplayPipeline         bool               `yaml:"replayPipeline"`
 	UpdateCheckpointTicker time.Duration      `yaml:"updateCheckpointTicker"`
@@ -443,7 +451,12 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 
 	rdbPipe := rdb.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize,
 		rdb.WithTargetRedisVersion(ro.cfg.Redis.Version), rdb.WithFunctionExists(ro.cfg.FunctionExists))
-	errChan := make(chan error, ro.cfg.ReplayRdbParallel+1)
+	useBisyncGlobalLane := ro.bisyncEnabled() && ro.cfg.Redis.IsCluster()
+	errChanSize := ro.cfg.ReplayRdbParallel + 1
+	if useBisyncGlobalLane {
+		errChanSize++
+	}
+	errChan := make(chan error, errChanSize)
 
 	pipeSize := config.RdbPipeSize / ro.cfg.ReplayRdbParallel
 	if pipeSize < 1 {
@@ -454,6 +467,10 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		pipes = append(pipes, make(chan *rdb.BinEntry, pipeSize))
 	}
 	pipeLen := uint32(len(pipes))
+	var globalPipe chan *rdb.BinEntry
+	if useBisyncGlobalLane {
+		globalPipe = make(chan *rdb.BinEntry, pipeSize)
+	}
 
 	distributeTask := func() error {
 		var e *rdb.BinEntry
@@ -471,6 +488,15 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 				if e.Done {
 					fullDone.Store(true)
 					return nil
+				}
+
+				if useBisyncGlobalLane && ro.bisyncRdbIsGlobalEntry(e) {
+					select {
+					case globalPipe <- e:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					continue
 				}
 
 				if len(e.Key) > 0 {
@@ -494,6 +520,9 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 			for _, pipe := range pipes {
 				close(pipe)
 			}
+			if globalPipe != nil {
+				close(globalPipe)
+			}
 		}()
 		errChan <- distributeTask()
 	}, func(i interface{}) {
@@ -503,7 +532,18 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 	for i := 0; i < ro.cfg.ReplayRdbParallel; i++ {
 		pp := pipes[i]
 		usync.SafeGo(func() {
+			if ro.bisyncEnabled() {
+				errChan <- ro.rdbReplayBisync(ctx, reader.RunId(), reader.Left(), pp)
+				return
+			}
 			errChan <- ro.rdbReplay(ctx, pp)
+		}, func(i interface{}) {
+			errChan <- fmt.Errorf("panic: %v", i)
+		})
+	}
+	if globalPipe != nil {
+		usync.SafeGo(func() {
+			errChan <- ro.rdbReplayBisyncGlobal(ctx, reader.RunId(), reader.Left(), globalPipe)
 		}, func(i interface{}) {
 			errChan <- fmt.Errorf("panic: %v", i)
 		})
@@ -525,6 +565,9 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error
 		return err
 	}
 	ro.logger.Debugf("send rdb OK : runId(%s), offset(%d), size(%d)", reader.RunId(), reader.Left(), reader.Size())
+	if ro.bisyncEnabled() {
+		ro.bisyncOffset.Store(reader.Left())
+	}
 
 	return ro.setCheckpoint(ctx, reader.RunId(), reader.Left(), config.Version)
 }
@@ -557,6 +600,9 @@ func (ro *RedisOutput) setCheckpoint(ctx context.Context, runId string, offset i
 }
 
 func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err error) {
+	if ro.newRedisConn != nil {
+		return ro.newRedisConn(ctx)
+	}
 	conn, err = client.NewRedis(ro.cfg.Redis)
 	if err != nil {
 		ro.logger.Errorf("new redis error : redis(%v), err(%v)", ro.cfg.Redis.Addresses, err)
@@ -564,8 +610,29 @@ func (ro *RedisOutput) NewRedisConn(ctx context.Context) (conn client.Redis, err
 	return conn, err
 }
 
+func (ro *RedisOutput) NewRedisConnToAddress(ctx context.Context, addr string) (conn client.Redis, err error) {
+	if ro.newRedisConnToAddress != nil {
+		return ro.newRedisConnToAddress(ctx, addr)
+	}
+
+	cfg := ro.cfg.Redis
+	cfg.Addresses = config.SliceString{addr}
+	cfg.Type = config.RedisTypeStandalone
+	cfg.Otype = config.RedisTypeStandalone
+
+	conn, err = client.NewRedis(cfg)
+	if err != nil {
+		ro.logger.Errorf("new redis by address error : redis(%s), err(%v)", addr, err)
+	}
+	return conn, err
+}
+
 func (ro *RedisOutput) sendAof(ctx context.Context, runId string, reader *bufio.Reader, offset int64, nsize int64) (err error) {
 	ro.logger.Infof("send aof : runId(%s), offset(%d), size(%d)", runId, offset, nsize)
+
+	if ro.bisyncEnabled() {
+		return ro.sendAofBisync(ctx, runId, reader, offset, nsize)
+	}
 
 	sendBuf := make(chan cmdExecution, ro.cfg.BatchCmdCount*10)
 	replayQuit := usync.NewWaitCloserFromContext(ctx, nil)
@@ -771,6 +838,23 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 }
 
 func (ro *RedisOutput) StartPoint(ctx context.Context, runIds []string) (sp StartPoint, err error) {
+	if ro.bisyncEnabled() {
+		sp, seq, ok, err := ro.bisyncStartPoint(ctx, runIds)
+		if err != nil {
+			return sp, err
+		}
+		if ok {
+			ro.startDbId = sp.DbId
+			ro.bisyncSeq.Store(seq)
+			ro.bisyncOffset.Store(sp.Offset)
+			return sp, nil
+		}
+		ro.bisyncSeq.Store(0)
+		sp.Initialize()
+		ro.bisyncOffset.Store(sp.Offset)
+		return sp, nil
+	}
+
 	cpi, dbid, err := ro.checkpoint(ctx, runIds)
 	if err != nil {
 		return sp, err

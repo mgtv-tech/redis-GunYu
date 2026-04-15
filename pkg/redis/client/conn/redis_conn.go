@@ -125,7 +125,8 @@ func (r *RedisConn) Do(cmd string, args ...interface{}) (interface{}, error) {
 }
 
 func (r *RedisConn) IterateNodes(result func(string, interface{}, error), cmd string, args ...interface{}) {
-
+	reply, err := r.Do(cmd, args...)
+	result(r.cfg.Address(), reply, err)
 }
 
 // @TODO 需要调用Flush吗？cluster模式并没有调用
@@ -204,7 +205,19 @@ func (r *RedisConn) NewBatcher(bool) common.CmdBatcher {
 	}
 }
 
+func (r *RedisConn) NewTxnBatcher() common.CmdBatcher {
+	return &txnBatcher{
+		conn: r,
+	}
+}
+
 type batcher struct {
+	conn    *RedisConn
+	cmds    []string
+	cmdArgs [][]interface{}
+}
+
+type txnBatcher struct {
 	conn    *RedisConn
 	cmds    []string
 	cmdArgs [][]interface{}
@@ -216,7 +229,17 @@ func (tb *batcher) Put(cmd string, args ...interface{}) error {
 	return nil
 }
 
+func (tb *txnBatcher) Put(cmd string, args ...interface{}) error {
+	tb.cmds = append(tb.cmds, cmd)
+	tb.cmdArgs = append(tb.cmdArgs, args)
+	return nil
+}
+
 func (tb *batcher) Len() int {
+	return len(tb.cmds)
+}
+
+func (tb *txnBatcher) Len() int {
 	return len(tb.cmds)
 }
 
@@ -262,6 +285,10 @@ func (tb *batcher) Exec() ([]interface{}, error) {
 }
 
 func (tb *batcher) Dispatch() error {
+	if len(tb.cmds) == 0 {
+		return nil
+	}
+
 	tb.conn.guard.Lock()
 	defer tb.conn.guard.Unlock()
 
@@ -270,6 +297,29 @@ func (tb *batcher) Dispatch() error {
 	for i := 0; i < len(tb.cmds); i++ {
 		exec.Do(func() error { return tb.conn.send(tb.cmds[i], tb.cmdArgs[i]...) })
 	}
+
+	err := exec.Do(func() error { return tb.conn.flush() })
+	if err != nil {
+		tb.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (tb *txnBatcher) Dispatch() error {
+	if len(tb.cmds) == 0 {
+		return nil
+	}
+
+	tb.conn.guard.Lock()
+	defer tb.conn.guard.Unlock()
+
+	exec := util.OpenCircuitExec{}
+	exec.Do(func() error { return tb.conn.send("multi") })
+	for i := 0; i < len(tb.cmds); i++ {
+		exec.Do(func() error { return tb.conn.send(tb.cmds[i], tb.cmdArgs[i]...) })
+	}
+	exec.Do(func() error { return tb.conn.send("exec") })
 
 	err := exec.Do(func() error { return tb.conn.flush() })
 	if err != nil {
@@ -304,4 +354,40 @@ func (tb *batcher) Receive() ([]interface{}, error) {
 		replies = append(replies, rpl)
 	}
 	return replies, nil
+}
+
+func (tb *txnBatcher) Receive() ([]interface{}, error) {
+	replies := []interface{}{}
+	if len(tb.cmds) == 0 {
+		return replies, nil
+	}
+
+	receiveSize := len(tb.cmds) + 2
+	for i := 0; i < receiveSize; i++ {
+		rpl, err := tb.conn.receive()
+		if err != nil {
+			if err == common.ErrNil {
+				replies = append(replies, nil)
+				continue
+			}
+			tb.conn.Close()
+			return nil, err
+		}
+
+		rpl, err = common.HandleReply(rpl)
+		if err != nil {
+			tb.conn.Close()
+			return nil, err
+		}
+
+		replies = append(replies, rpl)
+	}
+	return replies, nil
+}
+
+func (tb *txnBatcher) Exec() ([]interface{}, error) {
+	if err := tb.Dispatch(); err != nil {
+		return nil, err
+	}
+	return tb.Receive()
 }
