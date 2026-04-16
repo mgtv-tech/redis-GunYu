@@ -110,6 +110,32 @@ ports_from_addrs() {
   done
 }
 
+normalize_replay_mode() {
+  local mode
+  mode=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "${mode}" in
+    sync)
+      printf 'sync\n'
+      ;;
+    pipeline)
+      printf 'pipeline\n'
+      ;;
+    parallel)
+      printf 'parallel\n'
+      ;;
+    *)
+      echo "unknown replay mode: $1 (expected sync, pipeline, or parallel)" >&2
+      return 1
+      ;;
+  esac
+}
+
+replay_mode_uses_frontier() {
+  local mode
+  mode=$(normalize_replay_mode "$1") || return 1
+  [[ "${mode}" == "pipeline" || "${mode}" == "parallel" ]]
+}
+
 capture_sync_delay_samples() {
   local mode=$1
   local direction=$2

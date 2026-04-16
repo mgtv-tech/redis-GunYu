@@ -6,6 +6,7 @@
   - [3. 配置方式](#3-配置方式)
   - [4. 上线前注意事项](#4-上线前注意事项)
     - [4.1 业务 key 禁用前缀](#41-业务-key-禁用前缀)
+    - [4.2 不同模式性能测试报告](#42-不同模式性能测试报告)
   - [5. 不支持或暂不建议使用的命令](#5-不支持或暂不建议使用的命令)
     - [5.1 暂不支持的模块命令](#51-暂不支持的模块命令)
     - [5.2 无法解析 key 的命令](#52-无法解析-key-的命令)
@@ -36,8 +37,9 @@
 - Redis cluster 双向同步
 - AOF 增量同步路径
 - RDB 全量同步路径
-- serial 回放模式
-- pipeline 回放模式
+- `sync` 回放模式
+- `pipeline` 回放模式
+- `parallel` 回放模式
 - 目标端 `MOVED` / `ASK` 重定向下的 replay unit 级重试
 
 当前实现采用真实 `MULTI/EXEC` 事务包装 replay unit，在事务内同时写入：
@@ -80,7 +82,7 @@ output:
     resumeFromBreakPoint: true
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: false
+    mode: sync
     keyExists: replace
 ```
 
@@ -90,17 +92,18 @@ output:
 | --- | --- | --- |
 | `bisyncEnabled` | `true` | bisync 唯一显式开关，默认是 `false` |
 | `replayTransaction` | `true` | 建议保持开启；它不是 bisync 开关，但普通回放仍会使用该配置 |
-| `enableAofPipeline` | 按验证结果选择 | 在 bisync 下不只是性能开关，也决定恢复模型 |
+| `mode` | `sync` / `pipeline` / `parallel` | AOF 回放执行语义；非 bisync 下 `pipeline` 等价于旧 pipeline，`parallel` 当前仅支持 bisync |
 | `resumeFromBreakPoint` | `true` | 建议开启断点续传 |
 | `keyExists` | `replace` / `ignore` / `error` | RDB 全量同步时目标 key 已存在的处理策略 |
-| `bisyncPipelineParallel` | 可选 | pipeline 模式下的并发度；未配置时会按 cluster shard 信息推导或退回保守值 |
+| `parallelism` | 可选 | `parallel` 模式下的并发度；未配置时会按 cluster shard 信息推导或退回保守值 |
 
-`enableAofPipeline` 的含义：
+`mode` 的含义：
 
-- `false`：serial 模式，恢复点主要来自每个 slot 的 `latest` checkpoint
-- `true`：pipeline 模式，恢复点来自 `commit journal + frontier`
+- `sync`：逐个 replay unit 完成 `Dispatch + Receive` 后才发送下一个，恢复点来自每个 slot 的 `latest` checkpoint
+- `pipeline`：发送和接收放到不同 goroutine，但按发送顺序确认并推进 checkpoint，通过 `commit journal + frontier` 恢复连续前缀
+- `parallel`：按有界 lane 并发派发 replay unit，通过 `commit journal + frontier` 恢复连续前缀
 
-生产环境不要只验证 serial 就上线 pipeline，也不要只验证 pipeline 就上线 serial。两种模式的恢复面不同，应分别测试。
+生产环境不要只验证一个模式就上线另一个模式。`sync` 与 `pipeline`/`parallel` 的恢复面不同，三种执行语义也应分别测试。
 
 ## 4. 上线前注意事项
 
@@ -111,7 +114,7 @@ output:
 - cluster 模式下，业务事务应尽量使用 hash tag 保证单 slot
 - 灰度初期建议按业务前缀或 slot 范围控制同步范围
 - 上线前必须明确同 key 双边写入的业务语义
-- 开启 pipeline 前必须单独验证恢复、failover 和长稳
+- 开启 `pipeline` 或 `parallel` 前必须单独验证恢复、failover 和长稳
 - 如果修改过滤规则，应重新跑 category4 和基础收敛测试
 
 ### 4.1 业务 key 禁用前缀
@@ -135,6 +138,14 @@ output:
 - `redis-gunyu-bisync:<checkpointName>:rdb:{slotTag}:<unitSeq>`
 
 如果已有业务 key 命中这些前缀，应先改名或通过过滤规则排除，再启用 bisync。
+
+### 4.2 不同模式性能测试报告
+
+
+测试报告结果如下：
+- [2026-04-15-bisync-perf-report.md](../tests/bisync/reports/2026-04-15-bisync-perf-report.md)
+
+
 
 ## 5. 不支持或暂不建议使用的命令
 
@@ -184,9 +195,9 @@ cluster 模式下，单个 replay unit 必须绑定到一个 slot。跨 slot 的
 
    如果两边同时写同一个 key，GunYu 不会判断谁是“正确值”。最终结果由 Redis 命令语义、复制顺序和恢复过程共同决定。`INCR`、`LPUSH`、`XADD` 等非幂等命令尤其需要业务侧确认语义。
 
-2. pipeline 恢复不是“精确跳过所有已提交 unit”
+2. `pipeline`/`parallel` 恢复不是“精确跳过所有已提交 unit”
 
-   当前 pipeline 模式通过 `frontier + commit journal` 重建连续已提交前缀。如果崩溃时 frontier 后存在 gap，gap 后面即使有 durable commit，也可能在重启后随 source stream 再次回放。当前语义是从最后连续已提交点恢复，而不是逐个精确跳过所有已提交 unit。
+   当前 `parallel` 模式通过 `frontier + commit journal` 重建连续已提交前缀。如果崩溃时 frontier 后存在 gap，gap 后面即使有 durable commit，也可能在重启后随 source stream 再次回放。当前语义是从最后连续已提交点恢复，而不是逐个精确跳过所有已提交 unit。
 
 3. RDB 路径不提供 key 级 authoritative 恢复点
 
@@ -220,10 +231,10 @@ bisync 相关指标包括：
 | `bisync_txn_commit` | bisync 事务提交计数 |
 | `bisync_single_slot_fail` | 单 slot 校验失败计数 |
 | `bisync_txn_suppress` | mirrored transaction 抑制计数 |
-| `bisync_frontier_seq` | pipeline frontier 序号 |
-| `bisync_frontier_offset` | pipeline frontier offset |
+| `bisync_frontier_seq` | `pipeline`/`parallel` frontier 序号 |
+| `bisync_frontier_offset` | `pipeline`/`parallel` frontier offset |
 | `bisync_frontier_rebuild_seconds` | frontier 重建耗时 |
-| `bisync_commit_backlog` | pipeline commit backlog |
+| `bisync_commit_backlog` | `pipeline`/`parallel` commit backlog |
 | `bisync_commit_gc` | commit journal 清理计数 |
 
 重点关注：
@@ -231,7 +242,7 @@ bisync 相关指标包括：
 - `bisync_txn_commit` 是否持续增长
 - `bisync_txn_suppress` 是否能看到镜像事务被抑制
 - `bisync_single_slot_fail` 是否增长
-- pipeline 模式下 `bisync_commit_backlog` 是否长期堆积
+- `parallel` 模式下 `bisync_commit_backlog` 是否长期堆积
 - syncer 日志中是否出现 repeated `MOVED` / `ASK`、frontier rebuild、journal gap、strict routing 失败
 
 ## 8. 开发与实现说明
@@ -267,11 +278,11 @@ bisync 仍然以 source `runId + offset` 作为复制流恢复轴，但恢复元
 | key | 用途 |
 | --- | --- |
 | `redis-gunyu-checkpoint-bisync:<id>` | bisync namespace root |
-| `redis-gunyu-checkpoint-bisync:<id>:frontier` | pipeline 模式的全局连续恢复点 |
+| `redis-gunyu-checkpoint-bisync:<id>:frontier` | `parallel` 模式的全局连续恢复点 |
 | `redis-gunyu-bisync:<checkpointName>:marker:{slotTag}` | 镜像事务抑制 marker |
-| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | serial 模式 slot-local 恢复点 |
-| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | pipeline 模式提交 journal |
-| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | pipeline 模式 journal 索引 |
+| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | `sync` 模式 slot-local 恢复点 |
+| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | `parallel` 模式提交 journal |
+| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | `parallel` 模式 journal 索引 |
 | `redis-gunyu-bisync:<checkpointName>:rdb:{slotTag}:<unitSeq>` | RDB 回放路径记录 |
 | `redis-gunyu-checkpoint-hash` | source runId 到 checkpoint namespace 的映射 |
 
@@ -301,7 +312,7 @@ bisync 仍然以 source `runId + offset` 作为复制流恢复轴，但恢复元
 | 脚本 | 覆盖内容 |
 | --- | --- |
 | `tests/bisync/run_category1.sh` | 基础双向收敛 |
-| `tests/bisync/run_category2.sh` | serial / pipeline 重启、断点续传、metadata 形态 |
+| `tests/bisync/run_category2.sh` | `sync` / `pipeline` / `parallel` 重启、断点续传、metadata 形态 |
 | `tests/bisync/run_category3.sh` | RDB 特殊路径、纯全量同步、full-sync barrier |
 | `tests/bisync/run_category4.sh` | keyspec、过滤、strict routing、真实 Redis `COMMAND GETKEYS` 校验 |
 | `tests/bisync/run_category5.sh` | source failover、target failover、syncer restart |
@@ -312,8 +323,8 @@ bisync 仍然以 source `runId + offset` 作为复制流恢复轴，但恢复元
 
 仓库中已有一份长稳记录：
 
-- [tests/bisync/reports/2026-04-14-serial-90m-stop-report.md](../tests/bisync/reports/2026-04-14-serial-90m-stop-report.md)
-- 使用 Redis 7.0.11、serial 模式、4 worker、目标约 `10000` combined logical commands/s
+- `tests/bisync/reports/` 下已有一份 `sync` 模式的长稳记录可供参考
+- 使用 Redis 7.0.11、`sync` 模式、4 worker、目标约 `10000` combined logical commands/s
 - 实际采样运行约 `87.48m`
 - 已完成 syncer API restart、左右 Redis failover、syncer offline/resume、final syncer API restart 等计划故障注入
 - 日志检查未发现 panic、fatal、connection reset by peer
@@ -329,7 +340,7 @@ bash ./tests/bisync/run_category3.sh
 bash ./tests/bisync/run_category4.sh
 bash ./tests/bisync/run_category5.sh
 bash ./tests/bisync/run_category8.sh
-SOAK_TIER=2h SCENARIOS=serial,pipeline KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
+SOAK_TIER=2h SCENARIOS=sync,pipeline,parallel KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
 ```
 
 `category9` 的 `2h` 通过并审阅报告后，再推进 `4h` 和 `6h`。
@@ -339,7 +350,7 @@ SOAK_TIER=2h SCENARIOS=serial,pipeline KEEP_TMP=1 bash ./tests/bisync/run_catego
 推荐发布步骤：
 
 1. 使用生产同版本 Redis 跑完单测和 `category1` 到 `category5`、`category8`
-2. 使用 `category9` 分档完成 serial 和 pipeline 长稳
+2. 使用 `category9` 分档完成 `sync`、`pipeline` 和 `parallel` 长稳
 3. 按业务前缀或 slot 范围灰度，控制初始写入规模
 4. 观察状态接口、bisync 指标、Redis 资源和业务比对结果
 5. 灰度期间保留快速关闭 `bisyncEnabled` 或停止反向链路的回滚方案
@@ -347,7 +358,7 @@ SOAK_TIER=2h SCENARIOS=serial,pipeline KEEP_TMP=1 bash ./tests/bisync/run_catego
 生产通过标准：
 
 - 双端业务 key 最终一致
-- serial 和 pipeline 的目标模式均已验证
+- `sync`、`pipeline` 和 `parallel` 的目标模式均已验证
 - failover、syncer restart、离线恢复后仍能收敛
 - 不存在异常残留的 commit journal 堆积
 - 未出现持续增长的 goroutine、RSS、storer 目录或 Redis memory 异常

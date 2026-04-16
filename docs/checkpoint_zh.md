@@ -16,10 +16,10 @@
     - [4.5 `commit:{slotTag}:<unitSeq>`](#45-commitslottagunitseq)
     - [4.6 `index:{slotTag}`](#46-indexslottag)
     - [4.7 `rdb:{slotTag}:<unitSeq>`](#47-rdbslottagunitseq)
-  - [5. bisync serial：启动恢复与运行更新](#5-bisync-serial启动恢复与运行更新)
+  - [5. bisync sync：启动恢复与运行更新](#5-bisync-sync启动恢复与运行更新)
     - [5.1 启动恢复](#51-启动恢复)
     - [5.2 运行更新](#52-运行更新)
-  - [6. bisync pipeline：启动恢复与运行更新](#6-bisync-pipeline启动恢复与运行更新)
+  - [6. bisync pipeline/parallel：启动恢复与运行更新](#6-bisync-pipelineparallel启动恢复与运行更新)
     - [6.1 启动恢复](#61-启动恢复)
     - [6.2 运行更新](#62-运行更新)
   - [7. 启动时 checkpoint namespace 的创建与迁移](#7-启动时-checkpoint-namespace-的创建与迁移)
@@ -68,8 +68,8 @@
 区别在于：
 
 - 非 bisync：恢复点主要就是普通 `checkpointName` hash 里的 `runId_offset`
-- bisync serial：恢复点主要来自各 slot 的 `latest`
-- bisync pipeline：恢复点主要来自 `frontier + commit journal`
+- bisync `sync`：恢复点主要来自各 slot 的 `latest`
+- bisync `pipeline`/`parallel`：恢复点主要来自 `frontier + commit journal`
 
 代码中常量定义：
 
@@ -329,20 +329,20 @@ HSET redis-gunyu-checkpoint-bisync:aa11bb22cc33 \
   r1_version 1 \
   r1_offset 123456 \
   r1_mtime 1710000000000000000 \
-  bisync_mode pipeline \
+  bisync_mode parallel \
   bisync_mode_mtime 1710000001000000000
 ```
 
 这里的 root key 有三个作用：
 
 1. 给整个 bisync namespace 提供稳定根名
-2. 保存当前 namespace 属于 `serial` 还是 `pipeline`
+2. 保存当前 namespace 属于 `sync`、`pipeline` 还是 `parallel`
 3. 保留一个 shared checkpoint offset 作为 barrier 或迁移 seed
 
 但要注意：
 
 - 在 bisync AOF 恢复中，root key 里的 `runId_offset` 通常不是最终 authoritative 恢复点
-- 真正 authoritative 的恢复点，在 serial 模式来自 `latest`，在 pipeline 模式来自 `frontier + commit journal`
+- 真正 authoritative 的恢复点，在 `sync` 模式来自 `latest`，在 `pipeline`/`parallel` 模式来自 `frontier + commit journal`
 
 ### 4.2 `checkpointName:frontier`
 
@@ -385,7 +385,7 @@ HSET redis-gunyu-checkpoint-bisync:aa11bb22cc33:frontier \
 
 含义：
 
-- pipeline 模式下，当前已经连续确认到 `unit_seq=88`
+- `parallel` 模式下，当前已经连续确认到 `unit_seq=88`
 - 它对应 source offset `123456`
 - 这个点之前的 unit 都已经被 authoritative 地并入恢复面
 
@@ -485,7 +485,7 @@ HSET redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11bb22cc33:latest:{slot-
 - 它覆盖的 source offset 范围是 `[10, 20]`
 - 恢复时可以把该 slot 的已提交点视为 `offset=20`
 
-`latest` 只在 bisync serial 模式中充当 authoritative 恢复依据。
+`latest` 只在 bisync `sync` 模式中充当 authoritative 恢复依据。
 
 ### 4.5 `commit:{slotTag}:<unitSeq>`
 
@@ -542,7 +542,7 @@ HSET redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11bb22cc33:commit:{slot-
 - 它落在哪个 slot
 - 它在本 namespace 中的单调序号 `unit_seq`
 
-这是 pipeline 模式的 journal record。
+这是 `pipeline`/`parallel` 模式的 journal record。
 
 注意：
 
@@ -581,7 +581,7 @@ ZADD redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11bb22cc33:index:{slot-8
 
 作用：
 
-- 为 pipeline 模式的 commit journal 提供按 `unit_seq` 的有序索引
+- 为 `pipeline`/`parallel` 模式的 commit journal 提供按 `unit_seq` 的有序索引
 - 启动恢复时，先从 `index` 找到候选 `commit` key，再去读取对应 hash
 
 `index` 自己不保存恢复点，只保存索引关系。
@@ -609,9 +609,10 @@ redis-gunyu-bisync:<checkpointName>:rdb:{slotTag}:<unitSeq>
 
 因此在理解当前线上恢复行为时，可以把这个 key 看成“预留/兼容解析能力”，而不是当前 checkpoint 主数据的一部分。
 
-## 5. bisync serial：启动恢复与运行更新
+<a id="5-bisync-sync启动恢复与运行更新"></a>
+## 5. bisync sync：启动恢复与运行更新
 
-serial 模式的核心特点：
+`sync` 模式的核心特点：
 
 - 每个 slot 只保留一个 `latest`
 - 不保留 commit journal
@@ -623,7 +624,7 @@ serial 模式的核心特点：
 
 ```redis
 HSET redis-gunyu-checkpoint-hash r1 redis-gunyu-checkpoint-bisync:aa11
-HSET redis-gunyu-checkpoint-bisync:aa11 bisync_mode serial
+HSET redis-gunyu-checkpoint-bisync:aa11 bisync_mode sync
 
 HSET redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11:latest:{slot-a} \
   version 1 run_id r1 syncer_id syncer-a unit_seq 7 start_offset 81 end_offset 100 slot 100 digest d1 mtime 10
@@ -665,7 +666,7 @@ HSET redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11:latest:{slot-c} \
    offset = 120
    ```
 
-serial 模式下，authoritative 恢复点不是 root key 里的 `r1_offset`，而是扫描 `latest` 后选出的最佳记录。
+`sync` 模式下，authoritative 恢复点不是 root key 里的 `r1_offset`，而是扫描 `latest` 后选出的最佳记录。
 
 ### 5.2 运行更新
 
@@ -681,7 +682,7 @@ serial 模式下，authoritative 恢复点不是 root key 里的 `r1_offset`，�
   SET foo{slot-8338-x} value
   ```
 
-serial 模式会把它包装成一笔真实事务：
+`sync` 模式会把它包装成一笔真实事务：
 
 ```redis
 MULTI
@@ -710,9 +711,10 @@ EXEC
 
 下一次重启时，如果这条 `latest` 是所有 slot 中 offset 最大的记录，那么恢复起点就会直接选到 `offset=140`
 
-## 6. bisync pipeline：启动恢复与运行更新
+<a id="6-bisync-pipelineparallel启动恢复与运行更新"></a>
+## 6. bisync pipeline/parallel：启动恢复与运行更新
 
-pipeline 模式的核心特点：
+`pipeline`/`parallel` 模式的核心特点：
 
 - 提交时记录 `commit journal`
 - 用 `index` 建立 journal 索引
@@ -727,7 +729,7 @@ Redis 中已有：
 
 ```redis
 HSET redis-gunyu-checkpoint-hash r1 redis-gunyu-checkpoint-bisync:aa11
-HSET redis-gunyu-checkpoint-bisync:aa11 bisync_mode pipeline
+HSET redis-gunyu-checkpoint-bisync:aa11 bisync_mode parallel
 
 HSET redis-gunyu-checkpoint-bisync:aa11:frontier \
   version 1 \
@@ -821,7 +823,7 @@ commit(seq=9) 不存在
 
 原因是：
 
-- pipeline 模式只承认“从 frontier 之后连续闭合”的 journal
+- `pipeline`/`parallel` 模式只承认“从 frontier 之后连续闭合”的 journal
 - 不能因为看见更大的 `unit_seq` 就越过中间缺口
 
 这就是 `frontier + commit journal` 的核心语义。
@@ -840,7 +842,7 @@ commit(seq=9) 不存在
   SET foo{slot-8338-x} value
   ```
 
-pipeline 模式会先提交一笔真实事务：
+`pipeline`/`parallel` 模式会先提交一笔真实事务：
 
 ```redis
 MULTI
@@ -872,7 +874,7 @@ EXEC
 
 原因是：
 
-- pipeline 允许多个 unit 并发派发
+- `pipeline`/`parallel` 允许多个 unit in-flight
 - 真正推进恢复面的动作由 coordinator 串行完成
 - coordinator 只有在发现 `frontier.unit_seq + 1` 连续可达时，才会推进前沿
 
@@ -924,7 +926,7 @@ DEL redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11:commit:{slot-8338-x}:0
 ZREM redis-gunyu-bisync:redis-gunyu-checkpoint-bisync:aa11:index:{slot-8338-x} <commitKey9> <commitKey10>
 ```
 
-所以 pipeline 模式的恢复面是分两层推进的：
+所以 `pipeline`/`parallel` 模式的恢复面是分两层推进的：
 
 1. 提交层：先写 `commit + index`
 2. 收敛层：再由 `frontier` 吸收连续部分
@@ -957,14 +959,14 @@ bisync 启动时，首先要确定当前 runId 对应哪个 `checkpointName`。
 
 两个迁移例子：
 
-1. `serial -> pipeline`
+1. `sync -> pipeline|parallel`
 
    - 从旧 namespace 扫 `latest`
    - 选出最佳 `latest`
    - 把它转成 seed
    - 在新 namespace 中写 root checkpoint 和 `frontier`
 
-2. `pipeline -> serial`
+2. `pipeline|parallel -> sync`
 
    - 先读取旧 `frontier`
    - 再读取 `frontier` 之后的 `commit journal`
@@ -1017,7 +1019,7 @@ GC 的总体思路：
 - per-slot `marker`
 - per-slot `latest`
 - per-slot `index`
-- pipeline 模式下索引里引用到的所有 `commit` key
+- `pipeline`/`parallel` 模式下索引里引用到的所有 `commit` key
 
 这一步保证 mode 迁移后不会遗留失联的旧 bisync namespace。
 
@@ -1030,12 +1032,12 @@ GC 的总体思路：
    - checkpoint 主体就是 `checkpointName` hash
    - authoritative 恢复点就是 `<runId>_offset`
 
-2. bisync serial
+2. bisync `sync`
 
    - root key 负责 namespace 和 mode
    - authoritative 恢复点来自各 slot 的 `latest`
 
-3. bisync pipeline
+3. bisync `pipeline`/`parallel`
 
    - `commit` 只表示单个 unit 已提交
    - `index` 只表示 journal 索引
@@ -1047,5 +1049,5 @@ GC 的总体思路：
 当前代码的正确理解方式是：
 
 - 先区分非 bisync / bisync
-- 在 bisync 内再区分 serial / pipeline
+- 在 bisync 内再区分 `sync` / `pipeline` / `parallel`
 - 最后再判断某个 key 是索引、抑制面控制数据，还是 authoritative 恢复面数据

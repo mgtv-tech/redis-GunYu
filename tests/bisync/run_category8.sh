@@ -146,7 +146,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: false
-    enableAofPipeline: false
+    mode: sync
 log:
   level: info
   handler:

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat3"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat3:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-29700}"
 SERIAL_DST_BASE="${SERIAL_DST_BASE:-29800}"
 SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-29780}"
@@ -138,7 +138,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -172,7 +174,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -199,9 +201,11 @@ start_syncer() {
   local src_ports_csv=$2
   local dst_ports_csv=$3
   local http_port=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
-  write_syncer_conf "${name}" "${http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${pipeline_flag}"
+  write_syncer_conf "${name}" "${http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${mode_arg}"
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${name}.yaml" -cmd sync > "${TMP_ROOT}/${name}.log" 2>&1 &
   SYNCER_PID=$!
   wait_for_syncer "${http_port}"
@@ -314,7 +318,9 @@ assert_expected_fullsync_state() {
 
 run_fullsync_barrier_scenario() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local prefix="${TEST_PREFIX}:${mode}"
   local src_ports
   local dst_ports
@@ -328,7 +334,7 @@ run_fullsync_barrier_scenario() {
   local commit_count
   local frontier_count
 
-  if [[ "${mode}" == "serial" ]]; then
+  if ! replay_mode_uses_frontier "${replay_mode}"; then
     src_ports=("${SERIAL_SRC_BASE}" "$((SERIAL_SRC_BASE + 1))" "$((SERIAL_SRC_BASE + 2))")
     dst_ports=("${SERIAL_DST_BASE}" "$((SERIAL_DST_BASE + 1))" "$((SERIAL_DST_BASE + 2))")
     http_port="${SERIAL_HTTP_PORT}"
@@ -346,12 +352,12 @@ run_fullsync_barrier_scenario() {
 
   echo "[4/5] scenario ${mode}: preload source and run pure full sync"
   write_source_fullsync_data "${prefix}" "${src_ports[0]}"
-  start_syncer "${mode}" "${src_csv}" "${dst_csv}" "${http_port}" "${pipeline_flag}"
+  start_syncer "${mode}" "${src_csv}" "${dst_csv}" "${http_port}" "${mode_arg}"
   wait_for_converge "${src_csv}" "${dst_csv}" "${prefix}:*"
   "${TMP_ROOT}/bisync_compare" --left-addrs "${src_csv}" --right-addrs "${dst_csv}" --pattern "${prefix}:*"
   assert_expected_fullsync_state "${dst_ports[0]}" "${prefix}"
 
-  metadata_counts=$(wait_for_rdb_metadata_shape "${pipeline_flag}" "${dst_ports[@]}") || {
+  metadata_counts=$(wait_for_rdb_metadata_shape "${mode_arg}" "${dst_ports[@]}") || {
     echo "rdb metadata shape did not settle for scenario ${mode}" >&2
     exit 1
   }
@@ -359,7 +365,7 @@ run_fullsync_barrier_scenario() {
 
   echo "[5/5] scenario ${mode}: summary"
   echo "prefix=${prefix}"
-  echo "pipeline=${pipeline_flag}"
+  echo "mode=${replay_mode}"
   echo "marker_keys=${marker_count}"
   echo "rdb_keys=${rdb_count}"
   echo "latest_keys=${latest_count}"
@@ -375,12 +381,17 @@ build_binaries
 run_rdb_unit_tests
 
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_fullsync_barrier_scenario serial false
+  *",sync,"*)
+    run_fullsync_barrier_scenario sync sync
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_fullsync_barrier_scenario pipeline true
+    run_fullsync_barrier_scenario pipeline pipeline
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_fullsync_barrier_scenario parallel parallel
     ;;
 esac

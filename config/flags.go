@@ -191,7 +191,14 @@ func flagsParseType(kind reflect.Kind, val reflect.Value, tag string, defVal str
 	var err error
 	switch kind {
 	case reflect.String:
-		flag.StringVar(val.Addr().Interface().(*string), tag, defVal, usage)
+		if val.Type() == reflect.TypeOf("") {
+			flag.StringVar(val.Addr().Interface().(*string), tag, defVal, usage)
+		} else {
+			if defVal != "" {
+				val.SetString(defVal)
+			}
+			flag.Var(reflectStringFlag{val: val}, tag, usage)
+		}
 	case reflect.Int, reflect.Int64:
 		rVal := int64(0)
 		if defVal != "" {
@@ -220,6 +227,19 @@ func flagsParseType(kind reflect.Kind, val reflect.Value, tag string, defVal str
 	case reflect.Struct:
 		FlagsParseToStruct(tag, val.Addr().Interface())
 	}
+}
+
+type reflectStringFlag struct {
+	val reflect.Value
+}
+
+func (f reflectStringFlag) String() string {
+	return f.val.String()
+}
+
+func (f reflectStringFlag) Set(value string) error {
+	f.val.SetString(value)
+	return nil
 }
 
 func FlagsSetToStruct(obj interface{}) {

@@ -73,7 +73,7 @@ func TestBuildBisyncReplayUnitSingleSlot(t *testing.T) {
 func TestScheme1StartPointSkipsSlotScanWhenCheckpointEmpty(t *testing.T) {
 	cli := &countingNamespaceRedis{fakeNamespaceRedis: newFakeNamespaceRedis()}
 	checkpointName := "redis-gunyu-checkpoint-bisync:test-empty"
-	if _, err := cli.Do("hset", checkpointName, "bisync_mode", string(checkpoint.BisyncModeSerial)); err != nil {
+	if _, err := cli.Do("hset", checkpointName, "bisync_mode", string(checkpoint.BisyncModeSync)); err != nil {
 		t.Fatalf("seed mode marker failed: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestScheme1StartPointFallsBackToRootCheckpointWhenLatestRecordsEmpty(t *tes
 	runID := "run-a"
 	if _, err := cli.Do("hset",
 		checkpointName,
-		"bisync_mode", string(checkpoint.BisyncModeSerial),
+		"bisync_mode", string(checkpoint.BisyncModeSync),
 		runID+checkpoint.CheckpointRunIdSuffix, runID,
 		runID+checkpoint.CheckpointVersionSuffix, "1",
 		runID+checkpoint.CheckpointOffsetSuffix, "0",
@@ -153,9 +153,9 @@ func TestScheme1StartPointFallsBackToRootCheckpointWhenLatestRecordsEmpty(t *tes
 	}
 }
 
-func TestBisyncSerialStartPointUsesNewerRootCheckpointOverStaleLatest(t *testing.T) {
+func TestBisyncSyncStartPointUsesNewerRootCheckpointOverStaleLatest(t *testing.T) {
 	cli := newFakeNamespaceRedis()
-	checkpointName := "redis-gunyu-checkpoint-bisync:test-serial-root-newer"
+	checkpointName := "redis-gunyu-checkpoint-bisync:test-sync-root-newer"
 	runID := "run-a"
 	if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
 		Key:     checkpointName,
@@ -230,7 +230,7 @@ func TestBisyncPipelineStartPointUsesNewerRootCheckpointOverStaleFrontier(t *tes
 		InputName:      "127.0.0.1:6379",
 		CheckpointName: checkpointName,
 		BisyncEnabled:  true,
-		ReplayPipeline: true,
+		ReplayMode:     config.ReplayModeParallel,
 		Redis:          config.RedisConfig{Type: config.RedisTypeStandalone},
 	})
 	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
@@ -900,6 +900,8 @@ type fakeBisyncPipelineRedisFactory struct {
 	receiveDelay      time.Duration
 	concurrentReceive int
 	maxConcurrent     int
+	inflight          int
+	maxInflight       int
 	newRedisCalls     int
 }
 
@@ -926,12 +928,28 @@ func (f *fakeBisyncPipelineRedisFactory) leaveReceive() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.concurrentReceive--
+	f.inflight--
+}
+
+func (f *fakeBisyncPipelineRedisFactory) recordDispatch() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inflight++
+	if f.inflight > f.maxInflight {
+		f.maxInflight = f.inflight
+	}
 }
 
 func (f *fakeBisyncPipelineRedisFactory) maxReceiveConcurrency() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.maxConcurrent
+}
+
+func (f *fakeBisyncPipelineRedisFactory) maxInflightCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxInflight
 }
 
 func (f *fakeBisyncPipelineRedisFactory) newRedisCount() int {
@@ -1013,7 +1031,10 @@ func (b *fakeBisyncPipelineTxnBatcher) Exec() ([]interface{}, error) {
 
 func (b *fakeBisyncPipelineTxnBatcher) Len() int { return b.cmdCounter }
 
-func (b *fakeBisyncPipelineTxnBatcher) Dispatch() error { return nil }
+func (b *fakeBisyncPipelineTxnBatcher) Dispatch() error {
+	b.redis.factory.recordDispatch()
+	return nil
+}
 
 func (b *fakeBisyncPipelineTxnBatcher) Receive() ([]interface{}, error) {
 	b.redis.factory.enterReceive()
@@ -1033,6 +1054,55 @@ func (b *fakeBisyncPipelineTxnBatcher) Receive() ([]interface{}, error) {
 	return replies, nil
 }
 
+func TestSendBisyncOrderedDispatchesAheadOfReceive(t *testing.T) {
+	factory := &fakeBisyncPipelineRedisFactory{
+		receiveDelay: 20 * time.Millisecond,
+	}
+
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:      "127.0.0.1:6379",
+		CheckpointName: "redis-gunyu-checkpoint-bisync:test-a",
+		BatchCmdCount:  4,
+		Redis: config.RedisConfig{
+			Type: config.RedisTypeStandalone,
+		},
+	})
+	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
+		return factory.newRedis(config.RedisTypeStandalone), nil
+	}
+
+	slotMode := ro.bisyncSlotMode()
+	unitBuf := make(chan *bisyncReplayUnit, 4)
+	for i := int64(1); i <= 4; i++ {
+		unit, err := buildBisyncReplayUnitWithMode(i, (i-1)*10, i*10, false, nil, []bisyncAofCommand{
+			{Cmd: "set", Args: [][]byte{[]byte(fmt.Sprintf("key-%d", i)), []byte("value")}},
+		}, slotMode)
+		if err != nil {
+			t.Fatalf("build replay unit failed: %v", err)
+		}
+		unitBuf <- unit
+	}
+	close(unitBuf)
+
+	wait := usync.NewWaitCloser(nil)
+	if err := ro.sendBisyncPipeline(wait, "run-1", unitBuf); err != nil {
+		t.Fatalf("send bisync pipeline failed: %v", err)
+	}
+
+	if got := factory.maxInflightCount(); got <= 1 {
+		t.Fatalf("expected pipeline sender to dispatch ahead of receiver, max inflight got %d", got)
+	}
+	if got := factory.maxReceiveConcurrency(); got != 1 {
+		t.Fatalf("expected one pipeline receive goroutine, got %d", got)
+	}
+	if got := ro.bisyncSeq.Load(); got != 4 {
+		t.Fatalf("unexpected bisync seq: got %d want 4", got)
+	}
+	if got := ro.bisyncOffset.Load(); got != 40 {
+		t.Fatalf("unexpected bisync offset: got %d want 40", got)
+	}
+}
+
 func TestSendBisyncConcurrentStandaloneUsesSingleReceiveLane(t *testing.T) {
 	factory := &fakeBisyncPipelineRedisFactory{
 		receiveDelay: 20 * time.Millisecond,
@@ -1042,7 +1112,7 @@ func TestSendBisyncConcurrentStandaloneUsesSingleReceiveLane(t *testing.T) {
 		InputName:      "127.0.0.1:6379",
 		CheckpointName: "redis-gunyu-checkpoint-bisync:test-a",
 		BatchCmdCount:  4,
-		ReplayPipeline: true,
+		ReplayMode:     config.ReplayModeParallel,
 		Redis: config.RedisConfig{
 			Type: config.RedisTypeStandalone,
 		},
@@ -1065,7 +1135,7 @@ func TestSendBisyncConcurrentStandaloneUsesSingleReceiveLane(t *testing.T) {
 	close(unitBuf)
 
 	wait := usync.NewWaitCloser(nil)
-	if err := ro.sendBisyncConcurrent(wait, "run-1", unitBuf); err != nil {
+	if err := ro.sendBisyncParallel(wait, "run-1", unitBuf); err != nil {
 		t.Fatalf("send bisync concurrent failed: %v", err)
 	}
 
@@ -1098,12 +1168,12 @@ func TestSendBisyncConcurrentClusterUsesBoundedLanes(t *testing.T) {
 	})
 
 	ro := NewRedisOutput(RedisOutputConfig{
-		InputName:              "127.0.0.1:6379",
-		CheckpointName:         "redis-gunyu-checkpoint-bisync:test-a",
-		BatchCmdCount:          8,
-		BisyncPipelineParallel: 2,
-		ReplayPipeline:         true,
-		Redis:                  redisCfg,
+		InputName:      "127.0.0.1:6379",
+		CheckpointName: "redis-gunyu-checkpoint-bisync:test-a",
+		BatchCmdCount:  8,
+		Parallelism:    2,
+		ReplayMode:     config.ReplayModeParallel,
+		Redis:          redisCfg,
 	})
 	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
 		return factory.newRedis(config.RedisTypeCluster), nil
@@ -1122,7 +1192,7 @@ func TestSendBisyncConcurrentClusterUsesBoundedLanes(t *testing.T) {
 	close(unitBuf)
 
 	wait := usync.NewWaitCloser(nil)
-	if err := ro.sendBisyncConcurrent(wait, "run-1", unitBuf); err != nil {
+	if err := ro.sendBisyncParallel(wait, "run-1", unitBuf); err != nil {
 		t.Fatalf("send bisync concurrent failed: %v", err)
 	}
 
@@ -1149,7 +1219,7 @@ func TestBisyncPipelineWorkerCountAutoUsesClusterPrimaryCount(t *testing.T) {
 		InputName:         "127.0.0.1:6379",
 		CheckpointName:    "redis-gunyu-checkpoint-bisync:test-a",
 		BatchCmdCount:     8,
-		ReplayPipeline:    true,
+		ReplayMode:        config.ReplayModeParallel,
 		Redis:             redisCfg,
 		BisyncEnabled:     true,
 		CanTransaction:    true,

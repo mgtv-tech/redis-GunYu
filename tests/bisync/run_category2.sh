@@ -5,15 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat2"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat2:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-29300}"
 SERIAL_DST_BASE="${SERIAL_DST_BASE:-29400}"
 SERIAL_FWD_HTTP_PORT="${SERIAL_FWD_HTTP_PORT:-29380}"
 SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-29480}"
-PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-29500}"
-PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-29600}"
-PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-29580}"
-PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-29680}"
+ORDERED_SRC_BASE="${ORDERED_SRC_BASE:-29500}"
+ORDERED_DST_BASE="${ORDERED_DST_BASE:-29600}"
+ORDERED_FWD_HTTP_PORT="${ORDERED_FWD_HTTP_PORT:-29580}"
+ORDERED_REV_HTTP_PORT="${ORDERED_REV_HTTP_PORT:-29680}"
+PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-29700}"
+PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-29800}"
+PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-29780}"
+PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-29880}"
 FWD_PID=""
 REV_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
@@ -56,6 +60,8 @@ category2_all_ports() {
   printf '%s\n' \
     "${SERIAL_SRC_BASE}" "$((SERIAL_SRC_BASE + 1))" "$((SERIAL_SRC_BASE + 2))" \
     "${SERIAL_DST_BASE}" "$((SERIAL_DST_BASE + 1))" "$((SERIAL_DST_BASE + 2))" \
+    "${ORDERED_SRC_BASE}" "$((ORDERED_SRC_BASE + 1))" "$((ORDERED_SRC_BASE + 2))" \
+    "${ORDERED_DST_BASE}" "$((ORDERED_DST_BASE + 1))" "$((ORDERED_DST_BASE + 2))" \
     "${PIPELINE_SRC_BASE}" "$((PIPELINE_SRC_BASE + 1))" "$((PIPELINE_SRC_BASE + 2))" \
     "${PIPELINE_DST_BASE}" "$((PIPELINE_DST_BASE + 1))" "$((PIPELINE_DST_BASE + 2))"
 }
@@ -144,7 +150,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -178,7 +186,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -206,10 +214,12 @@ start_syncers() {
   local dst_ports_csv=$3
   local fwd_http_port=$4
   local rev_http_port=$5
-  local pipeline_flag=$6
+  local mode_arg=$6
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
-  write_syncer_conf "${name}-forward" "${fwd_http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${pipeline_flag}"
-  write_syncer_conf "${name}-reverse" "${rev_http_port}" "${dst_ports_csv}" "${src_ports_csv}" "${pipeline_flag}"
+  write_syncer_conf "${name}-forward" "${fwd_http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${mode_arg}"
+  write_syncer_conf "${name}-reverse" "${rev_http_port}" "${dst_ports_csv}" "${src_ports_csv}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${name}-forward.yaml" -cmd sync > "${TMP_ROOT}/${name}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -382,44 +392,46 @@ cluster_scan_count() {
   done | sort -u | sed '/^$/d' | wc -l | tr -d ' '
 }
 
-assert_serial_metadata() {
+assert_sync_metadata() {
   local latest_count=$1
   local commit_count=$2
   local frontier_count=$3
   if [[ "${latest_count}" -le 0 ]]; then
-    echo "expected latest checkpoint keys in serial mode" >&2
+    echo "expected latest checkpoint keys in sync mode" >&2
     exit 1
   fi
   if [[ "${commit_count}" != "0" ]]; then
-    echo "expected no commit journal keys in serial mode, got ${commit_count}" >&2
+    echo "expected no commit journal keys in sync mode, got ${commit_count}" >&2
     exit 1
   fi
   if [[ "${frontier_count}" != "0" ]]; then
-    echo "expected no frontier keys in serial mode, got ${frontier_count}" >&2
+    echo "expected no frontier keys in sync mode, got ${frontier_count}" >&2
     exit 1
   fi
 }
 
-assert_pipeline_metadata() {
+assert_frontier_metadata() {
   local latest_count=$1
   local commit_count=$2
   local frontier_count=$3
   if [[ "${frontier_count}" -le 0 ]]; then
-    echo "expected frontier keys in pipeline mode" >&2
+    echo "expected frontier keys in frontier mode" >&2
     exit 1
   fi
   if [[ "${latest_count}" != "0" ]]; then
-    echo "expected no latest checkpoint keys in pipeline mode, got ${latest_count}" >&2
+    echo "expected no latest checkpoint keys in frontier mode, got ${latest_count}" >&2
     exit 1
   fi
   if [[ "${commit_count}" != "0" ]]; then
-    echo "expected no residual commit journal keys after settled pipeline replay, got ${commit_count}" >&2
+    echo "expected no residual commit journal keys after settled frontier replay, got ${commit_count}" >&2
     exit 1
   fi
 }
 
 wait_for_bisync_metadata() {
-  local pipeline_flag=$1
+  local mode_arg=$1
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   shift
   local ports=("$@")
   local latest_count
@@ -432,7 +444,7 @@ wait_for_bisync_metadata() {
     commit_count=$(cluster_scan_count 'redis-gunyu-bisync:*:commit:*' "${ports[@]}")
     frontier_count=$(cluster_scan_count '*:frontier' "${ports[@]}")
 
-    if [[ "${pipeline_flag}" == "true" ]]; then
+    if replay_mode_uses_frontier "${replay_mode}"; then
       if [[ "${frontier_count}" -gt 0 && "${latest_count}" == "0" && "${commit_count}" == "0" ]]; then
         echo "${latest_count} ${commit_count} ${frontier_count}"
         return 0
@@ -460,7 +472,9 @@ assert_resume_offsets() {
 
 run_scenario() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local src_base=$3
   local dst_base=$4
   local fwd_http_port=$5
@@ -480,7 +494,7 @@ run_scenario() {
   echo "[3/6] scenario ${mode}: start clusters and syncers"
   start_cluster "${mode}-src" "${src_ports[@]}"
   start_cluster "${mode}-dst" "${dst_ports[@]}"
-  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
 
   echo "[4/6] scenario ${mode}: phase1 writes and first convergence"
   write_phase1 "${prefix}" "${src_ports[0]}" "${dst_ports[0]}"
@@ -498,21 +512,21 @@ run_scenario() {
   echo "[5/6] scenario ${mode}: stop syncers, write while offline, restart and recover"
   stop_syncers
   write_phase2 "${prefix}" "${src_ports[0]}" "${dst_ports[0]}"
-  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
   wait_for_converge "${src_csv}" "${dst_csv}" "${prefix}:*"
   "${TMP_ROOT}/bisync_compare" --left-addrs "${src_csv}" --right-addrs "${dst_csv}" --pattern "${prefix}:*"
 
   assert_expected_state "${src_ports[0]}" "${prefix}"
-  metadata_counts=$(wait_for_bisync_metadata "${pipeline_flag}" "${src_ports[@]}" "${dst_ports[@]}") || {
+  metadata_counts=$(wait_for_bisync_metadata "${mode_arg}" "${src_ports[@]}" "${dst_ports[@]}") || {
     echo "bisync metadata did not settle for scenario ${mode}" >&2
     exit 1
   }
   read -r latest_count commit_count frontier_count <<< "${metadata_counts}"
 
-  if [[ "${pipeline_flag}" == "true" ]]; then
-    assert_pipeline_metadata "${latest_count}" "${commit_count}" "${frontier_count}"
+  if replay_mode_uses_frontier "${replay_mode}"; then
+    assert_frontier_metadata "${latest_count}" "${commit_count}" "${frontier_count}"
   else
-    assert_serial_metadata "${latest_count}" "${commit_count}" "${frontier_count}"
+    assert_sync_metadata "${latest_count}" "${commit_count}" "${frontier_count}"
   fi
 
   assert_resume_offsets "${TMP_ROOT}/${mode}-forward.log"
@@ -520,7 +534,7 @@ run_scenario() {
 
   echo "[6/6] scenario ${mode}: summary"
   echo "prefix=${prefix}"
-  echo "pipeline=${pipeline_flag}"
+  echo "mode=${replay_mode}"
   echo "latest_keys=${latest_count}"
   echo "commit_keys=${commit_count}"
   echo "frontier_keys=${frontier_count}"
@@ -534,12 +548,17 @@ run_scenario() {
 build_binaries
 run_checkpoint_namespace_tests
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_scenario serial false "${SERIAL_SRC_BASE}" "${SERIAL_DST_BASE}" "${SERIAL_FWD_HTTP_PORT}" "${SERIAL_REV_HTTP_PORT}"
+  *",sync,"*)
+    run_scenario sync sync "${SERIAL_SRC_BASE}" "${SERIAL_DST_BASE}" "${SERIAL_FWD_HTTP_PORT}" "${SERIAL_REV_HTTP_PORT}"
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_scenario pipeline true "${PIPELINE_SRC_BASE}" "${PIPELINE_DST_BASE}" "${PIPELINE_FWD_HTTP_PORT}" "${PIPELINE_REV_HTTP_PORT}"
+    run_scenario pipeline pipeline "${ORDERED_SRC_BASE}" "${ORDERED_DST_BASE}" "${ORDERED_FWD_HTTP_PORT}" "${ORDERED_REV_HTTP_PORT}"
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_scenario parallel parallel "${PIPELINE_SRC_BASE}" "${PIPELINE_DST_BASE}" "${PIPELINE_FWD_HTTP_PORT}" "${PIPELINE_REV_HTTP_PORT}"
     ;;
 esac

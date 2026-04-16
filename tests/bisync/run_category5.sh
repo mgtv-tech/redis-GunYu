@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat5"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat5:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-30300}"
 SERIAL_DST_BASE="${SERIAL_DST_BASE:-30400}"
 SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-30380}"
@@ -149,7 +149,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -183,7 +185,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -211,10 +213,12 @@ start_syncers() {
   local dst_ports_csv=$3
   local fwd_http_port=$4
   local rev_http_port=$5
-  local pipeline_flag=$6
+  local mode_arg=$6
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
-  write_syncer_conf "${name}-forward" "${fwd_http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${pipeline_flag}"
-  write_syncer_conf "${name}-reverse" "${rev_http_port}" "${dst_ports_csv}" "${src_ports_csv}" "${pipeline_flag}"
+  write_syncer_conf "${name}-forward" "${fwd_http_port}" "${src_ports_csv}" "${dst_ports_csv}" "${mode_arg}"
+  write_syncer_conf "${name}-reverse" "${rev_http_port}" "${dst_ports_csv}" "${src_ports_csv}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${name}-forward.yaml" -cmd sync > "${TMP_ROOT}/${name}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -467,7 +471,9 @@ assert_log_indicates_restart() {
 
 run_scenario() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local prefix="${TEST_PREFIX}:${mode}"
   local src_ports
   local dst_ports
@@ -480,7 +486,7 @@ run_scenario() {
   local source_replica_port
   local target_replica_port
 
-  if [[ "${mode}" == "serial" ]]; then
+  if ! replay_mode_uses_frontier "${replay_mode}"; then
     src_ports=("${SERIAL_SRC_BASE}" "$((SERIAL_SRC_BASE + 1))" "$((SERIAL_SRC_BASE + 2))" "$((SERIAL_SRC_BASE + 3))" "$((SERIAL_SRC_BASE + 4))" "$((SERIAL_SRC_BASE + 5))")
     dst_ports=("${SERIAL_DST_BASE}" "$((SERIAL_DST_BASE + 1))" "$((SERIAL_DST_BASE + 2))" "$((SERIAL_DST_BASE + 3))" "$((SERIAL_DST_BASE + 4))" "$((SERIAL_DST_BASE + 5))")
     fwd_http_port="${SERIAL_HTTP_PORT}"
@@ -497,7 +503,7 @@ run_scenario() {
 
   start_cluster_with_replicas "${mode}-src" "${src_ports[@]}"
   start_cluster_with_replicas "${mode}-dst" "${dst_ports[@]}"
-  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
 
   echo "[4/6] scenario ${mode}: initial bidirectional sync"
   source_master_port=$(find_first_master_port "${src_ports[@]}")
@@ -543,7 +549,7 @@ run_scenario() {
 
   echo "[6/6] scenario ${mode}: summary"
   echo "prefix=${prefix}"
-  echo "pipeline=${pipeline_flag}"
+  echo "mode=${replay_mode}"
   echo "source_replica_failover=${source_replica_port}"
   echo "target_replica_failover=${target_replica_port}"
   echo "forward_log=${TMP_ROOT}/${mode}-forward.log"
@@ -557,12 +563,17 @@ build_binaries
 run_unit_tests
 
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_scenario serial false
+  *",sync,"*)
+    run_scenario sync sync
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_scenario pipeline true
+    run_scenario pipeline pipeline
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_scenario parallel parallel
     ;;
 esac

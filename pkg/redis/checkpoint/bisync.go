@@ -54,7 +54,7 @@ type BisyncMarker struct {
 
 type BisyncCommitRecord struct {
 	// commit record 是恢复面的正式记录：
-	// serial 模式写 latest，pipeline 模式写 journal(commit)。
+	// `sync` 模式写 latest，`pipeline`/`parallel` 模式写 journal(commit)。
 	Key         string `json:"key,omitempty"`
 	RecordType  string `json:"record_type"`
 	Version     string `json:"version"`
@@ -69,7 +69,7 @@ type BisyncCommitRecord struct {
 }
 
 type BisyncFrontierSnapshot struct {
-	// frontier 是 pipeline 模式的 namespace 级连续提交前沿。
+	// frontier 是 `pipeline`/`parallel` 模式的 namespace 级连续提交前沿。
 	// 它不是某个 slot 的局部状态，而是“当前已确认可恢复到哪里”的全局快照。
 	Version string
 	RunID   string
@@ -91,8 +91,9 @@ func (f *BisyncFrontierSnapshot) Clone() *BisyncFrontierSnapshot {
 type BisyncMode string
 
 const (
-	BisyncModeSerial   BisyncMode = "serial"
+	BisyncModeSync     BisyncMode = "sync"
 	BisyncModePipeline BisyncMode = "pipeline"
+	BisyncModeParallel BisyncMode = "parallel"
 )
 
 type BisyncNamespaceSeed struct {
@@ -108,15 +109,32 @@ const (
 	bisyncNamespaceFieldMTime = "bisync_mode_mtime"
 )
 
-func BisyncModeFromPipeline(pipeline bool) BisyncMode {
-	if pipeline {
+func BisyncModeFromReplayMode(mode config.ReplayMode) BisyncMode {
+	switch mode {
+	case config.ReplayModeParallel:
+		return BisyncModeParallel
+	case config.ReplayModePipeline:
 		return BisyncModePipeline
+	default:
+		return BisyncModeSync
 	}
-	return BisyncModeSerial
 }
 
 func (mode BisyncMode) Valid() bool {
-	return mode == BisyncModeSerial || mode == BisyncModePipeline
+	switch mode {
+	case BisyncModeSync, BisyncModePipeline, BisyncModeParallel:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode BisyncMode) UsesFrontier() bool {
+	return mode == BisyncModePipeline || mode == BisyncModeParallel
+}
+
+func (mode BisyncMode) UsesLatest() bool {
+	return mode == BisyncModeSync
 }
 
 func BisyncFrontierKey(checkpointName string) string {
@@ -291,7 +309,7 @@ func ParseBisyncCommitRecordMap(key string, fields map[string]string) (*BisyncCo
 
 	recordType := "commit"
 	if IsBisyncLatestKey(key) {
-		// serial 模式没有 journal，latest 本身就是最终恢复依据。
+		// Sync 模式没有 journal，latest 本身就是最终恢复依据。
 		recordType = "latest"
 	}
 
@@ -700,7 +718,7 @@ func LoadBisyncLatestStartRecord(cli client.Redis, checkpointName string, slots 
 }
 
 func LoadBisyncCommitRecords(cli client.Redis, checkpointName string, slots []uint16, runIDs []string, minSeq int64) ([]*BisyncCommitRecord, error) {
-	// pipeline 恢复先从 index 找 journal key，再逐条取出 commit record。
+	// `pipeline`/`parallel` 恢复先从 index 找 journal key，再逐条取出 commit record。
 	// minSeq 用来跳过 snapshot 之前已经被 frontier 吞并的历史记录。
 	slots = normalizeBisyncRecoverySlots(cli.RedisType(), slots)
 	if len(slots) == 0 {

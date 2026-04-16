@@ -127,6 +127,13 @@ type bisyncCommitResult struct {
 	err    error
 }
 
+type bisyncPipelineDispatch struct {
+	unit    *bisyncReplayUnit
+	record  *checkpoint.BisyncCommitRecord
+	batcher rediscommon.CmdBatcher
+	queued  int
+}
+
 var bisyncPendingCompactOptions = collections.CompactMapOptions{
 	RebuildMinPeak:  1024,
 	SparseShrinkDiv: 4,
@@ -139,7 +146,7 @@ const (
 )
 
 type bisyncFrontierCoordinator struct {
-	// pipeline 模式下，命令提交顺序和“确认完成”的顺序可能不同，
+	// `parallel` 模式下，命令提交顺序和“确认完成”的顺序可能不同，
 	// coordinator 负责把乱序完成的 commit record 收敛成连续 frontier。
 	conn           client.Redis
 	key            string
@@ -658,9 +665,9 @@ func (ro *RedisOutput) newBisyncCommandKeyResolver() (bisyncCommandKeyResolver, 
 }
 
 func (ro *RedisOutput) sendAofBisync(ctx context.Context, runID string, reader *bufio.Reader, offset int64, _ int64) error {
-	// AOF bisync 分两段流水线：
+	// AOF bisync 分两段：
 	// 1. parser 负责把命令流切成 replay unit；
-	// 2. sender 负责按 serial 或 pipeline 语义提交到目标 Redis。
+	// 2. sender 负责按 `sync`、`pipeline` 或 `parallel` 语义提交到目标 Redis。
 	unitBuf := make(chan *bisyncReplayUnit, ro.cfg.BatchCmdCount*2)
 	replayQuit := usync.NewWaitCloserFromContext(ctx, nil)
 
@@ -671,10 +678,13 @@ func (ro *RedisOutput) sendAofBisync(ctx context.Context, runID string, reader *
 	}, func(i interface{}) { replayQuit.Close(fmt.Errorf("panic: %v", i)) })
 
 	var err error
-	if ro.cfg.ReplayPipeline {
-		err = ro.sendBisyncConcurrent(replayQuit, runID, unitBuf)
-	} else {
-		err = ro.sendBisyncSerial(replayQuit, runID, unitBuf)
+	switch ro.cfg.ReplayMode {
+	case config.ReplayModeParallel:
+		err = ro.sendBisyncParallel(replayQuit, runID, unitBuf)
+	case config.ReplayModePipeline:
+		err = ro.sendBisyncPipeline(replayQuit, runID, unitBuf)
+	default:
+		err = ro.sendBisyncSync(replayQuit, runID, unitBuf)
 	}
 	replayQuit.Close(err)
 	return replayQuit.Error()
@@ -722,10 +732,10 @@ func (ro *RedisOutput) newBisyncTxnBatcher(conn client.Redis) (rediscommon.CmdBa
 	return batcher, nil
 }
 
-func (ro *RedisOutput) execBisyncUnit(conn client.Redis, runID string, unit *bisyncReplayUnit, latestCheckpoint bool) (*checkpoint.BisyncCommitRecord, rediscommon.CmdBatcher, error) {
+func (ro *RedisOutput) dispatchBisyncUnit(conn client.Redis, runID string, unit *bisyncReplayUnit, latestCheckpoint bool) (*checkpoint.BisyncCommitRecord, rediscommon.CmdBatcher, int, error) {
 	batcher, err := ro.newBisyncTxnBatcher(conn)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	marker := checkpoint.BisyncMarker{
@@ -740,7 +750,7 @@ func (ro *RedisOutput) execBisyncUnit(conn client.Redis, runID string, unit *bis
 	}
 	markerValue, err := checkpoint.EncodeBisyncMarker(marker)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	checkpointName := ro.bisyncCheckpointName()
 	recordKey := checkpoint.BisyncCommitRecordKey(checkpointName, unit.SlotTag, unit.Seq)
@@ -765,24 +775,24 @@ func (ro *RedisOutput) execBisyncUnit(conn client.Redis, runID string, unit *bis
 	}
 
 	// 提交顺序固定为：
-	// marker -> business commands -> record -> (pipeline 模式额外写入 index)。
+	// marker -> business commands -> record -> (`pipeline`/`parallel` 模式额外写入 index)。
 	// 这样接收端既能识别镜像事务，也能在恢复时回放最新 frontier。
 	if err := batcher.Put("set", []byte(checkpoint.BisyncMarkerKey(checkpointName, unit.SlotTag)), []byte(markerValue), []byte("px"), []byte(strconv.FormatInt(checkpoint.BisyncMarkerTTL.Milliseconds(), 10))); err != nil {
-		return nil, nil, fmt.Errorf("queue bisync marker failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+		return nil, nil, 0, fmt.Errorf("queue bisync marker failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
 	}
 	for _, cmd := range unit.Commands {
 		if err := batcher.Put(cmd.Cmd, bisyncArgsToInterfaces(cmd.Args)...); err != nil {
-			return nil, nil, fmt.Errorf("queue business command failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmd(%s), unitCmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, cmd.Cmd, bisyncTxnDebugSummary(unit.Commands), err)
+			return nil, nil, 0, fmt.Errorf("queue business command failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmd(%s), unitCmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, cmd.Cmd, bisyncTxnDebugSummary(unit.Commands), err)
 		}
 	}
 	args := []interface{}{[]byte(record.Key)}
 	args = append(args, record.HashArgs()...)
 	if err := batcher.Put("hset", args...); err != nil {
-		return nil, nil, fmt.Errorf("queue bisync record failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+		return nil, nil, 0, fmt.Errorf("queue bisync record failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
 	}
 	if !latestCheckpoint {
 		if err := batcher.Put("zadd", []byte(checkpoint.BisyncCommitIndexKey(checkpointName, unit.SlotTag)), []byte(strconv.FormatInt(unit.Seq, 10)), []byte(record.Key)); err != nil {
-			return nil, nil, fmt.Errorf("queue bisync commit index failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+			return nil, nil, 0, fmt.Errorf("queue bisync commit index failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
 		}
 	}
 
@@ -795,21 +805,23 @@ func (ro *RedisOutput) execBisyncUnit(conn client.Redis, runID string, unit *bis
 		queuedCmds++
 	}
 
-	if latestCheckpoint {
-		// serial 模式没有 journal，事务执行成功就以 latest 作为该 slot 的最新提交点。
-		replies, err := batcher.Exec()
-		if err != nil {
-			return nil, nil, handleDirectError(err)
-		}
-		if err := ro.validateBisyncExecReplies(replies, queuedCmds); err != nil {
-			return nil, nil, err
-		}
-		return record, batcher, nil
-	}
-
 	if err := batcher.Dispatch(); err != nil {
-		// pipeline 模式先发出去，后面再异步 Receive，交给 frontier coordinator 做顺序收敛。
+		return nil, nil, 0, handleDirectError(err)
+	}
+	return record, batcher, queuedCmds, nil
+}
+
+func (ro *RedisOutput) execBisyncUnit(conn client.Redis, runID string, unit *bisyncReplayUnit, latestCheckpoint bool) (*checkpoint.BisyncCommitRecord, rediscommon.CmdBatcher, error) {
+	record, batcher, queuedCmds, err := ro.dispatchBisyncUnit(conn, runID, unit, latestCheckpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	replies, err := batcher.Receive()
+	if err != nil {
 		return nil, nil, handleDirectError(err)
+	}
+	if err := ro.validateBisyncExecReplies(replies, queuedCmds); err != nil {
+		return nil, nil, err
 	}
 	return record, batcher, nil
 }
@@ -826,8 +838,8 @@ func (ro *RedisOutput) observeCommittedUnit(unit *bisyncReplayUnit) {
 	}
 }
 
-func (ro *RedisOutput) sendBisyncSerial(replayWait usync.WaitCloser, runID string, unitBuf chan *bisyncReplayUnit) error {
-	// serial 模式每个 slot 只保留 latest checkpoint，不保留 commit journal。
+func (ro *RedisOutput) sendBisyncSync(replayWait usync.WaitCloser, runID string, unitBuf chan *bisyncReplayUnit) error {
+	// Sync 模式每个 replay unit 完整 Dispatch + Receive 后才发送下一个。
 	conn, err := ro.NewRedisConn(replayWait.Context())
 	if err != nil {
 		return err
@@ -844,7 +856,7 @@ func (ro *RedisOutput) sendBisyncSerial(replayWait usync.WaitCloser, runID strin
 			if err != nil {
 				bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "error")
 				failCounter.Add(float64(len(unit.Commands)), ro.cfg.InputName)
-				return fmt.Errorf("scheme1 serial commit failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+				return fmt.Errorf("scheme1 sync commit failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
 			}
 			_ = record
 			bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "ok")
@@ -855,6 +867,137 @@ func (ro *RedisOutput) sendBisyncSerial(replayWait usync.WaitCloser, runID strin
 			ro.bisyncOffset.Store(unit.EndOffset)
 			bisyncFrontierSeqGauge.Set(float64(unit.Seq), ro.cfg.InputName)
 			bisyncFrontierOffsetGauge.Set(float64(unit.EndOffset), ro.cfg.InputName)
+		case <-replayWait.Done():
+			return replayWait.Error()
+		}
+	}
+}
+
+func (ro *RedisOutput) sendBisyncPipeline(replayWait usync.WaitCloser, runID string, unitBuf chan *bisyncReplayUnit) error {
+	// Pipeline 模式把 send 和 receive 拆开，但仍按发送顺序确认并推进 frontier。
+	coordConn, err := ro.NewRedisConn(replayWait.Context())
+	if err != nil {
+		return err
+	}
+	defer coordConn.Close()
+	coordinator := newBisyncFrontierCoordinator(
+		coordConn,
+		checkpoint.BisyncFrontierKey(ro.bisyncCheckpointName()),
+		ro.bisyncCheckpointName(),
+		ro.cfg.InputName,
+		ro.bisyncSeq.Load(),
+		ro.bisyncOffset.Load(),
+		runID,
+	)
+
+	conn, err := ro.NewRedisConn(replayWait.Context())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	windowSize := int(ro.cfg.BatchCmdCount)
+	if windowSize < 1 {
+		windowSize = 1
+	}
+	inflight := make(chan bisyncPipelineDispatch, windowSize)
+	receiveDone := make(chan error, 1)
+
+	usync.SafeGo(func() {
+		err := ro.receiveBisyncPipeline(replayWait, coordinator, inflight)
+		if err != nil {
+			replayWait.Close(err)
+		}
+		receiveDone <- err
+	}, func(i interface{}) {
+		err := fmt.Errorf("panic: %v", i)
+		replayWait.Close(err)
+		receiveDone <- err
+	})
+
+	sendErr := ro.dispatchBisyncPipeline(replayWait, conn, runID, unitBuf, inflight)
+	close(inflight)
+	receiveErr := <-receiveDone
+	if sendErr != nil {
+		replayWait.Close(sendErr)
+		return sendErr
+	}
+	if receiveErr != nil {
+		replayWait.Close(receiveErr)
+		return receiveErr
+	}
+	if err := coordinator.flush(); err != nil {
+		replayWait.Close(err)
+		return err
+	}
+	return replayWait.Error()
+}
+
+func (ro *RedisOutput) dispatchBisyncPipeline(replayWait usync.WaitCloser, conn client.Redis, runID string, unitBuf chan *bisyncReplayUnit, inflight chan<- bisyncPipelineDispatch) error {
+	for {
+		select {
+		case unit, ok := <-unitBuf:
+			if !ok {
+				return nil
+			}
+			record, batcher, queued, err := ro.dispatchBisyncUnit(conn, runID, unit, false)
+			if err != nil {
+				bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "error")
+				failCounter.Add(float64(len(unit.Commands)), ro.cfg.InputName)
+				return fmt.Errorf("scheme1 pipeline dispatch failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+			}
+			dispatched := bisyncPipelineDispatch{
+				unit:    unit,
+				record:  record,
+				batcher: batcher,
+				queued:  queued,
+			}
+			select {
+			case inflight <- dispatched:
+			case <-replayWait.Done():
+				return replayWait.Error()
+			}
+		case <-replayWait.Done():
+			return replayWait.Error()
+		}
+	}
+}
+
+func (ro *RedisOutput) receiveBisyncPipeline(replayWait usync.WaitCloser, coordinator *bisyncFrontierCoordinator, inflight <-chan bisyncPipelineDispatch) error {
+	frontierTicker := time.NewTicker(bisyncFrontierFlushInterval)
+	defer frontierTicker.Stop()
+
+	for {
+		select {
+		case dispatched, ok := <-inflight:
+			if !ok {
+				return nil
+			}
+			unit := dispatched.unit
+			replies, err := dispatched.batcher.Receive()
+			if err != nil {
+				bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "error")
+				failCounter.Add(float64(len(unit.Commands)), ro.cfg.InputName)
+				return fmt.Errorf("scheme1 pipeline receive failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), handleDirectError(err))
+			}
+			if err := ro.validateBisyncExecReplies(replies, dispatched.queued); err != nil {
+				bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "error")
+				failCounter.Add(float64(len(unit.Commands)), ro.cfg.InputName)
+				return fmt.Errorf("scheme1 pipeline exec failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err)
+			}
+			if err := coordinator.onCommitted(dispatched.record); err != nil {
+				return err
+			}
+			bisyncTxnCommitCounter.Add(1, ro.cfg.InputName, "ok")
+			batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
+			succCounter.Add(float64(len(unit.Commands)), ro.cfg.InputName)
+			ro.observeCommittedUnit(unit)
+			ro.bisyncSeq.Store(coordinator.frontier.UnitSeq)
+			ro.bisyncOffset.Store(coordinator.frontier.Offset)
+		case <-frontierTicker.C:
+			if err := coordinator.flush(); err != nil {
+				return err
+			}
 		case <-replayWait.Done():
 			return replayWait.Error()
 		}
@@ -989,7 +1132,7 @@ func (ro *RedisOutput) bisyncPipelineWorkerCount(ctx context.Context) int {
 		return 1
 	}
 
-	workers := ro.cfg.BisyncPipelineParallel
+	workers := ro.cfg.Parallelism
 	if workers > 0 {
 		if workers > 16384 {
 			return 16384
@@ -1027,10 +1170,10 @@ func (ro *RedisOutput) bisyncPipelineWorkerCount(ctx context.Context) int {
 	return workers
 }
 
-// sendBisyncConcurrent 负责以“同 slot 串行、跨 slot 并行”的方式回放 bisync unit，
+// sendBisyncParallel 负责以“同 slot 串行、跨 slot 并行”的方式回放 bisync unit，
 // 并在提交完成后统一推进 frontier，兼顾回放吞吐和 checkpoint 连续性。
-func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID string, unitBuf chan *bisyncReplayUnit) error {
-	// pipeline 模式把“按 slot 派发事务”和“统一推进 frontier”拆开：
+func (ro *RedisOutput) sendBisyncParallel(replayWait usync.WaitCloser, runID string, unitBuf chan *bisyncReplayUnit) error {
+	// `parallel` 模式把“按 slot 派发事务”和“统一推进 frontier”拆开：
 	// 1. 同一个 slot 哈希到固定 lane 串行提交，避免为每个 slot 常驻一个 worker，
 	//    也避免 standalone 模式下并发 Receive 同一个连接；
 	// 2. 不同 slot 之间仍可并行，完成结果统一交给 frontier coordinator 顺序收敛。
@@ -1116,11 +1259,11 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 
 					// 先把一个 replay unit 对应的 marker、业务命令和 commit record 整体排入 pipeline，
 					// 确保目标端看到的是一个完整的“可抑制镜像事务”。
-					record, batcher, err := ro.execBisyncUnit(workerConn, runID, unit, false)
+					record, batcher, queued, err := ro.dispatchBisyncUnit(workerConn, runID, unit, false)
 					if err != nil {
 						sendBisyncCommitResult(replayWait, results, bisyncCommitResult{
 							unit: unit,
-							err:  fmt.Errorf("scheme1 pipeline queue failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err),
+							err:  fmt.Errorf("scheme1 parallel queue failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err),
 						})
 						return
 					}
@@ -1132,17 +1275,17 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 						sendBisyncCommitResult(replayWait, results, bisyncCommitResult{
 							unit:   unit,
 							record: record,
-							err:    fmt.Errorf("scheme1 pipeline receive failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), handleDirectError(err)),
+							err:    fmt.Errorf("scheme1 parallel receive failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), handleDirectError(err)),
 						})
 						return
 					}
 					// 回复必须与“marker + 命令 + commit”完全对齐，
 					// 否则说明这次镜像事务没有完整生效，不能让 frontier 继续前移。
-					if err := ro.validateBisyncExecReplies(replies, len(unit.Commands)+3); err != nil {
+					if err := ro.validateBisyncExecReplies(replies, queued); err != nil {
 						sendBisyncCommitResult(replayWait, results, bisyncCommitResult{
 							unit:   unit,
 							record: record,
-							err:    fmt.Errorf("scheme1 pipeline exec failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err),
+							err:    fmt.Errorf("scheme1 parallel exec failed: unitSeq(%d), slot(%d), offsets(%d,%d), cmds(%s), err(%w)", unit.Seq, unit.Slot, unit.StartOffset, unit.EndOffset, bisyncCommandSummary(unit.Commands), err),
 						})
 						return
 					}
@@ -1203,6 +1346,8 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 		}
 		return replayWait.Error()
 	}
+	frontierTicker := time.NewTicker(bisyncFrontierFlushInterval)
+	defer frontierTicker.Stop()
 
 	// dispatchUnit 在投递当前 unit 的同时持续消费 results，
 	// 防止某个 worker 先完成后因为无人收结果而反向阻塞整个调度链路。
@@ -1218,6 +1363,10 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 					return finishResults()
 				}
 				if err := handleResult(result); err != nil {
+					return err
+				}
+			case <-frontierTicker.C:
+				if err := coordinator.flush(); err != nil {
 					return err
 				}
 			case <-replayWait.Done():
@@ -1246,6 +1395,10 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 			if err := handleResult(result); err != nil {
 				return err
 			}
+		case <-frontierTicker.C:
+			if err := coordinator.flush(); err != nil {
+				return err
+			}
 		case <-replayWait.Done():
 			return replayWait.Error()
 		}
@@ -1253,9 +1406,9 @@ func (ro *RedisOutput) sendBisyncConcurrent(replayWait usync.WaitCloser, runID s
 }
 
 func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (StartPoint, int64, bool, error) {
-	// 启动恢复点分两种语义：
-	// serial 直接读取每个 slot 的 latest；
-	// pipeline 读取 frontier snapshot + commit journal，然后重建连续 frontier。
+	// 启动恢复点分两种恢复面：
+	// `sync` 直接读取每个 slot 的 latest；
+	// `pipeline`/`parallel` 读取 frontier snapshot + commit journal，然后重建连续 frontier。
 	var sp StartPoint
 	cli, err := ro.NewRedisConn(ctx)
 	if err != nil {
@@ -1278,7 +1431,7 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 	rootStartPoint := StartPoint{DbId: dbID, RunId: cpi.RunId, Offset: cpi.Offset}
 
 	slots := ro.bisyncRecoverySlots()
-	if ro.cfg.ReplayPipeline {
+	if ro.cfg.ReplayMode.UsesFrontier() {
 		begin := time.Now()
 		snapshotKey := checkpoint.BisyncFrontierKey(checkpointName)
 		snapshot, err := checkpoint.LoadBisyncFrontierSnapshot(cli, snapshotKey, runIDs)
@@ -1293,7 +1446,7 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 		if err != nil {
 			return sp, 0, false, err
 		}
-		ro.logger.Infof("bisync startpoint pipeline: checkpoint(%s), slots(%d), snapshot(%+v), records(%d), minSeq(%d), runIDs(%v)", checkpointName, len(slots), snapshot, len(records), minSeq, runIDs)
+		ro.logger.Infof("bisync startpoint parallel: checkpoint(%s), slots(%d), snapshot(%+v), records(%d), minSeq(%d), runIDs(%v)", checkpointName, len(slots), snapshot, len(records), minSeq, runIDs)
 		frontier, err := checkpoint.RebuildBisyncFrontier(snapshot, records)
 		bisyncFrontierRebuildGauge.Set(time.Since(begin).Seconds(), ro.cfg.InputName)
 		if err != nil {
@@ -1305,14 +1458,14 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 				sp.RunId = runIDs[0]
 			}
 			if ro.bisyncRootCheckpointNewer(rootStartPoint, sp, runIDs) {
-				ro.logger.Infof("bisync startpoint pipeline root override: checkpoint(%s), root(%+v), frontier(%+v)", checkpointName, rootStartPoint, sp)
+				ro.logger.Infof("bisync startpoint parallel root override: checkpoint(%s), root(%+v), frontier(%+v)", checkpointName, rootStartPoint, sp)
 				return rootStartPoint, 0, true, nil
 			}
-			ro.logger.Infof("bisync startpoint pipeline selected: checkpoint(%s), start(%+v), seq(%d)", checkpointName, sp, frontier.UnitSeq)
+			ro.logger.Infof("bisync startpoint parallel selected: checkpoint(%s), start(%+v), seq(%d)", checkpointName, sp, frontier.UnitSeq)
 			return sp, frontier.UnitSeq, true, nil
 		}
-		ro.logger.Warnf("bisync startpoint pipeline miss: checkpoint(%s), slots(%d), runIDs(%v)", checkpointName, len(slots), runIDs)
-		ro.logger.Infof("bisync startpoint pipeline fallback: checkpoint(%s), start(%+v)", checkpointName, rootStartPoint)
+		ro.logger.Warnf("bisync startpoint parallel miss: checkpoint(%s), slots(%d), runIDs(%v)", checkpointName, len(slots), runIDs)
+		ro.logger.Infof("bisync startpoint parallel fallback: checkpoint(%s), start(%+v)", checkpointName, rootStartPoint)
 		return rootStartPoint, 0, true, nil
 	}
 
@@ -1320,17 +1473,17 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 	if err != nil {
 		return sp, 0, false, err
 	}
-	ro.logger.Infof("bisync startpoint serial: checkpoint(%s), slots(%d), latestRecords(%d), runIDs(%v)", checkpointName, len(slots), recordCount, runIDs)
+	ro.logger.Infof("bisync startpoint latest: mode(%s), checkpoint(%s), slots(%d), latestRecords(%d), runIDs(%v)", ro.cfg.ReplayMode, checkpointName, len(slots), recordCount, runIDs)
 	if best == nil {
-		ro.logger.Infof("bisync startpoint serial fallback: checkpoint(%s), start(%+v)", checkpointName, rootStartPoint)
+		ro.logger.Infof("bisync startpoint latest fallback: mode(%s), checkpoint(%s), start(%+v)", ro.cfg.ReplayMode, checkpointName, rootStartPoint)
 		return rootStartPoint, 0, true, nil
 	}
 	sp = StartPoint{DbId: 0, RunId: best.RunID, Offset: best.EndOffset}
 	if ro.bisyncRootCheckpointNewer(rootStartPoint, sp, runIDs) {
-		ro.logger.Infof("bisync startpoint serial root override: checkpoint(%s), root(%+v), latest(%+v), seq(%d), slot(%d)", checkpointName, rootStartPoint, sp, best.UnitSeq, best.Slot)
+		ro.logger.Infof("bisync startpoint latest root override: mode(%s), checkpoint(%s), root(%+v), latest(%+v), seq(%d), slot(%d)", ro.cfg.ReplayMode, checkpointName, rootStartPoint, sp, best.UnitSeq, best.Slot)
 		return rootStartPoint, 0, true, nil
 	}
-	ro.logger.Infof("bisync startpoint serial selected: checkpoint(%s), start(%+v), seq(%d), slot(%d)", checkpointName, sp, best.UnitSeq, best.Slot)
+	ro.logger.Infof("bisync startpoint latest selected: mode(%s), checkpoint(%s), start(%+v), seq(%d), slot(%d)", ro.cfg.ReplayMode, checkpointName, sp, best.UnitSeq, best.Slot)
 	return sp, best.UnitSeq, true, nil
 }
 

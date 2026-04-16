@@ -16,29 +16,26 @@
 当前仓库已经有一套 `tests/bisync` 测试骨架：
 
 - [tests/bisync/run_category1.sh](../../tests/bisync/run_category1.sh)：基础双向收敛
-- [tests/bisync/run_category2.sh](../../tests/bisync/run_category2.sh)：重启、断点续传、serial/pipeline
+- [tests/bisync/run_category2.sh](../../tests/bisync/run_category2.sh)：重启、断点续传、`sync`/`pipeline`/`parallel`
 - [tests/bisync/run_category3.sh](../../tests/bisync/run_category3.sh)：RDB 特殊路径与纯全量同步
 - [tests/bisync/run_category4.sh](../../tests/bisync/run_category4.sh)：keyspec、过滤、路由
 - [tests/bisync/run_category5.sh](../../tests/bisync/run_category5.sh)：failover、拓扑扰动、syncer restart
 
 ### 2.2 当前上线阻塞项
 
-当前 `run_category1/2/3/5.sh` 生成的配置里只设置了：
+当前 `run_category1/2/3/5.sh` 生成的配置已经显式设置：
 
 - `replayTransaction: true`
-- `enableAofPipeline: true|false`
-
-但没有显式设置：
-
+- `mode: sync|pipeline|parallel`
 - `output.replay.bisyncEnabled: true`
 
-而当前代码默认值是 `bisyncEnabled: false`，因此这几类脚本在修正前不能作为正式的 bisync 上线门禁。上线前必须先补齐这一配置，否则测到的是普通回放链路，不是 bisync 主路径。
+`mode` 统一描述 AOF 回放执行语义；非 bisync 下 `pipeline` 等价于旧 pipeline，bisync 下 `sync/pipeline/parallel` 分别覆盖三种 checkpoint/recovery 语义。
 
 结论：
 
 - 当前测试目录的分类方向是对的。
-- 现有脚本还不能直接代表 bisync 已完成上线验证。
-- 上线门禁需要在修正配置后执行，并补齐压力、兼容性、灰度回滚相关测试。
+- 现有脚本已显式启用 bisync 主路径。
+- 上线门禁需要继续覆盖压力、兼容性、灰度回滚相关测试。
 
 ## 3. 测试目标
 
@@ -47,7 +44,7 @@ bisync 上线前必须证明以下几点：
 - 正确性：双向写入最终收敛，不出现数据丢失、重复执行、错误覆盖。
 - 回环抑制：A -> B 的镜像写不会再被 B -> A 回流。
 - 恢复性：syncer 重启、源端切主、目标端切主后可以继续同步，且恢复点正确。
-- 一致性：serial 和 pipeline 两种模式都满足设计约束。
+- 一致性：`sync`、`pipeline` 和 `parallel` 三种模式都满足设计约束。
 - 控制面正确：`latest`、`commit`、`frontier`、`rdb` 元数据形态与设计一致。
 - 路由安全：cluster 下真实 key 解析、同 slot 校验、`MOVED/ASK` 处理正确。
 - 边界安全：RDB 全量同步、split key、`keyExists` 策略、过滤投影等边界行为正确。
@@ -59,7 +56,7 @@ bisync 的高风险点主要有：
 
 - 非幂等命令重复执行，例如 `INCR`、`LPUSH`、`XADD`
 - 真实事务边界被破坏，导致 mirrored transaction 识别失败
-- pipeline 模式恢复点推进错误，造成漏放或重放
+- `parallel` 模式恢复点推进错误，造成漏放或重放
 - cluster 拓扑变化后 metadata 找不到或提交到错误节点
 - `COMMAND GETKEYS` / static keyspec 解析不一致，导致错误路由
 - RDB 全量同步和 AOF 增量同步的边界混淆
@@ -83,16 +80,16 @@ bisync 的高风险点主要有：
 
 | 编号 | 场景 | 核心检查点 | 自动化建议 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| P0-01 | bisync 开关生效 | `bisyncEnabled=true` 时走 bisync 主路径，`false` 时不走 | 新增配置回归测试，修正 `category1/2/3/5` 配置 | 未闭环 |
-| P0-02 | 基础双向收敛 | 双端混合写入后业务 key 完全一致 | `run_category1.sh` | 已有骨架，需显式开启 bisync |
+| P0-01 | bisync 开关生效 | `bisyncEnabled=true` 时走 bisync 主路径，`false` 时不走 | 配置回归测试 + `category1/2/3/5` | 已覆盖 |
+| P0-02 | 基础双向收敛 | 双端混合写入后业务 key 完全一致 | `run_category1.sh` | 已覆盖核心样例 |
 | P0-03 | 非幂等命令安全 | `INCR`、`LIST`、事务内多命令不重复、不丢失 | `run_category1.sh`、`run_category2.sh` | 已覆盖核心样例 |
-| P0-04 | serial 模式断点续传 | 停 syncer、离线写入、重启后恢复，`latest` 存在且 `commit/frontier` 不残留 | `run_category2.sh` | 已有骨架，需显式开启 bisync |
-| P0-05 | pipeline 模式断点续传 | 重启恢复后 `frontier` 存在，`commit` 最终清零 | `run_category2.sh` | 已有骨架，需显式开启 bisync |
-| P0-06 | 纯 RDB 全量同步边界 | 只允许短生命周期 marker / full-sync barrier，不提前生成 authoritative `latest/commit/frontier` | `run_category3.sh` | 已有骨架，需显式开启 bisync |
+| P0-04 | `sync` 模式断点续传 | 停 syncer、离线写入、重启后恢复，`latest` 存在且 `commit/frontier` 不残留 | `run_category2.sh` | 已覆盖核心样例 |
+| P0-05 | `pipeline`/`parallel` 模式断点续传 | 重启恢复后 `frontier` 存在，`commit` 最终清零 | `run_category2.sh` | 已覆盖核心样例 |
+| P0-06 | 纯 RDB 全量同步边界 | 只允许短生命周期 marker / full-sync barrier，不提前生成 authoritative `latest/commit/frontier` | `run_category3.sh` | 已覆盖核心样例 |
 | P0-07 | key 解析与 strict 路由 | static keyspec、`COMMAND GETKEYS`、cross-slot 拒绝行为正确 | `run_category4.sh` | 已覆盖 |
-| P0-08 | 源端 failover | 源 cluster 切主后双向链路继续同步，业务数据不分叉 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、serial/pipeline |
-| P0-09 | 目标端 failover | 目标 cluster 切主、`MOVED/ASK` 后双向 replay unit 仍能提交 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、serial/pipeline |
-| P0-10 | syncer restart | 通过 API 重启两条 syncer 后恢复正常，日志有拓扑/重启信号 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、serial/pipeline |
+| P0-08 | 源端 failover | 源 cluster 切主后双向链路继续同步，业务数据不分叉 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、`sync`/`pipeline`/`parallel` |
+| P0-09 | 目标端 failover | 目标 cluster 切主、`MOVED/ASK` 后双向 replay unit 仍能提交 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、`sync`/`pipeline`/`parallel` |
+| P0-10 | syncer restart | 通过 API 重启两条 syncer 后恢复正常，日志有拓扑/重启信号 | `run_category5.sh` | 已覆盖：双向 syncer、双边写入、`sync`/`pipeline`/`parallel` |
 | P0-11 | checkpoint namespace 迁移 | 旧 namespace 迁移、新 runID 续跑正确 | 补充 `go test ./syncer -run CheckpointNamespace` 到 runner | 单测已存在，runner 未接入 |
 | P0-12 | 关闭 bisync 的回归安全 | 普通单向同步/非 bisync cluster 事务路径不被这次改动破坏 | 新增非 bisync 回归脚本或 CI job | 未覆盖 |
 
@@ -132,7 +129,7 @@ bisync 的高风险点主要有：
 建议动作：
 
 - `category1`：作为基础正确性冒烟
-- `category2`：作为 serial/pipeline 断点续传主门禁
+- `category2`：作为 `sync`/`pipeline`/`parallel` 断点续传主门禁
 - `category3`：作为 RDB 路径主门禁
 - `category4`：作为 key 解析、过滤、cluster 路由主门禁
 - `category5`：作为故障与拓扑扰动主门禁
@@ -190,7 +187,7 @@ bisync 上线建议采用以下通过标准：
 - 所有 P0 用例通过
 - 所有 P1 用例通过
 - P2 至少完成版本矩阵中的目标线上 Redis 版本
-- serial/pipeline 两种模式都通过，不允许只上线一种模式而另一种未验证
+- `sync`/`pipeline`/`parallel` 三种模式都通过，不允许只上线一种模式而另一种未验证
 - 没有残留的 `commit` journal key
 - metadata 形态与设计一致
 - 断点续传日志中存在非零恢复 offset

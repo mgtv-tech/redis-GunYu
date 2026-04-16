@@ -104,8 +104,13 @@ The output configuration is as follows:
     - Bisync is enabled only by this config field; it is no longer inferred from `replayTransaction` or runtime `CanTransaction`
     - When enabled, AOF/RDB replay uses the bisync replay-unit, marker, and checkpoint/frontier recovery flow
     - `replayTransaction` is still recommended to stay `true`, but it is no longer the bisync switch
-  - enableAofPipeline : Replay commands in a pipeline. Send command and receive reply in different threads, while it can speed up data synchronization, may lead to data inconsistency. Enable this feature with caution.
-    - In bisync mode, `enableAofPipeline` is also a recovery-mode switch: it decides whether startup recovery reads `latest checkpoint` or `commit journal + frontier`
+  - mode: AOF replay execution semantics. Supported values are `sync`, `pipeline`, and `parallel`.
+    - `sync`: send one replay unit and wait for its reply before sending the next one; bisync recovery uses slot-local `latest` checkpoints.
+    - `pipeline`: send and receive run in different goroutines, but replies are still handled in send order; in non-bisync replay this replaces the old `enableAofPipeline=true`.
+    - `parallel`: replay units are dispatched through bounded per-slot lanes. It is currently bisync-only, and recovery uses `commit journal + frontier`.
+  - parallelism: concurrency for `mode=parallel`; if unset, GunYu resolves it from cluster shards or falls back conservatively.
+  - enableAofPipeline / bisyncReplayMode / bisyncPipelineParallel: legacy fields kept only for backward-compatible loading. Use `mode` and `parallelism` in new configs.
+    - When `mode` is unset, legacy `enableAofPipeline=true` maps to `mode=pipeline`, and `false` maps to `mode=sync`.
 
 
 #### Filter configuration

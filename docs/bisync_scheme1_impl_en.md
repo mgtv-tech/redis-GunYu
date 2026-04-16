@@ -61,7 +61,7 @@ flowchart LR
   C --> D["key routing + slot validation"]
   D --> E["real MULTI/EXEC sender"]
   E --> F["bisync metadata"]
-  F --> G["serial latest or pipeline frontier"]
+  F --> G["sync latest or pipeline/parallel frontier"]
   E --> H["reverse parser suppression"]
 ```
 
@@ -141,11 +141,11 @@ Key layout:
 | Key | Scope | Purpose | Authoritative |
 | --- | --- | --- | --- |
 | `checkpointName` | global | full-sync barrier or legacy checkpoint root | yes |
-| `checkpointName:frontier` | namespace-global | global contiguous prefix snapshot in pipeline mode | yes |
+| `checkpointName:frontier` | namespace-global | global contiguous prefix snapshot in `pipeline`/`parallel` mode | yes |
 | `redis-gunyu-bisync:<checkpointName>:marker:{slotTag}` | slot-local | mirrored transaction suppression | no |
-| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local | latest committed point in serial mode | yes |
-| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | slot-local | commit record index in pipeline mode | no, index only |
-| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | slot-local | commit journal record in pipeline mode | yes, with frontier |
+| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local | latest committed point in `sync` mode | yes |
+| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | slot-local | commit record index in `pipeline`/`parallel` mode | no, index only |
+| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | slot-local | commit journal record in `pipeline`/`parallel` mode | yes, with frontier |
 
 `slotTag = BisyncSlotTag(slot)` is chosen so that the hash tag maps to the intended Redis cluster slot. This keeps slot-local control keys colocated with the business key and eligible for the same `MULTI/EXEC`.
 
@@ -194,13 +194,13 @@ SET redis-gunyu-bisync:<checkpointName>:marker:{slotTag} <marker-value> PX <ttl>
 
 The marker contains enough information for the reverse parser to identify a GunYu mirrored transaction.
 
-Serial mode writes a `latest` record in the same transaction:
+`sync` writes a `latest` record in the same transaction:
 
 ```redis
 HSET redis-gunyu-bisync:<checkpointName>:latest:{slotTag} ...
 ```
 
-Pipeline mode writes:
+`pipeline`/`parallel` write:
 
 ```redis
 HSET redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq> ...
@@ -224,15 +224,16 @@ AOF sending has two stages:
 1. parse AOF and emit replay units
 2. commit replay units to the target Redis
 
-When `pipeline=false`:
+When `mode=sync`:
 
 - units are committed serially
 - each successful transaction writes the slot-local `latest`
 - `latest` is the recovery source for startup
 
-When `pipeline=true`:
+When `mode=pipeline` or `parallel`:
 
-- units can be committed concurrently
+- `pipeline` keeps one dispatch connection and receives replies in send order
+- `parallel` commits units through bounded per-slot lanes
 - each commit writes a commit record and index
 - `bisyncFrontierCoordinator` advances the global frontier only for a contiguous committed prefix
 - commit records already covered by frontier are garbage-collected
@@ -255,17 +256,17 @@ Target topology changes:
 Startup recovery entry:
 
 1. resolve stable bisync `checkpointName`
-2. determine bisync mode: serial or pipeline
+2. determine bisync mode: `sync`, `pipeline`, or `parallel`
 3. load the appropriate recovery metadata
 4. return source start point and restore local bisync sequence/offset
 
-Serial mode:
+`sync`:
 
 - scan all recovery slots for `latest:{slotTag}`
 - choose the best latest record matching current runIDs
 - recover from its source offset and sequence
 
-Pipeline mode:
+`pipeline`/`parallel`:
 
 - load `<checkpointName>:frontier`
 - load commit records after `frontier.UnitSeq`
@@ -280,7 +281,7 @@ RDB recovery boundary:
 
 ### 3.9 Frontier and GC
 
-Pipeline mode needs a global contiguous frontier because commits may complete out of order.
+`pipeline`/`parallel` need a global contiguous frontier because commits may complete out of order.
 
 The coordinator keeps:
 
@@ -306,8 +307,8 @@ Bisync metrics include:
 - `bisync_txn_commit`: transaction commit count
 - `bisync_single_slot_fail`: single-slot validation failures
 - `bisync_txn_suppress`: mirrored transaction suppressions
-- `bisync_frontier_seq`: pipeline frontier sequence
-- `bisync_frontier_offset`: pipeline frontier offset
+- `bisync_frontier_seq`: `pipeline`/`parallel` frontier sequence
+- `bisync_frontier_offset`: `pipeline`/`parallel` frontier offset
 - `bisync_frontier_rebuild_seconds`: startup frontier rebuild duration
 - `bisync_commit_backlog`: pending commit backlog
 - `bisync_commit_gc`: commit record GC count
@@ -318,7 +319,7 @@ These metrics should be watched together with syncer status, Redis memory, gorou
 
 Implementation split:
 
-- [syncer/bisync.go](../syncer/bisync.go): AOF replay units, marker suppression, serial/pipeline senders, frontier coordinator
+- [syncer/bisync.go](../syncer/bisync.go): AOF replay units, marker suppression, `sync`/`pipeline`/`parallel` senders, frontier coordinator
 - [syncer/bisync_rdb.go](../syncer/bisync_rdb.go): RDB replay units, RDB `keyExists` semantics, RDB bisync transactions
 - [pkg/redis/checkpoint/bisync.go](../pkg/redis/checkpoint/bisync.go): key encoding, record/frontier encoding, frontier rebuild, latest/journal loading
 - [pkg/redis/client/cluster/txn_batcher.go](../pkg/redis/client/cluster/txn_batcher.go): real cluster transaction batcher and redirect retry
@@ -345,7 +346,7 @@ Focused unit tests cover:
 Integration tests in `tests/bisync`:
 
 - [tests/bisync/run_category1.sh](../tests/bisync/run_category1.sh): basic bidirectional convergence
-- [tests/bisync/run_category2.sh](../tests/bisync/run_category2.sh): serial / pipeline restart and resume
+- [tests/bisync/run_category2.sh](../tests/bisync/run_category2.sh): `sync` / `pipeline` / `parallel` restart and resume
 - [tests/bisync/run_category3.sh](../tests/bisync/run_category3.sh): RDB special paths and full-sync barrier
 - [tests/bisync/run_category4.sh](../tests/bisync/run_category4.sh): filters, keyspec, strict routing, `COMMAND GETKEYS`
 - [tests/bisync/run_category5.sh](../tests/bisync/run_category5.sh): failover and topology disturbance
@@ -370,7 +371,7 @@ See [tests/bisync/README.md](../tests/bisync/README.md) for the full test runner
 
    Commands such as `FUNCTION RESTORE` cannot be fully represented as slot-local bisync transactions.
 
-5. Pipeline recovery can detect journal gaps but does not yet skip every individually committed unit after a gap.
+5. `pipeline`/`parallel` recovery can detect journal gaps but does not yet skip every individually committed unit after a gap.
 
    It recovers from the last contiguous committed prefix.
 
@@ -394,7 +395,7 @@ Priorities:
 
    Add RedisJSON / RedisBloom instances to regular validation before removing the unsupported status of module commands.
 
-3. Strengthen pipeline recovery checks.
+3. Strengthen `pipeline`/`parallel` recovery checks.
 
    Detect snapshot rollback, journal gaps, and cross-runID pollution more explicitly.
 

@@ -124,8 +124,8 @@
 当前实现特征包括：
 
 - 事务内写入 `marker + business commands + latest/commit(+index)`
-- `pipeline=false` 时以 slot-local `latest` 推进恢复面
-- `pipeline=true` 时以 `commit record + commit index + checkpointName:frontier` 推进恢复面
+- `mode=sync` 时以 slot-local `latest` 推进恢复面
+- `mode=pipeline` 或 `parallel` 时以 `commit record + commit index + checkpointName:frontier` 推进恢复面
 - bisync namespace 直接由稳定 `checkpointName` 决定，不再依赖 target 当前 slot 视图或 source 地址
 - cluster 下恢复默认扫描全 `16384` slot，因此 target reshard / failover 后仍能命中旧 metadata
 - 目标拓扑变化通过 `MOVED/ASK` 重定向按整个 replay unit 重试提交

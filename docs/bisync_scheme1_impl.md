@@ -69,7 +69,7 @@ flowchart LR
   C --> D["key routing + slot validation"]
   D --> E["real MULTI/EXEC sender"]
   E --> F["bisync metadata"]
-  F --> G["serial latest or pipeline frontier"]
+  F --> G["sync latest or pipeline/parallel frontier"]
   E --> H["reverse parser suppression"]
 ```
 
@@ -179,7 +179,7 @@ RDB 路径的 replay unit 与 AOF 略有不同：
 
 2. bisync namespace-global key
    例如 `checkpointName:frontier`
-   这是 pipeline 模式下的全局连续前缀快照。
+   这是 `pipeline`/`parallel` 模式下的全局连续前缀快照。
 
 3. bisync slot-local key
    以 `redis-gunyu-bisync:<checkpointName>:` 为前缀，控制 key 与业务 key 通过 `{slotTag}` 强制落在同一 slot。
@@ -203,11 +203,11 @@ standalone 场景固定：
 | key | 作用域 | 作用 | authoritative |
 | --- | --- | --- | --- |
 | `checkpointName` | 全局 | full sync 完成后推进普通 checkpoint | 是 |
-| `checkpointName:frontier` | namespace-global | pipeline 模式连续前缀快照 | 是 |
+| `checkpointName:frontier` | namespace-global | `pipeline`/`parallel` 模式连续前缀快照 | 是 |
 | `redis-gunyu-bisync:<checkpointName>:marker:{slotTag}` | slot-local | mirrored transaction 抑制入口 | 否 |
-| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local | serial 模式每 slot 最新已提交点 | 是 |
-| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | slot-local | pipeline 模式 commit record 索引 | 否，本身只是索引 |
-| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | slot-local | pipeline 模式 journal record | 是，与 frontier 联合使用 |
+| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local | `sync` 模式每 slot 最新已提交点 | 是 |
+| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | slot-local | `pipeline`/`parallel` 模式 commit record 索引 | 否，本身只是索引 |
+| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | slot-local | `pipeline`/`parallel` 模式 journal record | 是，与 frontier 联合使用 |
 
 这里有两个刻意设计：
 
@@ -318,12 +318,12 @@ marker 通过 `SET ... PX` 写入，TTL 当前固定为 24 小时。
 - `digest`
 - `mtime`
 
-serial 模式把它写成 `latest`：
+`sync` 模式把它写成 `latest`：
 
 - 每个 slot 只有一个 deterministic key
 - 覆盖式更新
 
-pipeline 模式把它写成 `commit`：
+`pipeline`/`parallel` 模式把它写成 `commit`：
 
 - 每个 unit 一个 `commit record`
 - 同时写入 slot-local `index zset`
@@ -338,7 +338,7 @@ MULTI
 SET  <marker-key> <marker-json> PX <ttl>
 ... business commands ...
 HSET <latest-or-commit-key> ...
-ZADD <commit-index> <unitSeq> <commit-key>   # 仅 pipeline=true
+ZADD <commit-index> <unitSeq> <commit-key>   # 仅 mode=pipeline|parallel
 EXEC
 ```
 
@@ -395,7 +395,7 @@ EXEC
 - 如果事务尾部有 `latest/commit` record，则要求 `run_id/syncer_id/unit_seq/offset/slot/digest` 一致
 - 如果是 `record_type=rdb`，当前实现按 marker 直接识别
 
-#### 3.7.2 `pipeline=false` 串行模式
+#### 3.7.2 `mode=sync` 串行模式
 
 串行模式的性质最简单：
 
@@ -411,14 +411,14 @@ EXEC
 2. 读取这些 slot 上 `checkpointName` 命名空间里的 deterministic `latest`
 3. 取 `EndOffset` 最大的记录作为 authoritative 起点
 
-#### 3.7.3 `pipeline=true` 并发模式
+#### 3.7.3 `mode=pipeline|parallel` frontier 模式
 
-并发模式下不能再简单看“最大 offset”，因为不同 slot 的提交可能交错。
+只要存在多个已发送但未确认的 replay unit，恢复时就不能再简单看“最大 offset”，因为崩溃前后续 unit 可能已经在目标端提交。
 
 当前实现采用三段式：
 
-- dispatch 连接：持续把 replay unit 编码为真实事务并发送
-- receive goroutine：异步等待各个事务的 `EXEC` reply
+- pipeline：单 dispatch 连接持续发送，receive goroutine 按发送顺序确认
+- parallel：有界 per-slot lane 并发提交，完成结果可能乱序
 - frontier coordinator：只在 `[1..N]` 连续闭合时推进全局 frontier
 
 事务内写入的是：
@@ -500,20 +500,20 @@ RDB 发送时分两条路径：
 
 在进入 `scheme1StartPoint` 之前，[syncer/syncer.go](../syncer/syncer.go) 已先通过 `checkpoint-hash` 解析或创建稳定 `checkpointName`。因此后续恢复逻辑不再根据当前 output shard 的 slot 视图推导 namespace，而是直接围绕这个稳定 root 读取历史状态。
 
-#### 3.8.2 serial 模式恢复
+#### 3.8.2 `sync` 模式恢复
 
-serial 模式直接读取 `latest`：
+`sync` 模式直接读取 `latest`：
 
 1. cluster 下直接枚举 `0..16383` 全部 slot；standalone 只看 synthetic slot `0`
 2. 对每个 slot 读取 `checkpointName` 命名空间里的 `latest`
 3. 过滤掉 runID 不匹配的记录
 4. 取 `EndOffset` 最大、`mtime` 最新的记录
 
-之所以可以取最大 offset，是因为 serial 模式保证全局单 in-flight，已提交集合本来就是连续前缀。
+之所以可以取最大 offset，是因为 `sync` 模式保证全局单 in-flight，已提交集合本来就是连续前缀。
 
-#### 3.8.3 pipeline 模式恢复
+#### 3.8.3 `pipeline`/`parallel` 模式恢复
 
-pipeline 模式恢复必须重建连续前缀：
+`pipeline`/`parallel` 模式恢复必须重建连续前缀：
 
 1. 读取 `checkpointName:frontier`
 2. 用 `snapshot.UnitSeq + 1` 作为 `minSeq`
@@ -553,7 +553,7 @@ RDB 路径故意不参与 `scheme1StartPoint` 的 `latest/frontier/commit` 重�
 
 ### 3.9 Frontier 与 GC
 
-pipeline 模式下，`bisyncFrontierCoordinator` 维护：
+`pipeline`/`parallel` 模式下，`bisyncFrontierCoordinator` 维护：
 
 - 当前 frontier 的 `UnitSeq`
 - 当前 frontier 的 `Offset`
@@ -607,7 +607,7 @@ GC 后仍然保留的状态只有：
 除指标外，日志也会打印：
 
 - checkpointName、slot 数、snapshot、journal 数量
-- serial / pipeline 选中的 start point
+- `sync` / `pipeline` / `parallel` 选中的 start point
 - frontier rebuild 结果
 - strict 路由与事务提交错误
 
@@ -665,7 +665,7 @@ GC 后仍然保留的状态只有：
 - [tests/bisync/run_category1.sh](../tests/bisync/run_category1.sh)
   基础双向同步收敛
 - [tests/bisync/run_category2.sh](../tests/bisync/run_category2.sh)
-  serial / pipeline 重启恢复
+  `sync` / `pipeline` / `parallel` 重启恢复
 - [tests/bisync/run_category3.sh](../tests/bisync/run_category3.sh)
   RDB 特殊路径与 full-sync barrier
 - [tests/bisync/run_category4.sh](../tests/bisync/run_category4.sh)
@@ -693,10 +693,10 @@ GC 后仍然保留的状态只有：
 4. cluster 下非 key-based 全局 opcode 仍存在 legacy 回退
    例如 `FUNCTION RESTORE` 这类无法绑定到 slot-local 控制 key 的命令，当前不能完全纳入 scheme1 strict 事务模型。
 
-5. pipeline 恢复对 journal 异常仍有继续收紧空间
+5. `pipeline`/`parallel` 恢复对 journal 异常仍有继续收紧空间
    当前 `RebuildBisyncFrontier` 已能发现 gap，但 snapshot/journal 更复杂的不一致判定仍可加强。
 
-6. pipeline 重建当前只能跳过“连续已提交前缀”，还不能跳过 `frontier` 之后所有已提交 unit
+6. `pipeline`/`parallel` 重建当前只能跳过“连续已提交前缀”，还不能跳过 `frontier` 之后所有已提交 unit
    当前恢复入口会先读取 `frontier snapshot`，再加载 `frontier.UnitSeq + 1` 之后的 `commit journal`，并通过 `RebuildBisyncFrontier` 只把“从 frontier 之后继续连续闭合”的部分推进为 authoritative start point。若崩溃时存在 gap，则 gap 后面那些其实已经 durable commit、但尚未被连续闭合进 frontier 的 unit，重启后仍会跟随 source stream 再次重放。也就是说，当前语义是“从最后连续已提交点之后恢复”，还不是“精确跳过所有已提交、只回放未提交 unit”。
 
 7. cluster 拓扑剧烈抖动时仍以 fail-stop 为主
@@ -715,10 +715,10 @@ GC 后仍然保留的状态只有：
 2. 补齐模块命令支持闭环
    优先把 RedisJSON / RedisBloom 的模块实例接入常态化验证，逐步解除当前“暂时不支持”的命令清单：`JSON.SET`、`JSON.DEL`、`JSON.MSET`、`BF.ADD`、`CMS.MERGE`、`TDIGEST.MERGE`、`TOPK.ADD`。在模块实例、keyspec 校验、strict routing 和回归门禁都稳定之前，继续按待优化项管理。
 
-3. 加强 pipeline 恢复异常检测
+3. 加强 `pipeline`/`parallel` 恢复异常检测
    对 snapshot 回退、journal 缺口、跨 runID 混入等场景给出更明确的 fail-stop。
 
-4. 让 pipeline 重建能够精确跳过已提交 unit
+4. 让 `pipeline`/`parallel` 重建能够精确跳过已提交 unit
    启动时除了重建 `frontier`，还应把 `frontier` 之后残留的已提交 `commit journal` 装载为恢复期 `pending/committed` 视图；后续 parser 重新生成 replay unit 时，若 `unit_seq + run_id + offset range + slot + digest` 与已 durable commit 的 journal 精确匹配，则直接跳过发送，仅对真正未提交或无法证明已提交的 unit 继续回放。这样才能把恢复语义从“连续前缀恢复”进一步收紧到“只回放未提交 unit”。
 
 5. 优化 replay unit 粒度与并发模型

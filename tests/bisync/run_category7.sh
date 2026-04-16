@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat7"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat7:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SOAK_DURATION="${SOAK_DURATION:-5m}"
 SOAK_KEY_SPACE="${SOAK_KEY_SPACE:-32}"
 SOAK_THROTTLE="${SOAK_THROTTLE:-0ms}"
@@ -112,7 +112,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -146,7 +148,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -192,11 +194,13 @@ start_syncers() {
   local mode=$1
   local fwd_http_port=$2
   local rev_http_port=$3
-  local pipeline_flag=$4
+  local mode_arg=$4
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
   echo "[3/7] starting bisync syncers for ${mode}"
-  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${LEFT_ADDRS}" "${RIGHT_ADDRS}" "${pipeline_flag}"
-  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${RIGHT_ADDRS}" "${LEFT_ADDRS}" "${pipeline_flag}"
+  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${LEFT_ADDRS}" "${RIGHT_ADDRS}" "${mode_arg}"
+  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${RIGHT_ADDRS}" "${LEFT_ADDRS}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${mode}-forward.yaml" -cmd sync > "${TMP_ROOT}/${mode}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -228,7 +232,9 @@ wait_for_consistency() {
 
 write_report() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local prefix=$3
   local fwd_http_port=$4
   local rev_http_port=$5
@@ -246,7 +252,7 @@ write_report() {
 
 - GeneratedAt: $(date '+%Y-%m-%d %H:%M:%S %z')
 - Mode: ${mode}
-- Pipeline: ${pipeline_flag}
+- Mode: ${replay_mode}
 - Scenario: soak
 - Prefix: ${prefix}
 - Duration: ${SOAK_DURATION}
@@ -280,7 +286,9 @@ EOF
 
 run_scenario() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local fwd_http_port=$3
   local rev_http_port=$4
   local prefix="${TEST_PREFIX}:${mode}"
@@ -289,7 +297,7 @@ run_scenario() {
   local report_file="${TMP_ROOT}/${mode}-report.md"
 
   clear_clusters
-  start_syncers "${mode}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
 
   echo "[4/7] running long-lived write workload for ${mode}"
   "${TMP_ROOT}/bisync_workload" \
@@ -308,7 +316,7 @@ run_scenario() {
   wait_for_consistency "${prefix}:*" "${compare_log}"
 
   echo "[6/7] generating report for ${mode}"
-  write_report "${mode}" "${pipeline_flag}" "${prefix}" "${fwd_http_port}" "${rev_http_port}" "${workload_json}" "${compare_log}" "${report_file}"
+  write_report "${mode}" "${mode_arg}" "${prefix}" "${fwd_http_port}" "${rev_http_port}" "${workload_json}" "${compare_log}" "${report_file}"
 
   echo "[7/7] summary ${mode}"
   echo "prefix=${prefix}"
@@ -321,12 +329,17 @@ run_scenario() {
 
 build_binaries
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_scenario serial false 20180 20280
+  *",sync,"*)
+    run_scenario sync sync 20180 20280
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_scenario pipeline true 20380 20480
+    run_scenario pipeline pipeline 20180 20280
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_scenario parallel parallel 20380 20480
     ;;
 esac

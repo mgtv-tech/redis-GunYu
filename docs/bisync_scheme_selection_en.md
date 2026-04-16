@@ -64,8 +64,8 @@ The current bisync main path is no longer the old cluster pseudo-batch path. It 
 Current characteristics:
 
 - transaction writes `marker + business commands + latest/commit(+index)`
-- when `pipeline=false`, slot-local `latest` records drive recovery
-- when `pipeline=true`, `commit record + commit index + checkpointName:frontier` drive recovery
+- when `mode=sync`, slot-local `latest` records drive recovery
+- when `mode=pipeline` or `parallel`, `commit record + commit index + checkpointName:frontier` drive recovery
 - bisync namespace is derived from a stable `checkpointName`
 - recovery in cluster mode scans all `16384` slots by default, so target resharding or failover does not hide old metadata
 - target topology changes are handled by retrying the whole replay unit on `MOVED` / `ASK`
@@ -134,7 +134,7 @@ There are two common checkpoint approaches:
 
 1. Write checkpoint data inside the same `MULTI/EXEC`.
 
-   This is correct in fully serial mode because committed units form a contiguous prefix. It is not enough in concurrent mode because slot-local progress does not imply a global contiguous prefix.
+   This is correct in fully `sync` mode because committed units form a contiguous prefix. It is not enough in concurrent mode because slot-local progress does not imply a global contiguous prefix.
 
 2. Write checkpoint data periodically outside the transaction.
 

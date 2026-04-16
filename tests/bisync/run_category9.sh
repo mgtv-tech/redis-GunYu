@@ -27,7 +27,7 @@ esac
 SOAK_DURATION="${SOAK_DURATION:-${SOAK_TIER}}"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat9-${SOAK_TIER}"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat9:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SOAK_KEY_SPACE="${SOAK_KEY_SPACE:-10000}"
 SOAK_THROTTLE="${SOAK_THROTTLE:-0ms}"
 SOAK_TARGET_QPS="${SOAK_TARGET_QPS:-10000}"
@@ -225,7 +225,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -259,7 +261,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -287,10 +289,12 @@ start_syncers() {
   local right_addrs=$3
   local fwd_http_port=$4
   local rev_http_port=$5
-  local pipeline_flag=$6
+  local mode_arg=$6
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
-  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${left_addrs}" "${right_addrs}" "${pipeline_flag}"
-  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${right_addrs}" "${left_addrs}" "${pipeline_flag}"
+  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${left_addrs}" "${right_addrs}" "${mode_arg}"
+  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${right_addrs}" "${left_addrs}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${mode}-forward.yaml" -cmd sync > "${TMP_ROOT}/${mode}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -488,7 +492,9 @@ run_fault_schedule() {
   local right_ports_csv=$8
   local left_addrs=$9
   local right_addrs=${10}
-  local pipeline_flag=${11}
+  local mode_arg=${11}
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local events_file=${12}
 
   local t_restart=$((duration_seconds / 4))
@@ -520,7 +526,7 @@ run_fault_schedule() {
   record_event "${events_file}" "${mode}" "syncer_offline_resume" "start" "offline_seconds=${SOAK_OFFLINE_SECONDS}"
   stop_syncers
   sleep "${SOAK_OFFLINE_SECONDS}"
-  start_syncers "${mode}" "${left_addrs}" "${right_addrs}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${left_addrs}" "${right_addrs}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
   record_event "${events_file}" "${mode}" "syncer_offline_resume" "done" "offline_seconds=${SOAK_OFFLINE_SECONDS}"
 
   sleep_until_elapsed "${started_at}" "${t_api_restart}" "${workload_pid}" || return 1
@@ -703,7 +709,9 @@ PY
 
 write_report() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local prefix=$3
   local left_addrs=$4
   local right_addrs=$5
@@ -737,7 +745,7 @@ write_report() {
 - Tier: ${SOAK_TIER}
 - Duration: ${SOAK_DURATION}
 - Mode: ${mode}
-- Pipeline: ${pipeline_flag}
+- Mode: ${replay_mode}
 - Prefix: ${prefix}
 - StableComparePattern: ${prefix}:stable:*
 - TargetQPS: ${SOAK_TARGET_QPS}
@@ -819,7 +827,9 @@ EOF
 
 run_scenario() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local fwd_http_port=$3
   local rev_http_port=$4
   local src_base dst_base
@@ -834,7 +844,7 @@ run_scenario() {
   local duration_seconds started_at
   local scenario_status="PASS"
 
-  if [[ "${mode}" == "serial" ]]; then
+  if ! replay_mode_uses_frontier "${replay_mode}"; then
     src_base="${SERIAL_SRC_BASE}"
     dst_base="${SERIAL_DST_BASE}"
   else
@@ -853,7 +863,7 @@ run_scenario() {
   start_cluster_with_replicas "${mode}-dst" "${dst_ports[@]}"
 
   echo "[3/8] starting bisync syncers for ${mode}"
-  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${mode}" "${src_csv}" "${dst_csv}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
 
   echo "[4/8] starting resource monitor for ${mode}"
   : > "${samples_file}"
@@ -880,7 +890,7 @@ run_scenario() {
   started_at=$(date +%s)
 
   echo "[6/8] injecting scheduled faults for ${mode}"
-  if ! run_fault_schedule "${mode}" "${duration_seconds}" "${WORKLOAD_PID}" "${started_at}" "${fwd_http_port}" "${rev_http_port}" "${src_port_csv}" "${dst_port_csv}" "${src_csv}" "${dst_csv}" "${pipeline_flag}" "${events_file}"; then
+  if ! run_fault_schedule "${mode}" "${duration_seconds}" "${WORKLOAD_PID}" "${started_at}" "${fwd_http_port}" "${rev_http_port}" "${src_port_csv}" "${dst_port_csv}" "${src_csv}" "${dst_csv}" "${mode_arg}" "${events_file}"; then
     scenario_status="FAIL"
     record_event "${events_file}" "${mode}" "fault_schedule" "failed" "see logs"
   fi
@@ -912,7 +922,7 @@ run_scenario() {
   echo "[8/8] writing report for ${mode}"
   [[ -f "${workload_json}" ]] || echo "{}" > "${workload_json}"
   [[ -f "${compare_log}" ]] || echo "compare did not run" > "${compare_log}"
-  write_report "${mode}" "${pipeline_flag}" "${prefix}" "${src_csv}" "${dst_csv}" "${workload_json}" "${compare_log}" "${samples_file}" "${events_file}" "${report_file}" "${fwd_http_port}" "${rev_http_port}" "${scenario_status}"
+  write_report "${mode}" "${mode_arg}" "${prefix}" "${src_csv}" "${dst_csv}" "${workload_json}" "${compare_log}" "${samples_file}" "${events_file}" "${report_file}" "${fwd_http_port}" "${rev_http_port}" "${scenario_status}"
   echo "report=${report_file}"
   echo "samples=${samples_file}"
   echo "events=${events_file}"
@@ -931,12 +941,17 @@ shutdown_ports $(all_ports)
 build_binaries
 
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_scenario serial false "${SERIAL_HTTP_PORT}" "${SERIAL_REV_HTTP_PORT}"
+  *",sync,"*)
+    run_scenario sync sync "${SERIAL_HTTP_PORT}" "${SERIAL_REV_HTTP_PORT}"
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_scenario pipeline true "${PIPELINE_FWD_HTTP_PORT}" "${PIPELINE_REV_HTTP_PORT}"
+    run_scenario pipeline pipeline "${SERIAL_HTTP_PORT}" "${SERIAL_REV_HTTP_PORT}"
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_scenario parallel parallel "${PIPELINE_FWD_HTTP_PORT}" "${PIPELINE_REV_HTTP_PORT}"
     ;;
 esac

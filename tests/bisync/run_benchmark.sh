@@ -6,7 +6,7 @@ TMP_ROOT="${TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark}"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 
 TEST_PREFIX="${TEST_PREFIX:-bisync:bench:$(date +%s)}"
-SCENARIOS="${SCENARIOS:-serial,pipeline}"
+SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 BENCH_DURATION="${BENCH_DURATION:-15m}"
 BENCH_KEY_SPACE="${BENCH_KEY_SPACE:-100000}"
 BENCH_TARGET_QPS_LIST="${BENCH_TARGET_QPS_LIST:-1000,5000,10000}"
@@ -136,7 +136,9 @@ write_syncer_conf() {
   local http_port=$2
   local input_addrs=$3
   local output_addrs=$4
-  local pipeline_flag=$5
+  local mode_arg=$5
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local storer_dir="${TMP_ROOT}/${name}-store"
   mkdir -p "${storer_dir}"
   cat > "${TMP_ROOT}/${name}.yaml" <<EOF
@@ -171,7 +173,7 @@ output:
     targetDb: -1
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: ${pipeline_flag}
+    mode: ${replay_mode}
 log:
   level: info
   handler:
@@ -197,11 +199,13 @@ start_syncers() {
   local mode=$1
   local fwd_http_port=$2
   local rev_http_port=$3
-  local pipeline_flag=$4
+  local mode_arg=$4
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
 
   echo "[3/7] starting benchmark syncers for ${mode}"
-  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${LEFT_ADDRS}" "${RIGHT_ADDRS}" "${pipeline_flag}"
-  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${RIGHT_ADDRS}" "${LEFT_ADDRS}" "${pipeline_flag}"
+  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${LEFT_ADDRS}" "${RIGHT_ADDRS}" "${mode_arg}"
+  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${RIGHT_ADDRS}" "${LEFT_ADDRS}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${mode}-forward.yaml" -cmd sync > "${TMP_ROOT}/${mode}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -364,7 +368,9 @@ PY
 
 write_report() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local target_qps=$3
   local prefix=$4
   local fwd_http_port=$5
@@ -387,7 +393,7 @@ write_report() {
 
 - GeneratedAt: $(date '+%Y-%m-%d %H:%M:%S %z')
 - Mode: ${mode}
-- Pipeline: ${pipeline_flag}
+- Mode: ${replay_mode}
 - TargetQPS: ${target_qps}
 - Workers: ${BENCH_WORKERS}
 - Duration: ${BENCH_DURATION}
@@ -442,7 +448,9 @@ EOF
 
 run_benchmark_case() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local fwd_http_port=$3
   local rev_http_port=$4
   local target_qps=$5
@@ -456,7 +464,7 @@ run_benchmark_case() {
   local sync_delay_status
 
   clear_clusters
-  start_syncers "${case_name}" "${fwd_http_port}" "${rev_http_port}" "${pipeline_flag}"
+  start_syncers "${case_name}" "${fwd_http_port}" "${rev_http_port}" "${mode_arg}"
   : > "${resource_samples}"
   : > "${sync_delay_samples}"
   resource_monitor_loop "${case_name}" "${fwd_http_port}" "${rev_http_port}" "${resource_samples}" &
@@ -487,7 +495,7 @@ run_benchmark_case() {
   stop_monitors
 
   echo "[6/7] writing benchmark report mode=${mode} target_qps=${target_qps}"
-  write_report "${mode}" "${pipeline_flag}" "${target_qps}" "${prefix}" "${fwd_http_port}" "${rev_http_port}" "${workload_json}" "${compare_log}" "${resource_samples}" "${sync_delay_samples}" "${report_file}"
+  write_report "${mode}" "${mode_arg}" "${target_qps}" "${prefix}" "${fwd_http_port}" "${rev_http_port}" "${workload_json}" "${compare_log}" "${resource_samples}" "${sync_delay_samples}" "${report_file}"
 
   echo "[7/7] benchmark summary mode=${mode} target_qps=${target_qps}"
   echo "report=${report_file}"
@@ -506,7 +514,9 @@ run_benchmark_case() {
 
 run_mode() {
   local mode=$1
-  local pipeline_flag=$2
+  local mode_arg=$2
+  local replay_mode
+  replay_mode=$(normalize_replay_mode "${mode_arg}")
   local fwd_http_port=$3
   local rev_http_port=$4
   local target_qps
@@ -514,19 +524,24 @@ run_mode() {
   for target_qps in "${qps_values[@]}"; do
     target_qps=$(printf '%s' "${target_qps}" | xargs)
     [[ -n "${target_qps}" ]] || continue
-    run_benchmark_case "${mode}" "${pipeline_flag}" "${fwd_http_port}" "${rev_http_port}" "${target_qps}"
+    run_benchmark_case "${mode}" "${mode_arg}" "${fwd_http_port}" "${rev_http_port}" "${target_qps}"
   done
 }
 
 build_binaries
 case ",${SCENARIOS}," in
-  *",serial,"*)
-    run_mode serial false 21180 21280
+  *",sync,"*)
+    run_mode sync sync 21180 21280
     ;;
 esac
 case ",${SCENARIOS}," in
   *",pipeline,"*)
-    run_mode pipeline true 21380 21480
+    run_mode pipeline pipeline 21180 21280
+    ;;
+esac
+case ",${SCENARIOS}," in
+  *",parallel,"*)
+    run_mode parallel parallel 21380 21480
     ;;
 esac
 

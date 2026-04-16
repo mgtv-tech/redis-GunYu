@@ -33,8 +33,9 @@ The current implementation supports:
 - Redis cluster bidirectional sync
 - AOF incremental replay
 - RDB full sync replay
-- serial replay mode
+- sync replay mode
 - pipeline replay mode
+- parallel replay mode
 - replay-unit-level retry on target `MOVED` / `ASK` redirects
 
 The current implementation wraps each replay unit in a real Redis `MULTI/EXEC` transaction. The transaction writes:
@@ -76,7 +77,7 @@ output:
     resumeFromBreakPoint: true
     replayTransaction: true
     bisyncEnabled: true
-    enableAofPipeline: false
+    mode: sync
     keyExists: replace
 ```
 
@@ -84,17 +85,18 @@ output:
 | --- | --- | --- |
 | `bisyncEnabled` | `true` | The only explicit bisync switch. Default is `false`. |
 | `replayTransaction` | `true` | Recommended. It is not the bisync switch, but still controls the normal replay path. |
-| `enableAofPipeline` | choose after validation | In bisync mode this is also a recovery-mode switch. |
+| `mode` | `sync` / `pipeline` / `parallel` | AOF replay execution semantics. In non-bisync replay, `pipeline` replaces the old pipeline mode; `parallel` is currently bisync-only. |
 | `resumeFromBreakPoint` | `true` | Recommended for breakpoint resume. |
 | `keyExists` | `replace` / `ignore` / `error` | Behavior when target keys already exist during RDB full sync. |
-| `bisyncPipelineParallel` | optional | Pipeline-mode parallelism. If unset, GunYu resolves it from cluster shards or falls back conservatively. |
+| `parallelism` | optional | `parallel`-mode concurrency. If unset, GunYu resolves it from cluster shards or falls back conservatively. |
 
-`enableAofPipeline` changes the recovery model:
+`mode` has three values:
 
-- `false`: serial mode; recovery mainly uses slot-local `latest` checkpoints
-- `true`: pipeline mode; recovery uses `commit journal + frontier`
+- `sync`: send one replay unit and wait for its full reply before sending the next; recovery uses slot-local `latest` checkpoints
+- `pipeline`: send and receive run in different goroutines, but replies and checkpoints are handled in send order; recovery uses `commit journal + frontier`
+- `parallel`: replay units are dispatched through bounded lanes; recovery uses `commit journal + frontier`
 
-Do not validate only serial mode and then deploy pipeline mode, or the reverse. The recovery metadata is different and both modes must be tested separately.
+Do not validate only one mode and then deploy another. `sync` and `pipeline`/`parallel` use different recovery surfaces, and all three execution semantics must be tested separately.
 
 ## 4. How It Works
 
@@ -127,11 +129,11 @@ Common keys:
 | Key | Purpose |
 | --- | --- |
 | `redis-gunyu-checkpoint-bisync:<id>` | bisync namespace root |
-| `redis-gunyu-checkpoint-bisync:<id>:frontier` | global contiguous recovery point in pipeline mode |
+| `redis-gunyu-checkpoint-bisync:<id>:frontier` | global contiguous recovery point in `parallel` mode |
 | `redis-gunyu-bisync:<checkpointName>:marker:{slotTag}` | mirrored transaction suppression marker |
-| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local recovery point in serial mode |
-| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | commit journal in pipeline mode |
-| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | commit journal index in pipeline mode |
+| `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | slot-local recovery point in `sync` mode |
+| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | commit journal in `parallel` mode |
+| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | commit journal index in `parallel` mode |
 
 These keys are GunYu control-plane keys. Business clients must not read, write, migrate, or delete them.
 
@@ -183,9 +185,9 @@ Other multi-key commands are handled conservatively. If safety cannot be proven,
 
    If both sides write the same key, GunYu does not decide which value is correct. The final result depends on Redis command semantics, replication order, and recovery behavior. Non-idempotent commands such as `INCR`, `LPUSH`, and `XADD` require extra business review.
 
-2. Pipeline recovery does not precisely skip every committed unit.
+2. `parallel` recovery does not precisely skip every committed unit.
 
-   Pipeline mode rebuilds the contiguous committed prefix from `frontier + commit journal`. If a crash leaves a gap after the frontier, units committed after the gap may still be replayed again after restart. The current semantic is recovery from the last contiguous committed point.
+   `parallel` mode rebuilds the contiguous committed prefix from `frontier + commit journal`. If a crash leaves a gap after the frontier, units committed after the gap may still be replayed again after restart. The current semantic is recovery from the last contiguous committed point.
 
 3. RDB replay does not provide per-key authoritative recovery points.
 
@@ -212,7 +214,7 @@ Other multi-key commands are handled conservatively. If safety cannot be proven,
 - In cluster mode, business transactions should use hash tags to stay in one slot.
 - Start rollout with a limited business prefix or slot range.
 - Define same-key write conflict semantics before rollout.
-- Validate recovery, failover, and soak behavior before enabling pipeline mode.
+- Validate recovery, failover, and soak behavior before enabling `pipeline` or `parallel` mode.
 - Re-run category4 and convergence tests after changing filters.
 
 ## 9. Tests and Existing Test Records
@@ -239,7 +241,7 @@ Integration test scripts:
 | Script | Coverage |
 | --- | --- |
 | `tests/bisync/run_category1.sh` | basic bidirectional convergence |
-| `tests/bisync/run_category2.sh` | serial / pipeline restart, resume, and metadata shape |
+| `tests/bisync/run_category2.sh` | `sync` / `pipeline` / `parallel` restart, resume, and metadata shape |
 | `tests/bisync/run_category3.sh` | RDB special paths, pure full sync, full-sync barrier |
 | `tests/bisync/run_category4.sh` | keyspec, filters, strict routing, real Redis `COMMAND GETKEYS` verification |
 | `tests/bisync/run_category5.sh` | source failover, target failover, syncer restart |
@@ -250,8 +252,8 @@ Integration test scripts:
 
 One existing soak record is included:
 
-- [tests/bisync/reports/2026-04-14-serial-90m-stop-report.md](../tests/bisync/reports/2026-04-14-serial-90m-stop-report.md)
-- Redis 7.0.11, serial mode, 4 workers, about `10000` combined logical commands/s
+- an existing `sync`-mode soak record is available under `tests/bisync/reports/`
+- Redis 7.0.11, `sync` mode, 4 workers, about `10000` combined logical commands/s
 - sampled runtime was about `87.48m`
 - planned fault injections completed: syncer API restart, left/right Redis failover, syncer offline/resume, final syncer API restart
 - log review found no panic, fatal, or connection reset by peer
@@ -267,7 +269,7 @@ bash ./tests/bisync/run_category3.sh
 bash ./tests/bisync/run_category4.sh
 bash ./tests/bisync/run_category5.sh
 bash ./tests/bisync/run_category8.sh
-SOAK_TIER=2h SCENARIOS=serial,pipeline KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
+SOAK_TIER=2h SCENARIOS=sync,pipeline,parallel KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
 ```
 
 After reviewing and accepting the `2h` category9 report, continue with `4h` and `6h`.
@@ -288,10 +290,10 @@ Bisync-related metrics include:
 | `bisync_txn_commit` | bisync transaction commit count |
 | `bisync_single_slot_fail` | single-slot validation failure count |
 | `bisync_txn_suppress` | mirrored transaction suppression count |
-| `bisync_frontier_seq` | pipeline frontier sequence |
-| `bisync_frontier_offset` | pipeline frontier offset |
+| `bisync_frontier_seq` | `pipeline`/`parallel` frontier sequence |
+| `bisync_frontier_offset` | `pipeline`/`parallel` frontier offset |
 | `bisync_frontier_rebuild_seconds` | frontier rebuild duration |
-| `bisync_commit_backlog` | pipeline commit backlog |
+| `bisync_commit_backlog` | `pipeline`/`parallel` commit backlog |
 | `bisync_commit_gc` | commit journal GC count |
 
 Watch for:
@@ -299,7 +301,7 @@ Watch for:
 - whether `bisync_txn_commit` keeps increasing
 - whether `bisync_txn_suppress` confirms mirrored transactions are being suppressed
 - whether `bisync_single_slot_fail` increases
-- whether `bisync_commit_backlog` stays high in pipeline mode
+- whether `bisync_commit_backlog` stays high in `parallel` mode
 - repeated `MOVED` / `ASK`, frontier rebuild, journal gap, or strict routing failures in syncer logs
 
 ## 11. Release Recommendation
@@ -307,7 +309,7 @@ Watch for:
 Recommended rollout steps:
 
 1. Run unit tests and category1 to category5 plus category8 against the production Redis version.
-2. Run category9 durability tiers for both serial and pipeline modes.
+2. Run category9 durability tiers for `sync`, `pipeline`, and `parallel` modes.
 3. Start canary rollout by business prefix or slot range, with controlled initial write volume.
 4. Watch the status API, bisync metrics, Redis resources, and data comparison results.
 5. Keep a rollback plan that can quickly disable `bisyncEnabled` or stop the reverse link.
@@ -315,7 +317,7 @@ Recommended rollout steps:
 Production acceptance criteria:
 
 - business keys converge on both sides
-- the intended serial or pipeline mode has been validated
+- the intended `sync`, `pipeline`, or `parallel` mode has been validated
 - failover, syncer restart, and offline recovery still converge
 - commit journal does not accumulate abnormally
 - goroutine count, RSS, storer directory size, and Redis memory do not grow abnormally

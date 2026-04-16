@@ -273,13 +273,40 @@ type ReplayConfig struct {
 	BatchBufferSize        uint64        `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int           `yaml:"replayRdbParallel"`
-	BisyncPipelineParallel int           `yaml:"bisyncPipelineParallel"`
 	ReplayRdbEnableRestore *bool         `yaml:"replayRdbEnableRestore" default:"true"`
 	UpdateCheckpointTicker time.Duration `yaml:"updateCheckpointTicker"`
 	ReplayTransaction      *bool         `yaml:"replayTransaction" default:"true"`
 	BisyncEnabled          *bool         `yaml:"bisyncEnabled" default:"false"`
 	Stats                  OutputStats   `yaml:"stats"`
-	AofPipelineMode        bool          `yaml:"enableAofPipeline"`
+	Mode                   ReplayMode    `yaml:"mode"`
+	Parallelism            int           `yaml:"parallelism"`
+
+	// Legacy fields kept for backward-compatible config loading.
+	LegacyAofPipelineMode bool `yaml:"enableAofPipeline"`
+}
+
+type ReplayMode string
+
+const (
+	ReplayModeSync     ReplayMode = "sync"
+	ReplayModePipeline ReplayMode = "pipeline"
+	ReplayModeParallel ReplayMode = "parallel"
+)
+
+func NormalizeReplayMode(raw ReplayMode) (ReplayMode, error) {
+	mode := ReplayMode(strings.ToLower(strings.TrimSpace(string(raw))))
+	switch mode {
+	case "":
+		return "", nil
+	case ReplayModeSync, ReplayModePipeline, ReplayModeParallel:
+		return mode, nil
+	default:
+		return "", newConfigError("invalid replay.mode %q, expected sync, pipeline, or parallel", raw)
+	}
+}
+
+func (mode ReplayMode) UsesFrontier() bool {
+	return mode == ReplayModePipeline || mode == ReplayModeParallel
 }
 
 func (of *OutputConfig) fix() error {
@@ -329,6 +356,25 @@ func (of *ReplayConfig) fix() error {
 		bisync := false
 		of.BisyncEnabled = &bisync
 	}
+	replayMode, err := NormalizeReplayMode(of.Mode)
+	if err != nil {
+		return err
+	}
+
+	if replayMode != "" && of.LegacyAofPipelineMode && replayMode != ReplayModePipeline {
+		return newConfigError("replay.mode=%s conflicts with legacy enableAofPipeline=%t", replayMode, of.LegacyAofPipelineMode)
+	}
+	if replayMode == "" {
+		if of.LegacyAofPipelineMode {
+			replayMode = ReplayModePipeline
+		} else {
+			replayMode = ReplayModeSync
+		}
+	}
+	if replayMode == ReplayModeParallel && !*of.BisyncEnabled {
+		return newConfigError("replay.mode=parallel is only supported when bisyncEnabled=true")
+	}
+	of.Mode = replayMode
 
 	of.KeyExists = strings.ToLower(of.KeyExists)
 	if !slices.Contains([]string{"replace", "ignore", "error"}, of.KeyExists) {

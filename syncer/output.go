@@ -200,8 +200,9 @@ type RedisOutputConfig struct {
 	BatchBufferSize        uint64             `yaml:"batchBufferSize"`
 	KeepaliveTicker        time.Duration      `yaml:"keepaliveTicker"`
 	ReplayRdbParallel      int                `yaml:"replayRdbParallel"`
-	BisyncPipelineParallel int                `yaml:"bisyncPipelineParallel"`
+	Parallelism            int                `yaml:"parallelism"`
 	ReplayRdbEnableRestore bool               `yaml:"replayRdbEnableRestore" default:"true"`
+	ReplayMode             config.ReplayMode  `yaml:"mode"`
 	ReplayPipeline         bool               `yaml:"replayPipeline"`
 	UpdateCheckpointTicker time.Duration      `yaml:"updateCheckpointTicker"`
 	Stats                  config.OutputStats `yaml:"stats"`

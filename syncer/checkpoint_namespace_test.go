@@ -343,15 +343,15 @@ func seedFakeNamespaceHash(t *testing.T, cli *fakeNamespaceRedis, key string, ha
 	}
 }
 
-func TestResolveBisyncCheckpointNameMigratesSerialSeedToCurrentRunID(t *testing.T) {
+func TestResolveBisyncCheckpointNameMigratesSyncSeedToCurrentRunID(t *testing.T) {
 	cli := newFakeNamespaceRedis()
 	s := newTestSyncerForCheckpointMigration()
 
-	oldCheckpointName := "redis-gunyu-checkpoint-bisync:legacy-serial"
+	oldCheckpointName := "redis-gunyu-checkpoint-bisync:legacy-sync"
 	if err := checkpoint.SetCheckpointHash(cli, "old-run", oldCheckpointName); err != nil {
 		t.Fatalf("seed checkpoint hash failed: %v", err)
 	}
-	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSerial); err != nil {
+	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSync); err != nil {
 		t.Fatalf("seed namespace mode failed: %v", err)
 	}
 	record := &checkpoint.BisyncCommitRecord{
@@ -369,13 +369,13 @@ func TestResolveBisyncCheckpointNameMigratesSerialSeedToCurrentRunID(t *testing.
 	seedFakeNamespaceHash(t, cli, record.Key, record.HashArgs())
 	oldMarkerKey := checkpoint.BisyncMarkerKey(oldCheckpointName, checkpoint.BisyncSlotTag(1))
 	if _, err := cli.Do("set", oldMarkerKey, "marker"); err != nil {
-		t.Fatalf("seed serial marker failed: %v", err)
+		t.Fatalf("seed sync marker failed: %v", err)
 	}
 
 	newCheckpointName, err := s.resolveBisyncCheckpointNameWithClient(
 		cli,
 		[]string{"new-run", "old-run"},
-		checkpoint.BisyncModePipeline,
+		checkpoint.BisyncModeParallel,
 		[]uint16{1},
 	)
 	if err != nil {
@@ -424,7 +424,7 @@ func TestResolveBisyncCheckpointNameMigratesPipelineSeedToCurrentRunID(t *testin
 	if err := checkpoint.SetCheckpointHash(cli, "old-run", oldCheckpointName); err != nil {
 		t.Fatalf("seed checkpoint hash failed: %v", err)
 	}
-	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModePipeline); err != nil {
+	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeParallel); err != nil {
 		t.Fatalf("seed namespace mode failed: %v", err)
 	}
 	if err := checkpoint.SaveBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(oldCheckpointName), &checkpoint.BisyncFrontierSnapshot{
@@ -462,7 +462,7 @@ func TestResolveBisyncCheckpointNameMigratesPipelineSeedToCurrentRunID(t *testin
 	newCheckpointName, err := s.resolveBisyncCheckpointNameWithClient(
 		cli,
 		[]string{"new-run", "old-run"},
-		checkpoint.BisyncModeSerial,
+		checkpoint.BisyncModeSync,
 		[]uint16{1},
 	)
 	if err != nil {
@@ -510,7 +510,7 @@ func TestResolveBisyncCheckpointNameRejectsPlainCheckpointFallback(t *testing.T)
 	if err := checkpoint.SetCheckpointHash(cli, "old-run", oldCheckpointName); err != nil {
 		t.Fatalf("seed checkpoint hash failed: %v", err)
 	}
-	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSerial); err != nil {
+	if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSync); err != nil {
 		t.Fatalf("seed namespace mode failed: %v", err)
 	}
 	if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
@@ -525,7 +525,7 @@ func TestResolveBisyncCheckpointNameRejectsPlainCheckpointFallback(t *testing.T)
 	_, err := s.resolveBisyncCheckpointNameWithClient(
 		cli,
 		[]string{"new-run", "old-run"},
-		checkpoint.BisyncModePipeline,
+		checkpoint.BisyncModeParallel,
 		[]uint16{1},
 	)
 	if err == nil {
@@ -541,11 +541,11 @@ func TestResolveBisyncCheckpointNameRejectsPlainCheckpointFallback(t *testing.T)
 
 func TestRedisOutputStartPointBisyncFallsBackToRootCheckpointWhenLatestRecordsEmpty(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		pipeline bool
+		name       string
+		replayMode config.ReplayMode
 	}{
-		{name: "serial"},
-		{name: "pipeline", pipeline: true},
+		{name: "sync", replayMode: config.ReplayModeSync},
+		{name: "parallel", replayMode: config.ReplayModeParallel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := newFakeNamespaceRedis()
@@ -564,7 +564,7 @@ func TestRedisOutputStartPointBisyncFallsBackToRootCheckpointWhenLatestRecordsEm
 				CheckpointName:             checkpointName,
 				BisyncEnabled:              true,
 				EnableResumeFromBreakPoint: true,
-				ReplayPipeline:             tc.pipeline,
+				ReplayMode:                 tc.replayMode,
 				Redis:                      config.RedisConfig{Type: config.RedisTypeStandalone},
 			})
 			ro.newRedisConn = func(context.Context) (client.Redis, error) {
@@ -591,11 +591,12 @@ func TestRedisOutputStartPointBisyncFallsBackToRootCheckpointWhenLatestRecordsEm
 func TestRedisOutputStartPointBisyncPrefersNewerRootCheckpointOverStaleModeState(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
-		pipeline     bool
+		replayMode   config.ReplayMode
 		seedModeData func(t *testing.T, cli *fakeNamespaceRedis, checkpointName string)
 	}{
 		{
-			name: "serial",
+			name:       "sync",
+			replayMode: config.ReplayModeSync,
 			seedModeData: func(t *testing.T, cli *fakeNamespaceRedis, checkpointName string) {
 				t.Helper()
 				record := &checkpoint.BisyncCommitRecord{
@@ -615,8 +616,8 @@ func TestRedisOutputStartPointBisyncPrefersNewerRootCheckpointOverStaleModeState
 			},
 		},
 		{
-			name:     "pipeline",
-			pipeline: true,
+			name:       "parallel",
+			replayMode: config.ReplayModeParallel,
 			seedModeData: func(t *testing.T, cli *fakeNamespaceRedis, checkpointName string) {
 				t.Helper()
 				if err := checkpoint.SaveBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(checkpointName), &checkpoint.BisyncFrontierSnapshot{
@@ -649,7 +650,7 @@ func TestRedisOutputStartPointBisyncPrefersNewerRootCheckpointOverStaleModeState
 				CheckpointName:             checkpointName,
 				BisyncEnabled:              true,
 				EnableResumeFromBreakPoint: true,
-				ReplayPipeline:             tc.pipeline,
+				ReplayMode:                 tc.replayMode,
 				Redis:                      config.RedisConfig{Type: config.RedisTypeStandalone},
 			})
 			ro.newRedisConn = func(context.Context) (client.Redis, error) {
@@ -675,23 +676,23 @@ func TestRedisOutputStartPointBisyncPrefersNewerRootCheckpointOverStaleModeState
 
 func TestResolveBisyncCheckpointNameMigrationProducesUsableRestartStartPoint(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		desiredMode     checkpoint.BisyncMode
-		seedOldState    func(t *testing.T, cli *fakeNamespaceRedis, oldCheckpointName string)
-		replayPipeline  bool
-		wantRunID       string
-		wantOffset      int64
-		wantSeq         int64
+		name         string
+		desiredMode  checkpoint.BisyncMode
+		seedOldState func(t *testing.T, cli *fakeNamespaceRedis, oldCheckpointName string)
+		replayMode   config.ReplayMode
+		wantRunID    string
+		wantOffset   int64
+		wantSeq      int64
 	}{
 		{
-			name:        "serial_to_pipeline",
-			desiredMode: checkpoint.BisyncModePipeline,
+			name:        "sync_to_parallel",
+			desiredMode: checkpoint.BisyncModeParallel,
 			seedOldState: func(t *testing.T, cli *fakeNamespaceRedis, oldCheckpointName string) {
 				t.Helper()
 				if err := checkpoint.SetCheckpointHash(cli, "old-run", oldCheckpointName); err != nil {
 					t.Fatalf("seed checkpoint hash failed: %v", err)
 				}
-				if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSerial); err != nil {
+				if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeSync); err != nil {
 					t.Fatalf("seed namespace mode failed: %v", err)
 				}
 				record := &checkpoint.BisyncCommitRecord{
@@ -708,20 +709,20 @@ func TestResolveBisyncCheckpointNameMigrationProducesUsableRestartStartPoint(t *
 				}
 				seedFakeNamespaceHash(t, cli, record.Key, record.HashArgs())
 			},
-			replayPipeline: true,
-			wantRunID:      "new-run",
-			wantOffset:     120,
-			wantSeq:        7,
+			replayMode: config.ReplayModeParallel,
+			wantRunID:  "new-run",
+			wantOffset: 120,
+			wantSeq:    7,
 		},
 		{
-			name:        "pipeline_to_serial",
-			desiredMode: checkpoint.BisyncModeSerial,
+			name:        "parallel_to_sync",
+			desiredMode: checkpoint.BisyncModeSync,
 			seedOldState: func(t *testing.T, cli *fakeNamespaceRedis, oldCheckpointName string) {
 				t.Helper()
 				if err := checkpoint.SetCheckpointHash(cli, "old-run", oldCheckpointName); err != nil {
 					t.Fatalf("seed checkpoint hash failed: %v", err)
 				}
-				if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModePipeline); err != nil {
+				if err := checkpoint.SaveBisyncNamespaceMode(cli, oldCheckpointName, checkpoint.BisyncModeParallel); err != nil {
 					t.Fatalf("seed namespace mode failed: %v", err)
 				}
 				if err := checkpoint.SaveBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(oldCheckpointName), &checkpoint.BisyncFrontierSnapshot{
@@ -781,7 +782,7 @@ func TestResolveBisyncCheckpointNameMigrationProducesUsableRestartStartPoint(t *
 				CheckpointName:             newCheckpointName,
 				BisyncEnabled:              true,
 				EnableResumeFromBreakPoint: true,
-				ReplayPipeline:             tc.replayPipeline,
+				ReplayMode:                 tc.replayMode,
 				Redis:                      config.RedisConfig{Type: config.RedisTypeStandalone},
 			})
 			ro.newRedisConn = func(context.Context) (client.Redis, error) {
