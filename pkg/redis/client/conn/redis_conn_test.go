@@ -1,8 +1,11 @@
+//go:build integration
+
 package conn
 
 import (
 	"log"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ import (
 )
 
 const (
-	testRedis = "127.0.1.1:6379"
+	defaultTestRedis = "127.0.0.1:6379"
 )
 
 // isRedisAvailable checks if a Redis instance is reachable at the given address
@@ -26,13 +29,20 @@ func isRedisAvailable(address string) bool {
 	return true
 }
 
+func testRedisAddr() string {
+	if addr := os.Getenv("TEST_REDIS_ADDR"); addr != "" {
+		return addr
+	}
+	return defaultTestRedis
+}
+
 func TestNilErr(t *testing.T) {
-	if !isRedisAvailable(testRedis) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedis)
+	if !isRedisAvailable(testRedisAddr()) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisAddr())
 	}
 
 	conn, err := NewRedisConn(config.RedisConfig{
-		Addresses: []string{testRedis},
+		Addresses: []string{testRedisAddr()},
 	})
 
 	assert.Nil(t, err)
@@ -46,12 +56,12 @@ func TestNilErr(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
-	if !isRedisAvailable(testRedis) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedis)
+	if !isRedisAvailable(testRedisAddr()) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisAddr())
 	}
 
 	conn, err := NewRedisConn(config.RedisConfig{
-		Addresses: []string{testRedis},
+		Addresses: []string{testRedisAddr()},
 		Type:      config.RedisTypeCluster,
 	})
 	assert.Nil(t, err)

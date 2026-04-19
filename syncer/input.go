@@ -462,7 +462,9 @@ func (ri *RedisInput) Run() (err error) {
 					break
 				}
 			}
-			ri.wait.Sleep(2 * time.Second)
+			if backoff := ri.runLoopBackoff(err); backoff > 0 {
+				ri.wait.Sleep(backoff)
+			}
 		}
 	}, func(i interface{}) {
 		ri.wait.Close(fmt.Errorf("panic : %v", i))
@@ -470,6 +472,13 @@ func (ri *RedisInput) Run() (err error) {
 
 	ri.wait.WgWait()
 	return ri.wait.Error()
+}
+
+func (ri *RedisInput) runLoopBackoff(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	return 2 * time.Second
 }
 
 func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConfig) {

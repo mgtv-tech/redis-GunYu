@@ -1,8 +1,11 @@
+//go:build integration
+
 package cluster
 
 import (
 	"context"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -20,15 +23,29 @@ func isRedisAvailable(address string) bool {
 	return true
 }
 
+func testRedisAddr() string {
+	if addr := os.Getenv("TEST_REDIS_ADDR"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:6379"
+}
+
+func testRedisClusterAddr() string {
+	if addr := os.Getenv("TEST_REDIS_CLUSTER_ADDR"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:16300"
+}
+
 func TestRegistry(t *testing.T) {
 
 	cfgs := []config.RedisConfig{
 		{
-			Addresses: []string{"localhost:16300"},
+			Addresses: []string{testRedisClusterAddr()},
 			Type:      config.RedisTypeCluster,
 		},
 		{
-			Addresses: []string{"localhost:6379"},
+			Addresses: []string{testRedisAddr()},
 			Type:      config.RedisTypeStandalone,
 		},
 	}
@@ -86,6 +103,10 @@ func TestRegistry(t *testing.T) {
 		})
 
 		t.Run("keepalive", func(t *testing.T) {
+			if !isRedisAvailable(cfg.Addresses[0]) {
+				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
+			}
+
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
 			assert.Nil(t, err)
@@ -123,11 +144,11 @@ func TestRegistry(t *testing.T) {
 func TestCampaign(t *testing.T) {
 	cfgs := []config.RedisConfig{
 		{
-			Addresses: []string{"localhost:16300"},
+			Addresses: []string{testRedisClusterAddr()},
 			Type:      config.RedisTypeCluster,
 		},
 		{
-			Addresses: []string{"localhost:6379"},
+			Addresses: []string{testRedisAddr()},
 			Type:      config.RedisTypeStandalone,
 		},
 	}

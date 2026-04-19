@@ -92,6 +92,49 @@ func TestChooseNodeWithCmdFallsBackToFirstArgForCompatibility(t *testing.T) {
 	}
 }
 
+func TestChooseNodeWithCmdAcceptsRestoreTTLAsUint64(t *testing.T) {
+	cluster := newRouteTestCluster()
+	node := &redisNode{address: "node-a"}
+	assignRouteTestKey(cluster, "doc{t}", node)
+
+	got, err := cluster.ChooseNodeWithCmd("restore", "doc{t}", uint64(1000), []byte("serialized-value"))
+	if err != nil {
+		t.Fatalf("unexpected restore choose error: %v", err)
+	}
+	if got != node {
+		t.Fatalf("unexpected restore node: got=%p want=%p", got, node)
+	}
+}
+
+func TestKeyAcceptsUnsignedIntegerTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  interface{}
+		want string
+	}{
+		{name: "uint8", arg: uint8(8), want: "8"},
+		{name: "uint16", arg: uint16(16), want: "16"},
+		{name: "uint32", arg: uint32(32), want: "32"},
+		{name: "uint", arg: uint(64), want: "64"},
+		{name: "uint64", arg: uint64(128), want: "128"},
+		{name: "int8", arg: int8(-8), want: "-8"},
+		{name: "int16", arg: int16(-16), want: "-16"},
+		{name: "int32", arg: int32(-32), want: "-32"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := key(tc.arg)
+			if err != nil {
+				t.Fatalf("unexpected key conversion error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected key conversion: got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTxnBatcherRejectsDifferentSlotsOnSameNode(t *testing.T) {
 	cluster := newRouteTestCluster()
 	node := &redisNode{address: "node-a"}

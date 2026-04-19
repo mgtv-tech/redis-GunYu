@@ -36,6 +36,11 @@
 
 方案一在当前主流程里由 `output.replay.bisyncEnabled` 显式驱动启用。
 
+补充说明：
+
+- 当前实现仍保留 `parallel` 路径，便于和 `sync`、`pipeline` 做恢复语义与实现对比
+- 但根据当前性能测试结果，`parallel` 没有体现稳定的性能优势，吞吐和 tail 在多数场景下都不如 `pipeline`，因此不建议作为默认模式
+
 这里需要明确区分两个概念：
 
 - 主流程里 `bisync` 是否启用：由 `bisyncEnabled` 决定

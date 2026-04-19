@@ -267,6 +267,12 @@ func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd stri
 
 func (cluster *Cluster) NewBatcher(pipeline bool) common.CmdBatcher {
 	if pipeline {
+		// pipeline batcher 依赖节点级 ordered pipeline 管理器。
+		// 绝大多数情况下它会在 NewCluster 时初始化；这里保留兜底，
+		// 兼容测试里直接手工构造 Cluster 的场景。
+		if cluster.pipeline == nil {
+			cluster.pipeline = &batchPipeline{cluster: cluster}
+		}
 		return cluster.pipeline.NewBatcher()
 	}
 	return cluster.NewBatch()
@@ -872,10 +878,26 @@ func GetSlot(arg interface{}) (uint16, error) {
 
 func key(arg interface{}) (string, error) {
 	switch arg := arg.(type) {
+	case int8:
+		return strconv.FormatInt(int64(arg), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(arg), 10), nil
 	case int:
-		return strconv.Itoa(arg), nil
+		return strconv.FormatInt(int64(arg), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(arg), 10), nil
 	case int64:
-		return strconv.Itoa(int(arg)), nil
+		return strconv.FormatInt(arg, 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint64:
+		return strconv.FormatUint(arg, 10), nil
 	case float64:
 		return strconv.FormatFloat(arg, 'g', -1, 64), nil
 	case string:

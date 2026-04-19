@@ -47,6 +47,11 @@
 - `syncer/bisync.go`
 - `syncer/bisync_rdb.go`
 
+补充说明：
+
+- 本文会保留 `parallel` 相关 checkpoint / frontier / journal 说明，因为代码实现尚未移除这条内部路径
+- 但根据当前性能测试结果，`parallel` 没有体现稳定性能优势，因此默认模式仍建议优先 `sync`，追求吞吐时再按场景评估 `pipeline`
+
 ## 2. 总体视图
 
 无论是否开启 bisync，checkpoint 相关 key 大体都分成两层：

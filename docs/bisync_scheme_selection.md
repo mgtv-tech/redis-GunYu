@@ -88,6 +88,7 @@
 
 - 本文主要是 cluster 方案设计文档
 - 当前代码实现除了 cluster 之外，也已经支持 standalone 双向同步的真实事务路径
+- 代码里仍保留 `parallel` 分支用于方案对比和内部验证，但根据当前性能报告，它没有体现稳定的吞吐或 tail 优势，默认模式不推荐选择它
 - 关于当前落地实现，请以 [docs/bisync_scheme1_impl.md](../docs/bisync_scheme1_impl.md) 为准
 
 ## 2. 目标与非目标

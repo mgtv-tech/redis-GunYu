@@ -34,6 +34,7 @@ Notes:
 
 - This is a cluster-oriented scheme-selection document.
 - The current code also supports the real-transaction bisync path for standalone Redis.
+- The codebase still keeps the `parallel` branch for scheme comparison and internal validation, but current benchmark results do not show a stable throughput or tail-latency advantage, so it is not recommended as a default mode.
 - For implementation details, see [bisync_scheme1_impl_en.md](./bisync_scheme1_impl_en.md).
 
 ## 2. Goals and Non-Goals

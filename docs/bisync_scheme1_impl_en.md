@@ -33,6 +33,11 @@ output:
     bisyncEnabled: true
 ```
 
+Implementation note:
+
+- The current code still keeps the `parallel` path for recovery-semantics comparison and internal validation.
+- Based on the current benchmark results, `parallel` does not show a stable performance advantage; in most tested scenarios its throughput and tail behavior are worse than `pipeline`, so it is not recommended as the default mode.
+
 Important distinction:
 
 - whether bisync is enabled is decided only by `bisyncEnabled`

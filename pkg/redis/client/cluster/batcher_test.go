@@ -1,3 +1,5 @@
+//go:build integration
+
 package redis
 
 import (
@@ -10,11 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-const (
-	testRedis        = "127.0.0.1:6379"
-	testRedisCluster = "127.0.0.1:16300"
-)
-
 func isRedisAvailable(address string) bool {
 	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
@@ -25,8 +22,8 @@ func isRedisAvailable(address string) bool {
 }
 
 func TestBatcherKeysCmd(t *testing.T) {
-	if !isRedisAvailable(testRedisCluster) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisCluster)
+	if !isRedisAvailable(testRedisClusterAddr()) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisClusterAddr())
 	}
 
 	cases := map[string]string{
@@ -63,8 +60,8 @@ func TestBatcherKeysCmd(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
-	if !isRedisAvailable(testRedisCluster) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisCluster)
+	if !isRedisAvailable(testRedisClusterAddr()) {
+		t.Skipf("Redis not available at %s, skipping integration test", testRedisClusterAddr())
 	}
 
 	cluster := newRedisNodeCluster(t)

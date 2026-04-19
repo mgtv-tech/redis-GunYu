@@ -107,12 +107,11 @@ output配置如下：
     - 是否开启 bisync 只由该配置决定，不根据 `replayTransaction` 或运行期 `CanTransaction` 决定
     - 开启后，AOF/RDB 回放会走 bisync 的 replay unit、marker、checkpoint/frontier 恢复逻辑
     - `replayTransaction` 仍建议保持为 `true`，但它不是 bisync 的开关
-  - mode ： AOF 回放执行语义，支持 `sync`、`pipeline`、`parallel`
+  - mode ： AOF 回放执行语义，支持 `sync`、`pipeline`
     - `sync`：发送一个 replay unit 并收到完整回复后才发送下一个；bisync 恢复点来自各 slot 的 `latest`
     - `pipeline`：发送和接收放在不同 goroutine，但按发送顺序确认；非 bisync 下等价于旧 `enableAofPipeline=true`
-    - `parallel`：按有界 lane 并发派发 replay unit；当前仅 bisync 支持，恢复点来自 `commit journal + frontier`
-  - parallelism ： `mode=parallel` 时的并发度；未配置时按 cluster shard 信息推导或退回保守值
-  - enableAofPipeline / bisyncReplayMode / bisyncPipelineParallel : 旧配置字段，仅做兼容输入。新配置请使用 `mode` 和 `parallelism`
+    - bisync 下如果业务对数据一致性要求严格，建议优先使用 `sync`；当前 `pipeline` 在极端故障和恢复场景下仍可能出现数据一致性问题
+  - 旧回放兼容字段：仍可做兼容加载，但新配置请统一使用 `mode`
     - 当未显式配置 `mode` 时，旧 `enableAofPipeline=true` 映射为 `mode=pipeline`，`false` 映射为 `mode=sync`
 
 

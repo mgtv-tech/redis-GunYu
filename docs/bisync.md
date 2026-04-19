@@ -39,7 +39,6 @@
 - RDB 全量同步路径
 - `sync` 回放模式
 - `pipeline` 回放模式
-- `parallel` 回放模式
 - 目标端 `MOVED` / `ASK` 重定向下的 replay unit 级重试
 
 当前实现采用真实 `MULTI/EXEC` 事务包装 replay unit，在事务内同时写入：
@@ -92,18 +91,17 @@ output:
 | --- | --- | --- |
 | `bisyncEnabled` | `true` | bisync 唯一显式开关，默认是 `false` |
 | `replayTransaction` | `true` | 建议保持开启；它不是 bisync 开关，但普通回放仍会使用该配置 |
-| `mode` | `sync` / `pipeline` / `parallel` | AOF 回放执行语义；非 bisync 下 `pipeline` 等价于旧 pipeline，`parallel` 当前仅支持 bisync |
+| `mode` | `sync` / `pipeline` | AOF 回放执行语义；非 bisync 下 `pipeline` 等价于旧 pipeline |
 | `resumeFromBreakPoint` | `true` | 建议开启断点续传 |
 | `keyExists` | `replace` / `ignore` / `error` | RDB 全量同步时目标 key 已存在的处理策略 |
-| `parallelism` | 可选 | `parallel` 模式下的并发度；未配置时会按 cluster shard 信息推导或退回保守值 |
 
 `mode` 的含义：
 
 - `sync`：逐个 replay unit 完成 `Dispatch + Receive` 后才发送下一个，恢复点来自每个 slot 的 `latest` checkpoint
 - `pipeline`：发送和接收放到不同 goroutine，但按发送顺序确认并推进 checkpoint，通过 `commit journal + frontier` 恢复连续前缀
-- `parallel`：按有界 lane 并发派发 replay unit，通过 `commit journal + frontier` 恢复连续前缀
 
-生产环境不要只验证一个模式就上线另一个模式。`sync` 与 `pipeline`/`parallel` 的恢复面不同，三种执行语义也应分别测试。
+生产环境不要只验证一个模式就上线另一个模式。`sync` 与 `pipeline` 的恢复面不同，两种执行语义都应分别测试。
+如果业务对双向同步数据一致性要求很高，建议优先使用 `sync`。当前 `pipeline` 模式在极端场景下仍可能出现数据一致性问题，不能按“严格一致”语义来理解。
 
 ## 4. 上线前注意事项
 
@@ -114,7 +112,8 @@ output:
 - cluster 模式下，业务事务应尽量使用 hash tag 保证单 slot
 - 灰度初期建议按业务前缀或 slot 范围控制同步范围
 - 上线前必须明确同 key 双边写入的业务语义
-- 开启 `pipeline` 或 `parallel` 前必须单独验证恢复、failover 和长稳
+- 开启 `pipeline` 前必须单独验证恢复、failover 和长稳
+- 对一致性敏感场景，避免直接使用 `pipeline` 作为默认模式；当前实现下，极端故障、重启恢复或 frontier 后存在 gap 时，仍可能出现最终数据不一致
 - 如果修改过滤规则，应重新跑 category4 和基础收敛测试
 
 ### 4.1 业务 key 禁用前缀
@@ -143,7 +142,7 @@ output:
 
 
 测试报告结果如下：
-- [2026-04-15-bisync-perf-report.md](../tests/bisync/reports/2026-04-15-bisync-perf-report.md)
+- [bisync_perf_report.md](./bisync_perf_report.md)
 
 
 
@@ -195,9 +194,11 @@ cluster 模式下，单个 replay unit 必须绑定到一个 slot。跨 slot 的
 
    如果两边同时写同一个 key，GunYu 不会判断谁是“正确值”。最终结果由 Redis 命令语义、复制顺序和恢复过程共同决定。`INCR`、`LPUSH`、`XADD` 等非幂等命令尤其需要业务侧确认语义。
 
-2. `pipeline`/`parallel` 恢复不是“精确跳过所有已提交 unit”
+2. `pipeline` 恢复不是“精确跳过所有已提交 unit”
 
-   当前 `parallel` 模式通过 `frontier + commit journal` 重建连续已提交前缀。如果崩溃时 frontier 后存在 gap，gap 后面即使有 durable commit，也可能在重启后随 source stream 再次回放。当前语义是从最后连续已提交点恢复，而不是逐个精确跳过所有已提交 unit。
+   当前 `pipeline` 模式通过 `frontier + commit journal` 重建连续已提交前缀。如果崩溃时 frontier 后存在 gap，gap 后面即使有 durable commit，也可能在重启后随 source stream 再次回放。当前语义是从最后连续已提交点恢复，而不是逐个精确跳过所有已提交 unit。
+
+   这意味着在极端故障、异常退出或恢复窗口内，`pipeline` 模式不能承诺严格数据一致性；如果业务不能接受这类风险，应使用 `sync` 模式，或在上线前准备额外的对账与回补方案。
 
 3. RDB 路径不提供 key 级 authoritative 恢复点
 
@@ -231,10 +232,10 @@ bisync 相关指标包括：
 | `bisync_txn_commit` | bisync 事务提交计数 |
 | `bisync_single_slot_fail` | 单 slot 校验失败计数 |
 | `bisync_txn_suppress` | mirrored transaction 抑制计数 |
-| `bisync_frontier_seq` | `pipeline`/`parallel` frontier 序号 |
-| `bisync_frontier_offset` | `pipeline`/`parallel` frontier offset |
+| `bisync_frontier_seq` | `pipeline` frontier 序号 |
+| `bisync_frontier_offset` | `pipeline` frontier offset |
 | `bisync_frontier_rebuild_seconds` | frontier 重建耗时 |
-| `bisync_commit_backlog` | `pipeline`/`parallel` commit backlog |
+| `bisync_commit_backlog` | `pipeline` commit backlog |
 | `bisync_commit_gc` | commit journal 清理计数 |
 
 重点关注：
@@ -242,7 +243,7 @@ bisync 相关指标包括：
 - `bisync_txn_commit` 是否持续增长
 - `bisync_txn_suppress` 是否能看到镜像事务被抑制
 - `bisync_single_slot_fail` 是否增长
-- `parallel` 模式下 `bisync_commit_backlog` 是否长期堆积
+- 高负载下 `bisync_commit_backlog` 是否长期堆积
 - syncer 日志中是否出现 repeated `MOVED` / `ASK`、frontier rebuild、journal gap、strict routing 失败
 
 ## 8. 开发与实现说明
@@ -278,11 +279,11 @@ bisync 仍然以 source `runId + offset` 作为复制流恢复轴，但恢复元
 | key | 用途 |
 | --- | --- |
 | `redis-gunyu-checkpoint-bisync:<id>` | bisync namespace root |
-| `redis-gunyu-checkpoint-bisync:<id>:frontier` | `parallel` 模式的全局连续恢复点 |
+| `redis-gunyu-checkpoint-bisync:<id>:frontier` | `pipeline` 模式的全局连续恢复点 |
 | `redis-gunyu-bisync:<checkpointName>:marker:{slotTag}` | 镜像事务抑制 marker |
 | `redis-gunyu-bisync:<checkpointName>:latest:{slotTag}` | `sync` 模式 slot-local 恢复点 |
-| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | `parallel` 模式提交 journal |
-| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | `parallel` 模式 journal 索引 |
+| `redis-gunyu-bisync:<checkpointName>:commit:{slotTag}:<unitSeq>` | `pipeline` 模式提交 journal |
+| `redis-gunyu-bisync:<checkpointName>:index:{slotTag}` | `pipeline` 模式 journal 索引 |
 | `redis-gunyu-bisync:<checkpointName>:rdb:{slotTag}:<unitSeq>` | RDB 回放路径记录 |
 | `redis-gunyu-checkpoint-hash` | source runId 到 checkpoint namespace 的映射 |
 
@@ -312,7 +313,7 @@ bisync 仍然以 source `runId + offset` 作为复制流恢复轴，但恢复元
 | 脚本 | 覆盖内容 |
 | --- | --- |
 | `tests/bisync/run_category1.sh` | 基础双向收敛 |
-| `tests/bisync/run_category2.sh` | `sync` / `pipeline` / `parallel` 重启、断点续传、metadata 形态 |
+| `tests/bisync/run_category2.sh` | `sync` / `pipeline` 重启、断点续传、metadata 形态 |
 | `tests/bisync/run_category3.sh` | RDB 特殊路径、纯全量同步、full-sync barrier |
 | `tests/bisync/run_category4.sh` | keyspec、过滤、strict routing、真实 Redis `COMMAND GETKEYS` 校验 |
 | `tests/bisync/run_category5.sh` | source failover、target failover、syncer restart |
@@ -340,7 +341,7 @@ bash ./tests/bisync/run_category3.sh
 bash ./tests/bisync/run_category4.sh
 bash ./tests/bisync/run_category5.sh
 bash ./tests/bisync/run_category8.sh
-SOAK_TIER=2h SCENARIOS=sync,pipeline,parallel KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
+SOAK_TIER=2h SCENARIOS=sync,pipeline KEEP_TMP=1 bash ./tests/bisync/run_category9.sh
 ```
 
 `category9` 的 `2h` 通过并审阅报告后，再推进 `4h` 和 `6h`。
@@ -350,7 +351,7 @@ SOAK_TIER=2h SCENARIOS=sync,pipeline,parallel KEEP_TMP=1 bash ./tests/bisync/run
 推荐发布步骤：
 
 1. 使用生产同版本 Redis 跑完单测和 `category1` 到 `category5`、`category8`
-2. 使用 `category9` 分档完成 `sync`、`pipeline` 和 `parallel` 长稳
+2. 使用 `category9` 分档完成 `sync` 和 `pipeline` 长稳
 3. 按业务前缀或 slot 范围灰度，控制初始写入规模
 4. 观察状态接口、bisync 指标、Redis 资源和业务比对结果
 5. 灰度期间保留快速关闭 `bisyncEnabled` 或停止反向链路的回滚方案
@@ -358,7 +359,7 @@ SOAK_TIER=2h SCENARIOS=sync,pipeline,parallel KEEP_TMP=1 bash ./tests/bisync/run
 生产通过标准：
 
 - 双端业务 key 最终一致
-- `sync`、`pipeline` 和 `parallel` 的目标模式均已验证
+- `sync` 和 `pipeline` 的目标模式均已验证
 - failover、syncer restart、离线恢复后仍能收敛
 - 不存在异常残留的 commit journal 堆积
 - 未出现持续增长的 goroutine、RSS、storer 目录或 Redis memory 异常

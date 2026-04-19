@@ -20,17 +20,45 @@ type clusterSnapshot struct {
 	masters []string
 }
 
+type snapshotConfig struct {
+	addrs    []string
+	redisCfg config.RedisConfig
+	pattern  string
+	maxKeys  int
+	db       int
+}
+
 func main() {
 	var (
-		leftAddrs  string
-		rightAddrs string
-		pattern    string
-		maxKeys    int
-		verbose    bool
+		leftAddrs      string
+		leftType       string
+		leftDB         int
+		leftUser       string
+		leftPassword   string
+		leftTLSEnable  bool
+		rightAddrs     string
+		rightType      string
+		rightDB        int
+		rightUser      string
+		rightPassword  string
+		rightTLSEnable bool
+		pattern        string
+		maxKeys        int
+		verbose        bool
 	)
 
 	flag.StringVar(&leftAddrs, "left-addrs", "", "comma-separated startup addresses for the left cluster")
+	flag.StringVar(&leftType, "left-type", "cluster", "left redis type: cluster or standalone")
+	flag.IntVar(&leftDB, "left-db", 0, "database index for standalone left redis")
+	flag.StringVar(&leftUser, "left-user", "", "username for the left redis")
+	flag.StringVar(&leftPassword, "left-password", "", "password for the left redis")
+	flag.BoolVar(&leftTLSEnable, "left-tls", false, "enable TLS for the left redis")
 	flag.StringVar(&rightAddrs, "right-addrs", "", "comma-separated startup addresses for the right cluster")
+	flag.StringVar(&rightType, "right-type", "cluster", "right redis type: cluster or standalone")
+	flag.IntVar(&rightDB, "right-db", 0, "database index for standalone right redis")
+	flag.StringVar(&rightUser, "right-user", "", "username for the right redis")
+	flag.StringVar(&rightPassword, "right-password", "", "password for the right redis")
+	flag.BoolVar(&rightTLSEnable, "right-tls", false, "enable TLS for the right redis")
 	flag.StringVar(&pattern, "pattern", "", "key pattern to compare")
 	flag.IntVar(&maxKeys, "max-keys", 0, "limit snapshot size to the first N sorted matching keys; 0 keeps all keys")
 	flag.BoolVar(&verbose, "verbose", false, "print every matching key")
@@ -41,14 +69,25 @@ func main() {
 		os.Exit(2)
 	}
 
-	left, err := snapshotCluster(splitAddrs(leftAddrs), pattern, maxKeys)
+	leftCfg, err := newSnapshotConfig(splitAddrs(leftAddrs), leftType, leftDB, leftUser, leftPassword, leftTLSEnable, pattern, maxKeys)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot left cluster failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "invalid left config: %v\n", err)
+		os.Exit(2)
+	}
+	rightCfg, err := newSnapshotConfig(splitAddrs(rightAddrs), rightType, rightDB, rightUser, rightPassword, rightTLSEnable, pattern, maxKeys)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid right config: %v\n", err)
+		os.Exit(2)
+	}
+
+	left, err := snapshotRedis(leftCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snapshot left redis failed: %v\n", err)
 		os.Exit(1)
 	}
-	right, err := snapshotCluster(splitAddrs(rightAddrs), pattern, maxKeys)
+	right, err := snapshotRedis(rightCfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot right cluster failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "snapshot right redis failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -65,6 +104,43 @@ func main() {
 	fmt.Printf("compare ok: pattern=%s keys=%d\n", pattern, len(left.keys))
 }
 
+func newSnapshotConfig(addrs []string, rawType string, db int, user string, password string, tlsEnable bool, pattern string, maxKeys int) (*snapshotConfig, error) {
+	redisType, err := parseRedisType(rawType)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("empty startup addresses")
+	}
+	if redisType == config.RedisTypeCluster && db != 0 {
+		return nil, fmt.Errorf("cluster snapshot does not support db=%d", db)
+	}
+	return &snapshotConfig{
+		addrs: addrs,
+		redisCfg: config.RedisConfig{
+			Addresses: addrs,
+			Type:      redisType,
+			UserName:  user,
+			Password:  password,
+			TlsEnable: tlsEnable,
+		},
+		pattern: pattern,
+		maxKeys: maxKeys,
+		db:      db,
+	}, nil
+}
+
+func parseRedisType(raw string) (config.RedisType, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", config.RedisTypeCluster.String():
+		return config.RedisTypeCluster, nil
+	case config.RedisTypeStandalone.String():
+		return config.RedisTypeStandalone, nil
+	default:
+		return config.RedisTypeUnknown, fmt.Errorf("unsupported redis type %q", raw)
+	}
+}
+
 func splitAddrs(addrs string) []string {
 	parts := strings.Split(addrs, ",")
 	out := make([]string, 0, len(parts))
@@ -77,20 +153,24 @@ func splitAddrs(addrs string) []string {
 	return out
 }
 
-func snapshotCluster(startAddrs []string, pattern string, maxKeys int) (*clusterSnapshot, error) {
-	if len(startAddrs) == 0 {
-		return nil, fmt.Errorf("empty startup addresses")
+func snapshotRedis(cfg *snapshotConfig) (*clusterSnapshot, error) {
+	switch cfg.redisCfg.Type {
+	case config.RedisTypeCluster:
+		return snapshotCluster(cfg)
+	case config.RedisTypeStandalone:
+		return snapshotStandalone(cfg)
+	default:
+		return nil, fmt.Errorf("unsupported redis type %q", cfg.redisCfg.Type)
 	}
+}
 
-	masters, err := discoverMasters(startAddrs)
+func snapshotCluster(cfg *snapshotConfig) (*clusterSnapshot, error) {
+	masters, err := discoverMasters(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	cli, err := redisclient.NewRedis(config.RedisConfig{
-		Addresses: startAddrs,
-		Type:      config.RedisTypeCluster,
-	})
+	cli, err := redisclient.NewRedis(cfg.redisCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -98,15 +178,15 @@ func snapshotCluster(startAddrs []string, pattern string, maxKeys int) (*cluster
 
 	allKeys := make([]string, 0)
 	for _, addr := range masters {
-		nodeKeys, err := scanKeys(addr, pattern)
+		nodeKeys, err := scanKeys(addr, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("scan %s: %w", addr, err)
 		}
 		allKeys = append(allKeys, nodeKeys...)
 	}
 	sort.Strings(allKeys)
-	if maxKeys > 0 && len(allKeys) > maxKeys {
-		allKeys = allKeys[:maxKeys]
+	if cfg.maxKeys > 0 && len(allKeys) > cfg.maxKeys {
+		allKeys = allKeys[:cfg.maxKeys]
 	}
 
 	keys := make(map[string]string, len(allKeys))
@@ -124,11 +204,54 @@ func snapshotCluster(startAddrs []string, pattern string, maxKeys int) (*cluster
 	}, nil
 }
 
-func discoverMasters(addrs []string) ([]string, error) {
+func snapshotStandalone(cfg *snapshotConfig) (*clusterSnapshot, error) {
+	keys := make(map[string]string)
+	masters := make([]string, 0, len(cfg.addrs))
+	for _, addr := range cfg.addrs {
+		masters = append(masters, addr)
+		cli, err := newStandaloneConn(cfg, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		nodeKeys, err := scanKeysWithConn(cli, cfg.pattern)
+		if closeErr := cli.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+		if err != nil {
+			return nil, fmt.Errorf("scan %s: %w", addr, err)
+		}
+		for _, key := range nodeKeys {
+			cli, err = newStandaloneConn(cfg, addr)
+			if err != nil {
+				return nil, err
+			}
+			state, readErr := readKeyState(cli, key)
+			closeErr := cli.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("read %s from %s: %w", key, addr, readErr)
+			}
+			if closeErr != nil {
+				return nil, fmt.Errorf("close %s: %w", addr, closeErr)
+			}
+			if prev, ok := keys[key]; ok && prev != state {
+				return nil, fmt.Errorf("duplicate key %s had mismatched states across standalone nodes", key)
+			}
+			keys[key] = state
+		}
+	}
+
+	return &clusterSnapshot{
+		keys:    keys,
+		masters: masters,
+	}, nil
+}
+
+func discoverMasters(cfg *snapshotConfig) ([]string, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		for _, addr := range addrs {
-			masters, err := discoverMastersOnce(addr)
+		for _, addr := range cfg.addrs {
+			masters, err := discoverMastersOnce(cfg, addr)
 			if err == nil {
 				return masters, nil
 			}
@@ -142,10 +265,13 @@ func discoverMasters(addrs []string) ([]string, error) {
 	return nil, lastErr
 }
 
-func discoverMastersOnce(addr string) ([]string, error) {
+func discoverMastersOnce(cfg *snapshotConfig, addr string) ([]string, error) {
 	cli, err := conn.NewRedisConn(config.RedisConfig{
 		Addresses: []string{addr},
 		Type:      config.RedisTypeStandalone,
+		UserName:  cfg.redisCfg.UserName,
+		Password:  cfg.redisCfg.Password,
+		TlsEnable: cfg.redisCfg.TlsEnable,
 	})
 	if err != nil {
 		return nil, err
@@ -187,16 +313,36 @@ func discoverMastersOnce(addr string) ([]string, error) {
 	return out, nil
 }
 
-func scanKeys(addr string, pattern string) ([]string, error) {
+func newStandaloneConn(cfg *snapshotConfig, addr string) (redisclient.Redis, error) {
 	cli, err := conn.NewRedisConn(config.RedisConfig{
 		Addresses: []string{addr},
 		Type:      config.RedisTypeStandalone,
+		UserName:  cfg.redisCfg.UserName,
+		Password:  cfg.redisCfg.Password,
+		TlsEnable: cfg.redisCfg.TlsEnable,
 	})
 	if err != nil {
 		return nil, err
 	}
-	defer cli.Close()
+	if cfg.db > 0 {
+		if _, err := cli.Do("select", cfg.db); err != nil {
+			cli.Close()
+			return nil, err
+		}
+	}
+	return cli, nil
+}
 
+func scanKeys(addr string, cfg *snapshotConfig) ([]string, error) {
+	cli, err := newStandaloneConn(cfg, addr)
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
+	return scanKeysWithConn(cli, cfg.pattern)
+}
+
+func scanKeysWithConn(cli redisclient.Redis, pattern string) ([]string, error) {
 	var keys []string
 	cursor := "0"
 	for {
@@ -257,7 +403,7 @@ func readKeyState(cli redisclient.Redis, key string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "string:" + val, nil
+		return "string:" + quoteStatePart(val), nil
 	case "hash":
 		items, err := common.StringMap(cli.Do("hgetall", key))
 		if err != nil {
@@ -274,15 +420,18 @@ func readKeyState(cli redisclient.Redis, key string) (string, error) {
 			if i > 0 {
 				b.WriteString("|")
 			}
-			b.WriteString(field)
+			b.WriteString(quoteStatePart(field))
 			b.WriteString("=")
-			b.WriteString(items[field])
+			b.WriteString(quoteStatePart(items[field]))
 		}
 		return b.String(), nil
 	case "list":
 		items, err := common.Strings(cli.Do("lrange", key, 0, -1))
 		if err != nil {
 			return "", err
+		}
+		for i, item := range items {
+			items[i] = quoteStatePart(item)
 		}
 		return "list:" + strings.Join(items, "|"), nil
 	case "set":
@@ -291,13 +440,25 @@ func readKeyState(cli redisclient.Redis, key string) (string, error) {
 			return "", err
 		}
 		sort.Strings(items)
+		for i, item := range items {
+			items[i] = quoteStatePart(item)
+		}
 		return "set:" + strings.Join(items, "|"), nil
 	case "zset":
 		items, err := common.Strings(cli.Do("zrange", key, 0, -1, "withscores"))
 		if err != nil {
 			return "", err
 		}
-		return "zset:" + strings.Join(items, "|"), nil
+		pairs := make([]string, 0, len(items)/2)
+		for i := 0; i < len(items); i += 2 {
+			member := quoteStatePart(items[i])
+			score := ""
+			if i+1 < len(items) {
+				score = quoteStatePart(items[i+1])
+			}
+			pairs = append(pairs, member+"="+score)
+		}
+		return "zset:" + strings.Join(pairs, "|"), nil
 	case "stream":
 		items, err := common.Values(cli.Do("xrange", key, "-", "+"))
 		if err != nil {

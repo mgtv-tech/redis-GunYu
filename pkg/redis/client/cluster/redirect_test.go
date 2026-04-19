@@ -188,6 +188,133 @@ func TestTxnBatcherRetriesOnAsk(t *testing.T) {
 	}
 }
 
+func TestTxnBatcherDispatchPipelinesTransactionsPerNode(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+
+	serverDone := serveOnce(t, ln, func(conn net.Conn) error {
+		defer conn.Close()
+
+		rd := proto.NewReader(conn, 4096)
+		want := [][]string{
+			{"multi"},
+			{"set", "user{tag}", "1"},
+			{"exec"},
+			{"multi"},
+			{"set", "user{tag}", "2"},
+			{"exec"},
+		}
+		for _, expected := range want {
+			reply, err := rd.ReadReply()
+			if err != nil {
+				return err
+			}
+			if got := normalizeCommand(t, reply); !reflect.DeepEqual(got, expected) {
+				return fmt.Errorf("unexpected command: got=%v want=%v", got, expected)
+			}
+		}
+		_, err := conn.Write([]byte("+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n"))
+		return err
+	})
+
+	cluster := newRedirectTestCluster()
+	node := newRedirectTestNode(ln.Addr().String())
+	cluster.nodes[node.address] = node
+	cluster.slots[hash("user{tag}")] = node
+
+	first := &txnBatcher{cluster: cluster}
+	if err := first.Put("set", []byte("user{tag}"), []byte("1")); err != nil {
+		t.Fatalf("first put failed: %v", err)
+	}
+	second := &txnBatcher{cluster: cluster}
+	if err := second.Put("set", []byte("user{tag}"), []byte("2")); err != nil {
+		t.Fatalf("second put failed: %v", err)
+	}
+
+	if err := first.Dispatch(); err != nil {
+		t.Fatalf("first dispatch failed: %v", err)
+	}
+	if err := second.Dispatch(); err != nil {
+		t.Fatalf("second dispatch failed: %v", err)
+	}
+
+	replies, err := first.Receive()
+	if err != nil {
+		t.Fatalf("first receive failed: %v", err)
+	}
+	if len(replies) != 3 {
+		t.Fatalf("unexpected first reply count: %d", len(replies))
+	}
+	if _, err := second.Receive(); err != nil {
+		t.Fatalf("second receive failed: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server failed: %v", err)
+	}
+}
+
+func TestBatchPipelineDispatchPipelinesCommandsPerNode(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+
+	serverDone := serveOnce(t, ln, func(conn net.Conn) error {
+		defer conn.Close()
+
+		rd := proto.NewReader(conn, 4096)
+		want := [][]string{
+			{"set", "user{tag}", "1"},
+			{"set", "user{tag}", "2"},
+		}
+		for _, expected := range want {
+			reply, err := rd.ReadReply()
+			if err != nil {
+				return err
+			}
+			if got := normalizeCommand(t, reply); !reflect.DeepEqual(got, expected) {
+				return fmt.Errorf("unexpected command: got=%v want=%v", got, expected)
+			}
+		}
+		_, err := conn.Write([]byte("+OK\r\n+OK\r\n"))
+		return err
+	})
+
+	cluster := newRedirectTestCluster()
+	node := newRedirectTestNode(ln.Addr().String())
+	cluster.nodes[node.address] = node
+	cluster.slots[hash("user{tag}")] = node
+
+	first := cluster.NewBatcher(true)
+	if err := first.Put("set", []byte("user{tag}"), []byte("1")); err != nil {
+		t.Fatalf("first put failed: %v", err)
+	}
+	second := cluster.NewBatcher(true)
+	if err := second.Put("set", []byte("user{tag}"), []byte("2")); err != nil {
+		t.Fatalf("second put failed: %v", err)
+	}
+
+	if err := first.Dispatch(); err != nil {
+		t.Fatalf("first dispatch failed: %v", err)
+	}
+	if err := second.Dispatch(); err != nil {
+		t.Fatalf("second dispatch failed: %v", err)
+	}
+	if _, err := first.Receive(); err != nil {
+		t.Fatalf("first receive failed: %v", err)
+	}
+	if _, err := second.Receive(); err != nil {
+		t.Fatalf("second receive failed: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server failed: %v", err)
+	}
+}
+
 func serveOnce(t *testing.T, ln net.Listener, handler func(net.Conn) error) <-chan error {
 	t.Helper()
 
@@ -236,7 +363,7 @@ func clusterSlotsReply(addr string) string {
 }
 
 func newRedirectTestCluster() *Cluster {
-	return &Cluster{
+	cluster := &Cluster{
 		nodes:        make(map[string]*redisNode),
 		updateList:   make(chan updateMesg, 1),
 		closeCh:      make(chan struct{}),
@@ -247,6 +374,8 @@ func newRedirectTestCluster() *Cluster {
 		aliveTime:    time.Minute,
 		logger:       log.WithLogger(config.LogModuleName("[cluster-redirect-test] ")),
 	}
+	cluster.pipeline = &batchPipeline{cluster: cluster}
+	return cluster
 }
 
 func newRedirectTestNode(addr string) *redisNode {

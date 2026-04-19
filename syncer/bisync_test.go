@@ -252,6 +252,180 @@ func TestBisyncPipelineStartPointUsesNewerRootCheckpointOverStaleFrontier(t *tes
 	}
 }
 
+func TestBisyncPipelineStartPointFastPathUsesInMemoryFrontierAfterCachedMiss(t *testing.T) {
+	cli := &countingNamespaceRedis{fakeNamespaceRedis: newFakeNamespaceRedis()}
+	checkpointName := "redis-gunyu-checkpoint-bisync:test-pipeline-cached-miss"
+	runID := "run-a"
+	if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
+		Key:     checkpointName,
+		RunId:   runID,
+		Offset:  500,
+		Version: config.Version,
+	}); err != nil {
+		t.Fatalf("seed root checkpoint failed: %v", err)
+	}
+
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:      "127.0.0.1:6379",
+		CheckpointName: checkpointName,
+		BisyncEnabled:  true,
+		ReplayMode:     config.ReplayModeParallel,
+		Redis:          config.RedisConfig{Type: config.RedisTypeStandalone},
+	})
+	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
+		return cli, nil
+	}
+
+	sp, seq, ok, err := ro.bisyncStartPoint(context.Background(), []string{runID})
+	if err != nil {
+		t.Fatalf("first bisync startpoint failed: %v", err)
+	}
+	if !ok || sp.RunId != runID || sp.Offset != 500 || seq != 0 {
+		t.Fatalf("unexpected first fallback startpoint: sp=%+v seq=%d ok=%v", sp, seq, ok)
+	}
+	firstBatchers := cli.batcherCalls
+	if firstBatchers == 0 {
+		t.Fatalf("expected first frontier miss to scan recovery metadata")
+	}
+
+	ro.bisyncSeq.Store(7)
+	ro.bisyncOffset.Store(700)
+
+	sp, seq, ok, err = ro.bisyncStartPoint(context.Background(), []string{runID})
+	if err != nil {
+		t.Fatalf("second bisync startpoint failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected cached miss fast path to return a recovery startpoint")
+	}
+	if sp.RunId != runID || sp.Offset != 700 || seq != 7 {
+		t.Fatalf("expected in-memory frontier fast path, got sp=%+v seq=%d", sp, seq)
+	}
+	if cli.batcherCalls != firstBatchers {
+		t.Fatalf("expected cached miss fast path to skip recovery scan, batchers %d -> %d", firstBatchers, cli.batcherCalls)
+	}
+}
+
+func TestBisyncPipelineStartPointFastPathFallsBackToRootWithoutInMemoryProgress(t *testing.T) {
+	cli := &countingNamespaceRedis{fakeNamespaceRedis: newFakeNamespaceRedis()}
+	checkpointName := "redis-gunyu-checkpoint-bisync:test-pipeline-cached-root"
+	runID := "run-a"
+	if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
+		Key:     checkpointName,
+		RunId:   runID,
+		Offset:  500,
+		Version: config.Version,
+	}); err != nil {
+		t.Fatalf("seed root checkpoint failed: %v", err)
+	}
+
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:      "127.0.0.1:6379",
+		CheckpointName: checkpointName,
+		BisyncEnabled:  true,
+		ReplayMode:     config.ReplayModeParallel,
+		Redis:          config.RedisConfig{Type: config.RedisTypeStandalone},
+	})
+	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
+		return cli, nil
+	}
+
+	if _, _, _, err := ro.bisyncStartPoint(context.Background(), []string{runID}); err != nil {
+		t.Fatalf("first bisync startpoint failed: %v", err)
+	}
+	firstBatchers := cli.batcherCalls
+	if firstBatchers == 0 {
+		t.Fatalf("expected first frontier miss to scan recovery metadata")
+	}
+
+	sp, seq, ok, err := ro.bisyncStartPoint(context.Background(), []string{runID})
+	if err != nil {
+		t.Fatalf("second bisync startpoint failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected cached miss fast path to return a recovery startpoint")
+	}
+	if sp.RunId != runID || sp.Offset != 500 || seq != 0 {
+		t.Fatalf("expected root fallback on cached miss without in-memory progress, got sp=%+v seq=%d", sp, seq)
+	}
+	if cli.batcherCalls != firstBatchers {
+		t.Fatalf("expected cached miss root fallback to skip recovery scan, batchers %d -> %d", firstBatchers, cli.batcherCalls)
+	}
+}
+
+func TestBisyncPipelineStartPointCleansRecoveredCommitJournal(t *testing.T) {
+	cli := newFakeNamespaceRedis()
+	checkpointName := "redis-gunyu-checkpoint-bisync:test-pipeline-recovery-gc"
+	runID := "run-a"
+	if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
+		Key:     checkpointName,
+		RunId:   runID,
+		Offset:  100,
+		Version: config.Version,
+	}); err != nil {
+		t.Fatalf("seed root checkpoint failed: %v", err)
+	}
+
+	snapshotKey := checkpoint.BisyncFrontierKey(checkpointName)
+	seedFakeNamespaceHash(t, cli, snapshotKey, (&checkpoint.BisyncFrontierSnapshot{
+		Version: config.Version,
+		RunID:   runID,
+		UnitSeq: 7,
+		Offset:  100,
+		MTime:   1,
+	}).HashArgs())
+
+	slotTag := checkpoint.BisyncSlotTag(0)
+	recordKey := checkpoint.BisyncCommitRecordKey(checkpointName, slotTag, 8)
+	indexKey := checkpoint.BisyncCommitIndexKey(checkpointName, slotTag)
+	seedFakeNamespaceHash(t, cli, recordKey, (&checkpoint.BisyncCommitRecord{
+		Key:         recordKey,
+		Version:     config.Version,
+		RunID:       runID,
+		SyncerID:    "127.0.0.1:6379",
+		UnitSeq:     8,
+		StartOffset: 101,
+		EndOffset:   120,
+		Slot:        0,
+		Digest:      "digest",
+		MTime:       2,
+	}).HashArgs())
+	if _, err := cli.Do("zadd", indexKey, "8", recordKey); err != nil {
+		t.Fatalf("seed commit index failed: %v", err)
+	}
+
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:      "127.0.0.1:6379",
+		CheckpointName: checkpointName,
+		BisyncEnabled:  true,
+		ReplayMode:     config.ReplayModeParallel,
+		Redis:          config.RedisConfig{Type: config.RedisTypeStandalone},
+	})
+	ro.newRedisConn = func(context.Context) (redisclient.Redis, error) {
+		return cli, nil
+	}
+
+	sp, seq, ok, err := ro.bisyncStartPoint(context.Background(), []string{runID})
+	if err != nil {
+		t.Fatalf("bisync startpoint failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected frontier recovery startpoint")
+	}
+	if sp.RunId != runID || sp.Offset != 120 || seq != 8 {
+		t.Fatalf("unexpected frontier recovery startpoint: sp=%+v seq=%d ok=%v", sp, seq, ok)
+	}
+	if len(cli.hashes[recordKey]) != 0 {
+		t.Fatalf("expected recovered commit journal to be deleted")
+	}
+	if len(cli.zsets[indexKey]) != 0 {
+		t.Fatalf("expected recovered commit index to be deleted")
+	}
+	if len(cli.hashes[snapshotKey]) == 0 {
+		t.Fatalf("expected frontier snapshot to remain after cleanup")
+	}
+}
+
 func TestBuildBisyncReplayUnitCrossSlotFails(t *testing.T) {
 	_, err := buildBisyncReplayUnit(1, 0, 1, false, []bisyncAofCommand{
 		{Cmd: "mset", Args: [][]byte{[]byte("foo"), []byte("1"), []byte("bar"), []byte("2")}},

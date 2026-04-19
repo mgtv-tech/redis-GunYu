@@ -50,6 +50,8 @@ type RedisOutput struct {
 	checkpointInMem checkpoint.CheckpointInfo
 	bisyncSeq       atomic.Int64
 	bisyncOffset    atomic.Int64
+	bisyncMissGuard sync.RWMutex
+	bisyncMissRunID string
 
 	outFilter *filter.RedisKeyFilter
 

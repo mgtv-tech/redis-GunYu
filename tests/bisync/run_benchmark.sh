@@ -25,6 +25,11 @@ LEFT_PORTS=("${LEFT_PORT_1:-7000}" "${LEFT_PORT_2:-7001}" "${LEFT_PORT_3:-7002}"
 RIGHT_PORTS=("${RIGHT_PORT_1:-7100}" "${RIGHT_PORT_2:-7101}" "${RIGHT_PORT_3:-7102}")
 LEFT_ADDRS="${LEFT_ADDRS:-}"
 RIGHT_ADDRS="${RIGHT_ADDRS:-}"
+FWD_INPUT_ADDRS="${FWD_INPUT_ADDRS:-}"
+FWD_OUTPUT_ADDRS="${FWD_OUTPUT_ADDRS:-}"
+REV_INPUT_ADDRS="${REV_INPUT_ADDRS:-}"
+REV_OUTPUT_ADDRS="${REV_OUTPUT_ADDRS:-}"
+NETWORK_PROFILE="${NETWORK_PROFILE:-local-direct}"
 FWD_PID=""
 REV_PID=""
 RESOURCE_MONITOR_PID=""
@@ -41,6 +46,18 @@ if [[ -z "${LEFT_ADDRS}" ]]; then
 fi
 if [[ -z "${RIGHT_ADDRS}" ]]; then
   RIGHT_ADDRS="127.0.0.1:${RIGHT_PORTS[0]},127.0.0.1:${RIGHT_PORTS[1]},127.0.0.1:${RIGHT_PORTS[2]}"
+fi
+if [[ -z "${FWD_INPUT_ADDRS}" ]]; then
+  FWD_INPUT_ADDRS="${LEFT_ADDRS}"
+fi
+if [[ -z "${FWD_OUTPUT_ADDRS}" ]]; then
+  FWD_OUTPUT_ADDRS="${RIGHT_ADDRS}"
+fi
+if [[ -z "${REV_INPUT_ADDRS}" ]]; then
+  REV_INPUT_ADDRS="${RIGHT_ADDRS}"
+fi
+if [[ -z "${REV_OUTPUT_ADDRS}" ]]; then
+  REV_OUTPUT_ADDRS="${LEFT_ADDRS}"
 fi
 LEFT_PORTS=()
 while IFS= read -r port; do
@@ -204,8 +221,8 @@ start_syncers() {
   replay_mode=$(normalize_replay_mode "${mode_arg}")
 
   echo "[3/7] starting benchmark syncers for ${mode}"
-  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${LEFT_ADDRS}" "${RIGHT_ADDRS}" "${mode_arg}"
-  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${RIGHT_ADDRS}" "${LEFT_ADDRS}" "${mode_arg}"
+  write_syncer_conf "${mode}-forward" "${fwd_http_port}" "${FWD_INPUT_ADDRS}" "${FWD_OUTPUT_ADDRS}" "${mode_arg}"
+  write_syncer_conf "${mode}-reverse" "${rev_http_port}" "${REV_INPUT_ADDRS}" "${REV_OUTPUT_ADDRS}" "${mode_arg}"
 
   "${TMP_ROOT}/redisGunYu" -conf "${TMP_ROOT}/${mode}-forward.yaml" -cmd sync > "${TMP_ROOT}/${mode}-forward.log" 2>&1 &
   FWD_PID=$!
@@ -403,6 +420,11 @@ write_report() {
 - SyncDelayStatus: ${sync_delay_status}
 - LeftCluster: ${LEFT_ADDRS}
 - RightCluster: ${RIGHT_ADDRS}
+- ForwardSyncerInput: ${FWD_INPUT_ADDRS}
+- ForwardSyncerOutput: ${FWD_OUTPUT_ADDRS}
+- ReverseSyncerInput: ${REV_INPUT_ADDRS}
+- ReverseSyncerOutput: ${REV_OUTPUT_ADDRS}
+- NetworkProfile: ${NETWORK_PROFILE}
 - CompareResult: $(tr '\n' ' ' < "${compare_log}" | sed 's/[[:space:]]\+/ /g')
 - ResourceSamples: ${resource_samples}
 - SyncDelaySamples: ${sync_delay_samples}

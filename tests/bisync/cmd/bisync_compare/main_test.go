@@ -114,3 +114,31 @@ func TestReadKeyStateRejectsMalformedStreamEntry(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestReadKeyStateQuotesBinaryString(t *testing.T) {
+	t.Parallel()
+
+	cli := fakeRedis{
+		do: func(cmd string, args ...interface{}) (interface{}, error) {
+			switch cmd {
+			case "type":
+				return "string", nil
+			case "get":
+				return string([]byte{'a', 0, 'b', '\n'}), nil
+			default:
+				t.Fatalf("unexpected command %s %v", cmd, args)
+				return nil, nil
+			}
+		},
+	}
+
+	state, err := readKeyState(cli, "bin-key")
+	if err != nil {
+		t.Fatalf("readKeyState failed: %v", err)
+	}
+
+	want := `string:"a\x00b\n"`
+	if state != want {
+		t.Fatalf("unexpected state\nwant: %s\ngot:  %s", want, state)
+	}
+}

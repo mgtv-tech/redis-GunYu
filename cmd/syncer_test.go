@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime"
 	"testing"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -30,22 +28,6 @@ func TestTypologySuite(t *testing.T) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		suite.Run(t, new(typologyTestSuite))
 	}
-}
-
-func TestMigration(t *testing.T) {
-
-	redisCfg := config.RedisConfig{
-		Addresses: []string{"127.0.0.1:16303"},
-		Type:      config.RedisTypeCluster,
-	}
-	err := redis.FixTopology(&redisCfg)
-	assert.Nil(t, err)
-
-	migrate, err := checkMigrating(context.Background(), redisCfg)
-	assert.Nil(t, err)
-
-	fmt.Println(migrate)
-
 }
 
 type typologyTestSuite struct {

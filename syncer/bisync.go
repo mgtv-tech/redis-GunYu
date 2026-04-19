@@ -1432,6 +1432,9 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 
 	slots := ro.bisyncRecoverySlots()
 	if ro.cfg.ReplayMode.UsesFrontier() {
+		if sp, seq, ok := ro.bisyncFrontierMissFastPath(rootStartPoint, runIDs); ok {
+			return sp, seq, true, nil
+		}
 		begin := time.Now()
 		snapshotKey := checkpoint.BisyncFrontierKey(checkpointName)
 		snapshot, err := checkpoint.LoadBisyncFrontierSnapshot(cli, snapshotKey, runIDs)
@@ -1453,6 +1456,7 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 			return sp, 0, false, err
 		}
 		if frontier != nil && frontier.UnitSeq > 0 {
+			ro.clearBisyncFrontierMiss(rootStartPoint.RunId)
 			sp = StartPoint{DbId: 0, RunId: frontier.RunID, Offset: frontier.Offset}
 			if sp.RunId == "" && len(runIDs) > 0 {
 				sp.RunId = runIDs[0]
@@ -1461,9 +1465,14 @@ func (ro *RedisOutput) bisyncStartPoint(ctx context.Context, runIDs []string) (S
 				ro.logger.Infof("bisync startpoint parallel root override: checkpoint(%s), root(%+v), frontier(%+v)", checkpointName, rootStartPoint, sp)
 				return rootStartPoint, 0, true, nil
 			}
+			// Recovery may consume the first post-snapshot journal records to rebuild
+			// the durable frontier. Once that frontier is selected, those journal
+			// keys are stale and should not survive as residual metadata.
+			ro.cleanupRecoveredBisyncCommitRecords(cli, checkpointName, frontier, records)
 			ro.logger.Infof("bisync startpoint parallel selected: checkpoint(%s), start(%+v), seq(%d)", checkpointName, sp, frontier.UnitSeq)
 			return sp, frontier.UnitSeq, true, nil
 		}
+		ro.markBisyncFrontierMiss(rootStartPoint.RunId)
 		ro.logger.Warnf("bisync startpoint parallel miss: checkpoint(%s), slots(%d), runIDs(%v)", checkpointName, len(slots), runIDs)
 		ro.logger.Infof("bisync startpoint parallel fallback: checkpoint(%s), start(%+v)", checkpointName, rootStartPoint)
 		return rootStartPoint, 0, true, nil
@@ -1491,6 +1500,91 @@ func (ro *RedisOutput) bisyncRootCheckpointNewer(root StartPoint, selected Start
 	return root.RunId != "" &&
 		root.Offset > selected.Offset &&
 		checkpoint.MatchBisyncRunID(root.RunId, runIDs)
+}
+
+func (ro *RedisOutput) cleanupRecoveredBisyncCommitRecords(cli client.Redis, checkpointName string, frontier *checkpoint.BisyncFrontierSnapshot, records []*checkpoint.BisyncCommitRecord) {
+	if frontier == nil || frontier.UnitSeq <= 0 || len(records) == 0 {
+		return
+	}
+
+	keys := make([]string, 0, len(records))
+	indexMembers := make(map[string][]interface{})
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if record == nil || record.UnitSeq <= 0 || record.UnitSeq > frontier.UnitSeq || !checkpoint.IsBisyncCommitKey(record.Key) {
+			continue
+		}
+		if _, ok := seen[record.Key]; ok {
+			continue
+		}
+		seen[record.Key] = struct{}{}
+		keys = append(keys, record.Key)
+		indexKey := checkpoint.BisyncCommitIndexKey(checkpointName, checkpoint.BisyncSlotTag(record.Slot))
+		indexMembers[indexKey] = append(indexMembers[indexKey], record.Key)
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	if err := checkpoint.DeleteBisyncCommitKeys(cli, keys); err != nil {
+		ro.logger.Warnf("delete recovered bisync commit records failed: checkpoint(%s), frontierSeq(%d), err(%v)", checkpointName, frontier.UnitSeq, err)
+	} else {
+		bisyncCommitGCCounter.Add(float64(len(keys)), ro.cfg.InputName)
+	}
+
+	batcher := cli.NewBatcher(false)
+	for indexKey, members := range indexMembers {
+		args := append([]interface{}{indexKey}, members...)
+		if err := batcher.Put("zrem", args...); err != nil {
+			ro.logger.Warnf("queue recovered bisync commit index delete failed: checkpoint(%s), frontierSeq(%d), key(%s), err(%v)", checkpointName, frontier.UnitSeq, indexKey, err)
+		}
+	}
+	if batcher.Len() == 0 {
+		return
+	}
+	if _, err := batcher.Exec(); err != nil {
+		ro.logger.Warnf("delete recovered bisync commit indexes failed: checkpoint(%s), frontierSeq(%d), err(%v)", checkpointName, frontier.UnitSeq, err)
+	}
+}
+
+func (ro *RedisOutput) markBisyncFrontierMiss(runID string) {
+	if runID == "" || runID == "?" {
+		return
+	}
+	ro.bisyncMissGuard.Lock()
+	ro.bisyncMissRunID = runID
+	ro.bisyncMissGuard.Unlock()
+}
+
+func (ro *RedisOutput) clearBisyncFrontierMiss(runID string) {
+	ro.bisyncMissGuard.Lock()
+	defer ro.bisyncMissGuard.Unlock()
+	if runID == "" || ro.bisyncMissRunID == runID {
+		ro.bisyncMissRunID = ""
+	}
+}
+
+func (ro *RedisOutput) bisyncFrontierMissFastPath(root StartPoint, runIDs []string) (StartPoint, int64, bool) {
+	if root.RunId == "" || root.RunId == "?" || !checkpoint.MatchBisyncRunID(root.RunId, runIDs) {
+		return StartPoint{}, 0, false
+	}
+	ro.bisyncMissGuard.RLock()
+	missRunID := ro.bisyncMissRunID
+	ro.bisyncMissGuard.RUnlock()
+	if missRunID != root.RunId {
+		return StartPoint{}, 0, false
+	}
+
+	seq := ro.bisyncSeq.Load()
+	offset := ro.bisyncOffset.Load()
+	if seq > 0 && offset > root.Offset {
+		sp := StartPoint{DbId: 0, RunId: root.RunId, Offset: offset}
+		ro.logger.Infof("bisync startpoint parallel fast-path: checkpoint(%s), start(%+v), seq(%d), reason(cached-miss)", ro.bisyncCheckpointName(), sp, seq)
+		return sp, seq, true
+	}
+
+	ro.logger.Infof("bisync startpoint parallel fast-path fallback: checkpoint(%s), start(%+v), reason(cached-miss)", ro.bisyncCheckpointName(), root)
+	return root, 0, true
 }
 
 func (ro *RedisOutput) bisyncRecoverySlots() []uint16 {
