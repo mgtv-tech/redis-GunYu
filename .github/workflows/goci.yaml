@@ -42,16 +42,6 @@ jobs:
 
   integration-redis:
     runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
     env:
       TEST_REDIS_ADDR: 127.0.0.1:6379
       TEST_REDIS_CLUSTER_ADDR: 127.0.0.1:16300
@@ -64,16 +54,36 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Start redis cluster
-        uses: vishnudxb/redis-cluster@1.0.9
-        with:
-          master1-port: 16300
-          master2-port: 5001
-          master3-port: 5002
-          slave1-port: 5003
-          slave2-port: 5004
-          slave3-port: 5005
-          sleep-duration: 5
+      - name: Install redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+
+      - name: Start redis standalone and cluster
+        run: |
+          set -euo pipefail
+          source tests/nonbisync/lib/test_env.sh
+
+          tmp_root="$(mktemp -d)"
+          echo "TEST_REDIS_TMP_ROOT=${tmp_root}" >> "${GITHUB_ENV}"
+
+          shutdown_ports 6379 16300 5001 5002 5003 5004 5005
+          start_standalone "$(command -v redis-server)" "${tmp_root}" standalone 6379
+          start_cluster_with_replicas "$(command -v redis-server)" "${tmp_root}" ci 16300 5001 5002 5003 5004 5005
+
+      - name: Check redis topology
+        run: |
+          redis-cli -p 6379 ping
+          redis-cli -p 16300 cluster info
+          redis-cli -p 16300 cluster nodes
 
       - name: Integration tests
         run: go test -tags=integration -v ./cmd ./pkg/cluster ./pkg/redis/client/cluster ./pkg/redis/client/conn
+
+      - name: Stop redis
+        if: always()
+        run: |
+          set -euo pipefail
+          source tests/nonbisync/lib/test_env.sh
+          shutdown_ports 6379 16300 5001 5002 5003 5004 5005
+          rm -rf "${TEST_REDIS_TMP_ROOT:-}"

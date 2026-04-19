@@ -24,12 +24,13 @@ type redisLockTestSuite struct {
 func (st *redisLockTestSuite) SetupTest() {
 	st.key1 = "test-redislocker-red-key1"
 	st.val1 = "test-redislocker-red-val1"
+	addr := requireTestRedis(st.T())
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses:      []string{testRedis},
+		Addresses:      []string{addr},
 		Type:           config.RedisTypeStandalone,
 		ClusterOptions: &config.RedisClusterOptions{},
 	})
-	st.Nil(err)
+	st.Require().NoError(err)
 	st.clis = append(st.clis, cli)
 
 	for _, cc := range st.clis {

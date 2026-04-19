@@ -9,12 +9,8 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-)
-
-// @TODO mock redis client
-const (
-	testRedis = "127.0.0.1:6379"
 )
 
 func TestUtilTestSuite(t *testing.T) {
@@ -22,11 +18,12 @@ func TestUtilTestSuite(t *testing.T) {
 }
 
 func TestSelectDB(t *testing.T) {
+	addr := requireTestRedis(t)
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{testRedis},
+		Addresses: []string{addr},
 		Type:      config.RedisTypeStandalone,
 	})
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	err = SelectDB(cli, 1)
 	assert.Nil(t, err)
@@ -50,11 +47,12 @@ type utilTestSuite struct {
 }
 
 func (uts *utilTestSuite) SetupTest() {
+	addr := requireTestRedis(uts.T())
 	cli, err := client.NewRedis(config.RedisConfig{
-		Addresses: []string{testRedis},
+		Addresses: []string{addr},
 		Type:      config.RedisTypeStandalone,
 	})
-	uts.Nil(err)
+	uts.Require().NoError(err)
 	uts.cli = cli
 }
 

@@ -3,6 +3,16 @@
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 
+match_regex_quiet() {
+  local pattern=$1
+  shift || true
+  if command -v rg >/dev/null 2>&1; then
+    rg -q -- "${pattern}" "$@"
+    return $?
+  fi
+  grep -E -q -- "${pattern}" "$@"
+}
+
 stop_pid() {
   local pid=${1:-}
   if [[ -n "${pid}" ]]; then
@@ -33,7 +43,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2
@@ -575,7 +585,7 @@ assert_checkpoint_signals_standalone() {
 
 assert_log_has_no_bisync_markers() {
   local log_file=$1
-  if rg -q 'bisync startpoint|bisync checkpoint namespace|scheme1|frontier' "${log_file}"; then
+  if match_regex_quiet 'bisync startpoint|bisync checkpoint namespace|scheme1|frontier' "${log_file}"; then
     echo "expected non-bisync log without bisync markers: ${log_file}" >&2
     exit 1
   fi
@@ -583,7 +593,7 @@ assert_log_has_no_bisync_markers() {
 
 assert_log_has_resume_signal() {
   local log_file=$1
-  if ! rg -q 'resume from checkpoint|UpdateCheckpoint|checkpoint|psync : runId\(.*local\(\{0 [^ ]+ [1-9][0-9]*\}\)|psync : runId\(.*output\(\{0 [^ ]+ [1-9][0-9]*\}\)' "${log_file}"; then
+  if ! match_regex_quiet 'resume from checkpoint|UpdateCheckpoint|checkpoint|psync : runId\(.*local\(\{0 [^ ]+ [1-9][0-9]*\}\)|psync : runId\(.*output\(\{0 [^ ]+ [1-9][0-9]*\}\)' "${log_file}"; then
     echo "expected checkpoint resume signal in ${log_file}" >&2
     exit 1
   fi
@@ -591,7 +601,7 @@ assert_log_has_resume_signal() {
 
 assert_log_has_topology_signal() {
   local log_file=$1
-  if ! rg -q 'restart|typology|redis typology is changed|run error|MOVED|ASK|role' "${log_file}"; then
+  if ! match_regex_quiet 'restart|typology|redis typology is changed|run error|MOVED|ASK|role' "${log_file}"; then
     echo "expected topology or restart signal in ${log_file}" >&2
     exit 1
   fi
@@ -697,7 +707,7 @@ wait_for_log_pattern() {
   local timeout_seconds=${3:-20}
   local waited=0
   while (( waited < timeout_seconds * 4 )); do
-    if [[ -f "${log_file}" ]] && rg -q "${pattern}" "${log_file}"; then
+    if [[ -f "${log_file}" ]] && match_regex_quiet "${pattern}" "${log_file}"; then
       return 0
     fi
     sleep 0.25
