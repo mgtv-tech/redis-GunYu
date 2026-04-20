@@ -79,6 +79,8 @@
 
 测试RDB和AOF在不同版本之间兼容性；RDB回放测试RESTORE命令回放和非RESTORE命令回放两种。
 
+说明：当前已经增加对 Redis 8 的支持。代码层面已支持 Redis 8 的 RDB v13，以及 Redis 8 cluster RDB 中的 `SLOT_INFO` 元数据 opcode。下面这张表主要保留历史 cross-version 覆盖情况，Redis 8 的版本矩阵会继续补充。
+
 | 源端版本 | 目标端版本 |  测试结果  | 备注 |
 | :- | :- | :- |  :- | 
 | 4.0  | 5.0  | 通过  |   |
@@ -93,6 +95,7 @@
 | 6.0  | 5.0  | 通过  |   |
 | 6.0  | 4.0  | 通过  |   |
 | 5.0  | 4.0  | 通过  |   |
+| 8.x  | 8.x  | 通过  | 已支持 RDB v13 解析，并兼容 Redis 8 cluster `SLOT_INFO` 元数据 |
 
 
 

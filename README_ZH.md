@@ -1,6 +1,6 @@
 # Redis GunYu
 
-[![CI](https://github.com/mgtv-tech/redis-GunYu/workflows/goci/badge.svg)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yml)
+[![Tests](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yaml/badge.svg?branch=master)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yaml)
 [![LICENSE](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/mgtv-tech/redis-GunYu/blob/master/LICENSE)
 [![release](https://img.shields.io/github/release/mgtv-tech/redis-GunYu)](https://github.com/mgtv-tech/redis-GunYu/releases)
 
@@ -62,7 +62,7 @@
   - 工具高可用 ： 支持主从模式，以最新记录进行自主选举，自动和手动failover；工具本身P2P架构，将宕机影响降低到最小
 - 对redis限制更少
   - 支持源和目标端不同的redis部署方式，如cluster或单实例
-  - 兼容源和目的redis不同版本，支持从redis4.0到redis7.2，参考[测试](docs/test_zh.md#版本兼容测试)
+  - 兼容源和目的redis不同版本，支持从redis4.0到redis8.x，参考[测试](docs/test_zh.md#版本兼容测试)
 - 数据一致性策略更加灵活，自动切换
   - 当源端和目标端分片信息一致时，采用伪事务方式批量写入，实时更新偏移，最大可能保证一致性
   - 当源端和目标端分片不一致时，采用定期更新偏移
@@ -223,6 +223,7 @@ curl http://localhost:18001/syncer/status
 - [部署](docs/deployment_zh.md)
 - [API](docs/API_zh.md)
 - [测试结果](docs/test_zh.md)
+- [Bisync 双向同步](docs/bisync.md)
 - [注意事项](docs/attentions_zh.md)
 
 

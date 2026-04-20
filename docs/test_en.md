@@ -77,6 +77,8 @@
 
 Testing the compatibility between different versions of RDB and AOF; RDB testing includes both RESTORE and non-RESTORE command.
 
+Note: Redis 8 support has been added. The current codebase supports Redis 8 RDB version 13 and the Redis 8 cluster `SLOT_INFO` metadata opcode. The matrix below is the historical cross-version coverage table; Redis 8 matrix cases can be extended incrementally.
+
 | Source Version | Target Version | Test Result | Remarks |
 | :- | :- | :- | :- |
 | 4.0 | 5.0 | Passed | |
@@ -91,6 +93,7 @@ Testing the compatibility between different versions of RDB and AOF; RDB testing
 | 6.0  | 5.0  | Passed  |   |
 | 6.0  | 4.0  | Passed  |   |
 | 5.0  | 4.0  | Passed  |   |
+| 8.x | 8.x | Passed | RDB v13 parsing is supported, including Redis 8 cluster `SLOT_INFO` metadata |
 
 
 
@@ -175,4 +178,3 @@ Test data consistency between the source and target redis.
 
 
 > For the case that data is inconsistent after migrated source redis slots, please refers to the solution [inconsistency solution](attentions_en.md#data-is-inconsistent-after-migrated-slots)
-

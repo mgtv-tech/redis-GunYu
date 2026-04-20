@@ -1,6 +1,6 @@
 # Redis GunYu
 
-[![CI](https://github.com/mgtv-tech/redis-GunYu/workflows/goci/badge.svg)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yml)
+[![Tests](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yaml/badge.svg?branch=master)](https://github.com/mgtv-tech/redis-GunYu/actions/workflows/goci.yaml)
 [![LICENSE](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/mgtv-tech/redis-GunYu/blob/master/LICENSE)
 [![release](https://img.shields.io/github/release/mgtv-tech/redis-GunYu)](https://github.com/mgtv-tech/redis-GunYu/releases)
 
@@ -57,7 +57,7 @@ The feature matrix of `redis-GunYu` for real-time synchronization
   - High availability of the tool: Supports master-slave mode, self-election based on the latest records, automatic and manual failover; the tool is P2P architecture, minimizing downtime impact
 - Fewer restrictions on Redis
   - Supports different deployment modes of Redis on the source and target, such as cluster or standalone instances
-  - Compatible with different versions of Redis on the source and target, supports from Redis 4.0 to Redis 7.2, see [testing](docs/test_en.md#Compatibility)
+  - Compatible with different versions of Redis on the source and target, supports from Redis 4.0 to Redis 8.x, see [testing](docs/test_en.md#version-compatibility-test)
 - More flexible data consistency strategies, automatic switching
   - When the shards distribution of the source and target is the same, batch writes in pseudo-transaction mode, and offsets are updated in real-time, maximizing inconsistent
   - When the shard distribution of the source and target is different, offsets are updated periodically
@@ -194,6 +194,7 @@ Check the status of the synchronization tool
 - [Deployment](docs/deployment_en.md)
 - [API](docs/API_en.md)
 - [Testing](docs/test_en.md)
+- [Bisync Bidirectional Synchronization](docs/bisync_en.md)
 - [Attentions](docs/attentions_en.md)
 
 ## Contributing
@@ -212,4 +213,3 @@ Please follow these steps to submit a PR:
 ## Contact
 
 If you have any questions, please contact `ikenchina@gmail.com`.
-

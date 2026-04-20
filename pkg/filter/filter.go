@@ -129,55 +129,79 @@ func (f *RedisKeyFilter) FilterDb(db int) bool {
 	return false
 }
 
+// FilterCmdKey applies key-based filtering to a command's arguments.
+// It returns the possibly rewritten argument list and a reject flag.
+// If partial key removal would change command semantics, the whole command is rejected.
 func (f *RedisKeyFilter) FilterCmdKey(cmd string, args [][]byte) ([][]byte, bool) {
-	if f.prefixKeyBlackTrie == nil && f.prefixKeyWhiteTrie == nil {
+	if f.prefixKeyBlackTrie == nil && f.prefixKeyWhiteTrie == nil &&
+		f.slotKeyBlackList == nil && f.slotKeyWhiteList == nil {
 		return args, false
 	}
-	cmdPos, ok := commandKeyPositions[cmd]
-	if !ok || len(args) == 0 {
+
+	// Resolve which argument positions are keys for the given command.
+	// Unknown commands or unsupported layouts are passed through unchanged.
+	indexes, ok := CommandKeyIndexes(cmd, args)
+	if !ok || len(indexes) == 0 {
 		return args, false
 	}
-	lastkey := cmdPos.last - 1
-	keystep := cmdPos.step
 
-	if lastkey < 0 {
-		lastkey = lastkey + len(args)
-	}
-
-	array := make([]int, len(args))
-	number := 0
-	foutKey := false
-	for firstkey := cmdPos.first - 1; firstkey <= lastkey; firstkey += keystep {
-		key := string(args[firstkey])
-		if !f.FilterKey(key) && !f.FilterSlot(key) {
-			array[number] = firstkey
-			number++
-		} else {
-			foutKey = true
+	kept := make([]bool, len(indexes))
+	keptCount := 0
+	filtered := false
+	for i, keyIdx := range indexes {
+		if keyIdx < 0 || keyIdx >= len(args) {
+			return args, true
 		}
+		key := string(args[keyIdx])
+		// A key is removed if it is blocked by either the prefix-based rules
+		// or the slot-based rules.
+		if f.FilterKey(key) || f.FilterSlot(key) {
+			filtered = true
+			continue
+		}
+		kept[i] = true
+		keptCount++
 	}
-	if !foutKey {
+	if !filtered {
 		return args, false
 	}
-	if number == 0 {
+	// If every key is filtered out, the command no longer has any valid target.
+	if keptCount == 0 {
+		return args, true
+	}
+	// Only commands with independent per-key semantics may be projected to a subset of keys.
+	if !CommandAllowsPartialProjection(cmd) {
 		return args, true
 	}
 
-	pass := true
-	newArgs := make([][]byte, number*cmdPos.step+len(args)-lastkey-cmdPos.step)
-	for i := 0; i < number; i++ {
-		for j := 0; j < cmdPos.step; j++ {
-			newArgs[i*cmdPos.step+j] = args[array[i]+j]
+	switch strings.ToLower(cmd) {
+	case "del", "unlink":
+		// DEL/UNLINK can safely drop filtered keys and keep the rest.
+		newArgs := make([][]byte, 0, keptCount)
+		for i, keep := range kept {
+			if keep {
+				newArgs = append(newArgs, args[indexes[i]])
+			}
 		}
+		return newArgs, false
+	case "mset":
+		// MSET stores arguments as key/value pairs, so each kept key must keep
+		// its following value as well.
+		newArgs := make([][]byte, 0, keptCount*2)
+		for i, keep := range kept {
+			if !keep {
+				continue
+			}
+			keyIdx := indexes[i]
+			if keyIdx+1 >= len(args) {
+				return args, true
+			}
+			newArgs = append(newArgs, args[keyIdx], args[keyIdx+1])
+		}
+		return newArgs, false
+	default:
+		return args, true
 	}
-
-	j := 0
-	for i := lastkey + cmdPos.step; i < len(args); i++ {
-		newArgs[number*cmdPos.step+j] = args[i]
-		j = j + 1
-	}
-
-	return newArgs, !pass
 }
 
 func (f *RedisKeyFilter) InsertSlotWhiteList(slots [][]uint16) {

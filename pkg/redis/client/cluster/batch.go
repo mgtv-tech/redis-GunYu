@@ -35,10 +35,10 @@ type nodeBatch struct {
 	node *redisNode
 	cmds []nodeCommand
 
-	err  error
-	done chan int
-
-	conn *redisConn
+	err     error
+	done    chan int
+	conn    *redisConn
+	request *nodePipelineRequest
 }
 
 type nodeCommand struct {

@@ -12,7 +12,9 @@
 
 ## redis版本
 
-redis-GunYu支持从4.0到7.2的redis版本。
+redis-GunYu支持从4.0到8.x的redis版本。
+
+当前已经支持 Redis 8 的 RDB v13，以及 Redis 8 cluster RDB 中的 `SLOT_INFO` 元数据 opcode。
 
 ### 源端和目的端
 
@@ -62,4 +64,3 @@ redis兼容性，请见[测试文档](test_zh.md#版本兼容测试)
 
 - 1. 强制进行一次全量同步，例如slot 10从节点A迁移到节点B，那么迁移完后，将B节点执行一次全量同步，参考[强制全量同步API](API_zh.md#强制全量同步)
 - 2. 修改redis扩容、缩容、slot迁移脚本
-

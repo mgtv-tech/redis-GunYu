@@ -45,8 +45,6 @@ redis配置
 - type ： redis类型
   - standalone ： 根据addresses里的地址来同步
   - cluster ： 
-- clusterOptions
-  - replayTransaction ： 是否尝试使用事务（伪事务，不是基于multi/exec，而是将redis命令打包一次性发送到redis端执行）进行同步，默认开启
 - keepAlive : 每个redis节点的最大连接数
 - aliveTime : 保持连接超时时间
 
@@ -100,7 +98,21 @@ output配置如下：
   - replayRdbParallel ： 用几个线程来回放RDB，默认为CPU数量 * 4
   - updateCheckpointTicker ： 默认1秒
   - keepaliveTicker ： 默认3秒，保持心跳时间间隔
-  - enableAofPipeline : 开启pipeline的方式回放命令。发送命令和接收回复在不同的线程，能加快数据同步速度，但也可能造成数据不一致。例如：发送命令A、B到redis，如果A执行失败，B执行成功，那么另一个线程接收到A执行失败时可能B已经执行完了，而同步的偏移量已经记录成B的了，那A数据就丢失了。谨慎开启。
+  - replayTransaction ： 是否优先使用事务回放，默认开启
+    - output 是 standalone 时：使用真实 `MULTI/EXEC`
+    - output 是 cluster 且当前拓扑允许事务回放时：使用真实事务 batcher
+    - output 是 cluster 但当前拓扑不允许事务回放时：自动退回普通批量回放
+    - 该开关只影响普通回放链路的事务化策略，不决定是否开启 bisync
+  - bisyncEnabled ： 是否开启双向同步控制面，默认关闭
+    - 是否开启 bisync 只由该配置决定，不根据 `replayTransaction` 或运行期 `CanTransaction` 决定
+    - 开启后，AOF/RDB 回放会走 bisync 的 replay unit、marker、checkpoint/frontier 恢复逻辑
+    - `replayTransaction` 仍建议保持为 `true`，但它不是 bisync 的开关
+  - mode ： AOF 回放执行语义，支持 `sync`、`pipeline`
+    - `sync`：发送一个 replay unit 并收到完整回复后才发送下一个；bisync 恢复点来自各 slot 的 `latest`
+    - `pipeline`：发送和接收放在不同 goroutine，但按发送顺序确认；非 bisync 下等价于旧 `enableAofPipeline=true`
+    - bisync 下如果业务对数据一致性要求严格，建议优先使用 `sync`；当前 `pipeline` 在极端故障和恢复场景下仍可能出现数据一致性问题
+  - 旧回放兼容字段：仍可做兼容加载，但新配置请统一使用 `mode`
+    - 当未显式配置 `mode` 时，旧 `enableAofPipeline=true` 映射为 `mode=pipeline`，`false` 映射为 `mode=sync`
 
 
 #### filter配置
@@ -293,4 +305,3 @@ output:
 则命令行名为`--sync.output.filter.slotFilter.keySlotWhitelist=[0,1000],[1002]`
 
 可以通过`redisGunYu -h`来查看都有哪些参数。
-

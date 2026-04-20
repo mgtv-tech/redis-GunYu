@@ -1,3 +1,5 @@
+//go:build integration
+
 package redis
 
 import (
@@ -27,7 +29,7 @@ func TestChooseNodeWithCmd(t *testing.T) {
 
 		cluster, err := NewCluster(
 			&Options{
-				StartNodes:  strings.Split(testRedisCluster, ";"),
+				StartNodes:  strings.Split(testRedisClusterAddr(), ";"),
 				ConnTimeout: 5 * time.Second,
 				KeepAlive:   32,
 				AliveTime:   10 * time.Second,
@@ -48,7 +50,7 @@ func TestChooseNodeWithCmd(t *testing.T) {
 
 		cluster, err := NewCluster(
 			&Options{
-				StartNodes:  strings.Split(testRedisCluster, ";"),
+				StartNodes:  strings.Split(testRedisClusterAddr(), ";"),
 				ConnTimeout: 5 * time.Second,
 				KeepAlive:   32,
 				AliveTime:   10 * time.Second,

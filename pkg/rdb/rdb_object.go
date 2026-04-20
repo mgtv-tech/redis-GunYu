@@ -88,8 +88,7 @@ func NewParser(t byte, rdbVersion int64, targetRedisVersion string, targetFuncti
 		p.rdbVersion = rdbVersion
 		p.otype = RdbObjectHash
 		return p, nil
-	case RDBTypeStreamListPacks, RDBTypeStreamListPacks2, RdbTypeStreamListPacks3:
-		// @TODO implement other logical, (>=redis 5)
+	case RDBTypeStreamListPacks, RDBTypeStreamListPacks2, RdbTypeStreamListPacks3, RdbTypeStreamListPacks4:
 		p := &StreamParser{}
 		p.rtype = t
 		p.targetRedisVersion = targetRedisVersion
@@ -311,9 +310,9 @@ func (hp *HashPaser) listpack(cb RdbObjExecutor) {
 		panicIfErr(fmt.Errorf("hash list pack is not even : %d", length))
 	}
 	for i := 0; i < length/2; i++ {
-		member := listp.Next()
-		score := listp.Next()
-		panicIfErr(cb(hp.cmd, hp.key, score, member))
+		field := listp.Next()
+		value := listp.Next()
+		panicIfErr(cb(hp.cmd, hp.key, field, value))
 	}
 }
 
@@ -603,6 +602,7 @@ func Float64ToByte(float float64) string {
 // redis5.0 : RDBTypeStreamListPacks
 // redis7.0 : RDBTypeStreamListPacks2
 // redis7.2 : RdbTypeStreamListPacks3
+// redis8.x : RdbTypeStreamListPacks4
 type StreamParser struct {
 	BaseParser
 }
@@ -612,7 +612,7 @@ func (sp *StreamParser) ReadBuffer(lr *Loader) {
 	r := NewRdbReader(io.TeeReader(lr, &sp.buf))
 
 	switch sp.rtype {
-	case RDBTypeStreamListPacks, RDBTypeStreamListPacks2, RdbTypeStreamListPacks3:
+	case RDBTypeStreamListPacks, RDBTypeStreamListPacks2, RdbTypeStreamListPacks3, RdbTypeStreamListPacks4:
 		// list pack length
 		listpackLength := r.ReadLength64P()
 		for i := 0; i < int(listpackLength); i++ {
@@ -694,10 +694,35 @@ func (sp *StreamParser) ReadBuffer(lr *Loader) {
 				}
 			}
 		}
+		if sp.rtype >= RdbTypeStreamListPacks4 {
+			sp.readStreamIDMP(r)
+		}
 	default:
 		panicIfErr(fmt.Errorf("unknown stream type : %x", sp.rtype))
 	}
 	sp.readBufferEnd(lr)
+}
+
+func (sp *StreamParser) readStreamIDMP(r *RdbReader) {
+	// Redis 8 stream listpacks v4 appends IDMP (Idempotent Message Producer)
+	// state after consumer groups. The state has no equivalent replay command,
+	// but it must be consumed so the next RDB object stays aligned.
+	r.ReadLength64P() // idmp_duration
+	r.ReadLength64P() // idmp_max_entries
+
+	numProducers := r.ReadLength64P()
+	for i := uint64(0); i < numProducers; i++ {
+		r.ReadStringP() // producer id
+		numEntries := r.ReadLength64P()
+		for j := uint64(0); j < numEntries; j++ {
+			r.ReadStringP()   // iid
+			r.ReadLength64P() // stream id ms
+			r.ReadLength64P() // stream id seq
+		}
+	}
+
+	r.ReadLength64P() // iids_added
+	r.ReadLength64P() // iids_duplicates
 }
 
 func (sp *StreamParser) streamCompareID(aMs, aSeq, bMs, bSeq uint64) int {

@@ -110,3 +110,104 @@ func TestSelNodes(t *testing.T) {
 	})
 
 }
+
+func TestReplayConfigFixSetsBisyncDefaultDisabled(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	if assert.NotNil(t, cfg.BisyncEnabled) {
+		assert.False(t, *cfg.BisyncEnabled)
+	}
+}
+
+func TestReplayConfigFixPreservesBisyncSetting(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		BisyncEnabled:          boolPtr(true),
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	if assert.NotNil(t, cfg.BisyncEnabled) {
+		assert.True(t, *cfg.BisyncEnabled)
+	}
+}
+
+func TestReplayConfigFixNormalizesReplayMode(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		mode              ReplayMode
+		legacyAofPipeline bool
+		want              ReplayMode
+	}{
+		{name: "default sync", want: ReplayModeSync},
+		{name: "legacy aof pipeline", legacyAofPipeline: true, want: ReplayModePipeline},
+		{name: "explicit pipeline", mode: ReplayModePipeline, want: ReplayModePipeline},
+		{name: "explicit parallel", mode: ReplayModeParallel, want: ReplayModeParallel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bisyncEnabled := tc.mode == ReplayModeParallel
+			cfg := ReplayConfig{
+				ResumeFromBreakPoint:   boolPtr(true),
+				ReplayRdbEnableRestore: boolPtr(true),
+				ReplayTransaction:      boolPtr(true),
+				BisyncEnabled:          &bisyncEnabled,
+				Mode:                   tc.mode,
+				LegacyAofPipelineMode:  tc.legacyAofPipeline,
+			}
+
+			err := cfg.fix()
+			assert.Nil(t, err)
+			assert.Equal(t, tc.want, cfg.Mode)
+		})
+	}
+}
+
+func TestReplayConfigFixRejectsInvalidReplayMode(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		Mode:                   "legacy",
+	}
+
+	err := cfg.fix()
+	assert.NotNil(t, err)
+}
+
+func TestReplayConfigFixRejectsParallelWithoutBisync(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		BisyncEnabled:          boolPtr(false),
+		Mode:                   ReplayModeParallel,
+	}
+
+	err := cfg.fix()
+	assert.NotNil(t, err)
+}
+
+func TestReplayConfigFixRejectsConflictingReplayMode(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		Mode:                   ReplayModeSync,
+		LegacyAofPipelineMode:  true,
+	}
+
+	err := cfg.fix()
+	assert.NotNil(t, err)
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}

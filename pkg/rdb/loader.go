@@ -142,6 +142,11 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 		case RdbFlagSelectDB:
 			dbnum := l.ReadLengthP()
 			l.db = dbnum
+		case RdbFlagSlotInfo:
+			slotID := l.ReadLength64P()
+			slotSize := l.ReadLength64P()
+			expireSlotSize := l.ReadLength64P()
+			l.logger.Debugf("RdbFlagSlotInfo : slot(%d), size(%d), expireSize(%d)", slotID, slotSize, expireSlotSize)
 		case RdbFlagEOF:
 			return nil, nil // means EOF
 		case RdbFlagModuleAux:

@@ -1,3 +1,5 @@
+//go:build integration
+
 // Copyright 2015 Joel Wu
 //
 // Licensed under the Apache License, Version 2.0 (the "License"): you may
@@ -126,7 +128,7 @@ func TestRedisPipeline(t *testing.T) {
 func newRedisNodeCluster(t *testing.T) *Cluster {
 	cc, ee := NewCluster(
 		&Options{
-			StartNodes:  []string{testRedisCluster},
+			StartNodes:  []string{testRedisClusterAddr()},
 			ConnTimeout: 5 * time.Second,
 			KeepAlive:   32,
 			AliveTime:   10 * time.Second,
@@ -137,7 +139,7 @@ func newRedisNodeCluster(t *testing.T) *Cluster {
 
 func newRedisNodeStandalone() *redisNode {
 	return &redisNode{
-		address:      testRedis,
+		address:      testRedisAddr(),
 		keepAlive:    3,
 		aliveTime:    60 * time.Second,
 		connTimeout:  5 * time.Second,

@@ -27,6 +27,7 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/keyspec"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
@@ -84,6 +85,8 @@ type Cluster struct {
 	logger          log.Logger
 
 	safeRand *util.SafeRand
+
+	commandGetKeysFn func(string, ...interface{}) ([]string, error)
 }
 
 type updateMesg struct {
@@ -264,9 +267,21 @@ func (cluster *Cluster) handleReply(node *redisNode, reply interface{}, cmd stri
 
 func (cluster *Cluster) NewBatcher(pipeline bool) common.CmdBatcher {
 	if pipeline {
+		// pipeline batcher 依赖节点级 ordered pipeline 管理器。
+		// 绝大多数情况下它会在 NewCluster 时初始化；这里保留兜底，
+		// 兼容测试里直接手工构造 Cluster 的场景。
+		if cluster.pipeline == nil {
+			cluster.pipeline = &batchPipeline{cluster: cluster}
+		}
 		return cluster.pipeline.NewBatcher()
 	}
 	return cluster.NewBatch()
+}
+
+func (cluster *Cluster) NewTxnBatcher() common.CmdBatcher {
+	return &txnBatcher{
+		cluster: cluster,
+	}
 }
 
 // Close cluster connection, any subsequent method call will fail.
@@ -286,37 +301,55 @@ func (cluster *Cluster) Close() {
 }
 
 func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*redisNode, error) {
+	node, _, err := cluster.chooseNodeWithCmdAndKeys(cmd, false, args...)
+	return node, err
+}
+
+func (cluster *Cluster) ChooseNodeWithCmdStrict(cmd string, args ...interface{}) (*redisNode, error) {
+	node, _, err := cluster.chooseNodeWithCmdAndKeys(cmd, true, args...)
+	return node, err
+}
+
+func (cluster *Cluster) chooseNodeWithCmdAndKeys(cmd string, strict bool, args ...interface{}) (*redisNode, []string, error) {
 	var node *redisNode
+	var keys []string
 	var err error
 
 	switch strings.ToUpper(cmd) {
 	case "PING", "CLUSTER":
 		if node, err = cluster.getRandomNode(); err != nil {
-			return nil, fmt.Errorf("PING: %w", err)
+			return nil, nil, err
 		}
 	case "SELECT":
 		// no need to put "select 0" in cluster
-		return nil, nil
+		return nil, nil, nil
 	case "MGET":
-		return nil, fmt.Errorf("%s not supported", cmd)
+		return nil, nil, fmt.Errorf("%s not supported", cmd)
 	case "MSET":
 		fallthrough
 	case "MSETNX":
 		if len(args) == 0 {
-			return nil, fmt.Errorf("args is empty")
+			return nil, nil, fmt.Errorf("args is empty")
 		}
 
 		// check all keys hash to the same slot
+		keys = make([]string, 0, (len(args)+1)/2)
 		for i := 0; i < len(args); i += 2 {
-			curNode, err := cluster.getNodeByKey(args[i])
+			keyStr, err := key(args[i])
 			if err != nil {
-				return nil, fmt.Errorf("get node of parameter[%v] failed[%w]", args[i], err)
+				return nil, nil, fmt.Errorf("get key of parameter[%v] failed[%w]", args[i], err)
+			}
+			keys = append(keys, keyStr)
+
+			curNode, err := cluster.getNodeByKey(keyStr)
+			if err != nil {
+				return nil, nil, fmt.Errorf("get node of parameter[%v] failed[%w]", args[i], err)
 			}
 
 			if i == 0 {
 				node = curNode
 			} else if node != curNode {
-				return nil, fmt.Errorf("all keys in the mset/msetnx script should be hashed into the same node, "+
+				return nil, nil, fmt.Errorf("all keys in the mset/msetnx script should be hashed into the same node, "+
 					"current key[%v] node[%v] != previous_node[%v]", args[i], curNode.address, node.address)
 			}
 		}
@@ -325,62 +358,116 @@ func (cluster *Cluster) ChooseNodeWithCmd(cmd string, args ...interface{}) (*red
 	case "EXEC":
 		cluster.transactionEnable = false
 		cluster.transactionNode = nil
-	case "EVAL":
-		fallthrough
-	case "EVALSHA":
-		// check key
-		if len(args) < 1 {
-			return nil, fmt.Errorf("illgal eval parameter: [%v]", args)
-		}
-		nr, err := strconv.Atoi(string(args[1].([]byte)))
-		if err != nil {
-			return nil, fmt.Errorf("parse count[%v] failed[%w]", string(args[1].([]byte)), err)
-		}
-		if nr <= 0 {
-			return nil, fmt.Errorf("lua key number[%v] shouldn't <= 0", nr)
-		}
-
-		var slot uint16
-		for i := 0; i < nr; i++ {
-			curSlot, err := GetSlot(args[2+i])
-			if err != nil {
-				return nil, fmt.Errorf("get slot of parameter[%v] failed[%w]", args[2+i], err)
-			}
-
-			if i == 0 {
-				slot = curSlot
-			} else if slot != curSlot {
-				return nil, fmt.Errorf("all keys in the lua script should be hashed into the same slot")
-			}
-		}
-
-		node, err = cluster.getNodeByKey(args[2])
-		if err != nil {
-			return nil, fmt.Errorf("get node by key failed: %w", err)
-		}
-
 	default:
 		if len(args) < 1 {
-			return nil, fmt.Errorf("Put: no key found in args")
+			return nil, nil, fmt.Errorf("Put: no key found in args")
 		}
 
-		node, err = cluster.getNodeByKey(args[0])
+		var resolvedKey string
+		var resolved bool
+		node, resolvedKey, keys, resolved, err = cluster.chooseNodeByCommandSpec(cmd, args...)
 		if err != nil {
-			return nil, fmt.Errorf("Put: %w", err)
+			return nil, nil, err
+		}
+		if !resolved {
+			if strict {
+				return nil, nil, fmt.Errorf("Put: command[%s] key spec is unresolved", cmd)
+			}
+			node, err = cluster.getNodeByKey(args[0])
+			if err != nil {
+				return nil, nil, fmt.Errorf("Put: %w", err)
+			}
+			keyStr, _ := key(args[0])
+			resolvedKey = keyStr
 		}
 
 		if cluster.transactionEnable {
 			if cluster.transactionNode == nil {
 				cluster.transactionNode = node
 			} else if cluster.transactionNode != node {
-				ckey, _ := key(args[0])
-				return nil, errors.Join(common.ErrCrossSlots, fmt.Errorf("transaction command[%s] key[%s] not hashed in the same node: current[%s], previous[%s]",
-					cmd, ckey, node.address, cluster.transactionNode.address))
+				return nil, nil, errors.Join(common.ErrCrossSlots, fmt.Errorf("transaction command[%s] key[%s] not hashed in the same node: current[%s], previous[%s]",
+					cmd, resolvedKey, node.address, cluster.transactionNode.address))
 			}
 		}
 	}
 
-	return node, err
+	return node, keys, err
+}
+
+func (cluster *Cluster) chooseNodeByCommandSpec(cmd string, args ...interface{}) (*redisNode, string, []string, bool, error) {
+	keys, ok, err := cluster.resolveCommandKeys(cmd, args...)
+	if err != nil {
+		return nil, "", nil, false, err
+	}
+	if !ok || len(keys) == 0 {
+		return nil, "", nil, false, nil
+	}
+
+	node, err := cluster.getNodeByKey(keys[0])
+	if err != nil {
+		return nil, "", nil, false, fmt.Errorf("get node by key failed: %w", err)
+	}
+	for _, key := range keys[1:] {
+		curNode, err := cluster.getNodeByKey(key)
+		if err != nil {
+			return nil, "", nil, false, fmt.Errorf("get node by key failed: %w", err)
+		}
+		if curNode != node {
+			return nil, "", nil, false, errors.Join(common.ErrCrossSlots, fmt.Errorf("all keys in command[%s] should be hashed into the same node: key[%s] current[%s] previous[%s]",
+				cmd, key, curNode.address, node.address))
+		}
+	}
+	return node, keys[0], keys, true, nil
+}
+
+func (cluster *Cluster) resolveCommandKeys(cmd string, args ...interface{}) ([]string, bool, error) {
+	byteArgs, err := interfaceArgsToBytes(args)
+	if err != nil {
+		return nil, false, err
+	}
+	if keys, ok := keyspec.CommandKeys(cmd, byteArgs); ok {
+		return keys, true, nil
+	}
+
+	getKeys := cluster.commandGetKeys
+	if cluster.commandGetKeysFn != nil {
+		getKeys = cluster.commandGetKeysFn
+	}
+	keys, err := getKeys(cmd, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(keys) == 0 {
+		return nil, false, nil
+	}
+	return keys, true, nil
+}
+
+func (cluster *Cluster) commandGetKeys(cmd string, args ...interface{}) ([]string, error) {
+	node, err := cluster.getRandomNode()
+	if err != nil {
+		return nil, err
+	}
+	queryArgs := make([]interface{}, 0, len(args)+2)
+	queryArgs = append(queryArgs, "getkeys", cmd)
+	queryArgs = append(queryArgs, args...)
+	reply, err := cluster.do(node, "command", queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	return common.Strings(reply, nil)
+}
+
+func interfaceArgsToBytes(args []interface{}) ([][]byte, error) {
+	ret := make([][]byte, 0, len(args))
+	for _, arg := range args {
+		s, err := key(arg)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, []byte(s))
+	}
+	return ret, nil
 }
 
 func (cluster *Cluster) handleMove(node *redisNode, replyMsg, cmd string, args []interface{}) (interface{}, error) {
@@ -392,12 +479,12 @@ func (cluster *Cluster) handleMove(node *redisNode, replyMsg, cmd string, args [
 	// cluster has changed, inform update routine
 	cluster.inform(node)
 
-	newNode, err := cluster.getNodeByAddr(fields[2])
+	newNode, err := cluster.resolveRedirectionNode(node, fields[2], true)
 	if err != nil {
 		return nil, fmt.Errorf("handleMove: %w", err)
 	}
 
-	return newNode.do(cmd, args...)
+	return cluster.do(newNode, cmd, args...)
 }
 
 func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []interface{}) (interface{}, error) {
@@ -406,7 +493,7 @@ func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []
 		return nil, fmt.Errorf("handleAsk: invalid response \"%s\"", replyMsg)
 	}
 
-	newNode, err := cluster.getNodeByAddr(fields[2])
+	newNode, err := cluster.resolveRedirectionNode(node, fields[2], false)
 	if err != nil {
 		return nil, fmt.Errorf("handleAsk: %w", err)
 	}
@@ -439,7 +526,7 @@ func (cluster *Cluster) handleAsk(node *redisNode, replyMsg, cmd string, args []
 
 	newNode.releaseConn(conn)
 
-	return reply, nil
+	return cluster.handleReply(newNode, reply, cmd, args...)
 }
 
 // choose another node to connect and judge whether node crashed
@@ -655,6 +742,64 @@ func (cluster *Cluster) inform(node *redisNode) {
 	}
 }
 
+func (cluster *Cluster) newRedirectNode(addr string) *redisNode {
+	return &redisNode{
+		address:      addr,
+		connTimeout:  cluster.connTimeout,
+		readTimeout:  cluster.readTimeout,
+		writeTimeout: cluster.writeTimeout,
+		keepAlive:    cluster.keepAlive,
+		aliveTime:    cluster.aliveTime,
+		password:     cluster.password,
+	}
+}
+
+// resolveRedirectionNode returns the node that should receive a redirected
+// command or transaction retry. When refresh is enabled, it first tries to
+// learn the redirected address from a refreshed cluster topology before
+// falling back to a transient node created from the redirection target.
+func (cluster *Cluster) resolveRedirectionNode(source *redisNode, addr string, refresh bool) (*redisNode, error) {
+	if node, err := cluster.getNodeByAddr(addr); err == nil {
+		// Most redirects point to a node that is already known locally, so reuse
+		// the existing node and its pooled connections when possible.
+		return node, nil
+	}
+
+	candidates := make([]*redisNode, 0, 2)
+	if source != nil {
+		// The node that produced the redirect is usually the best starting point
+		// for a topology refresh because it already participated in the request.
+		candidates = append(candidates, source)
+	}
+	// Also try refreshing from the redirected address itself. This covers cases
+	// where the source view is stale but the target can already describe the new
+	// slot ownership.
+	candidates = append(candidates, cluster.newRedirectNode(addr))
+
+	if refresh {
+		var refreshErr error
+		for _, candidate := range candidates {
+			if err := cluster.update(candidate); err != nil {
+				refreshErr = err
+				continue
+			}
+			if node, err := cluster.getNodeByAddr(addr); err == nil {
+				return node, nil
+			}
+		}
+		if refreshErr != nil {
+			// Refresh failures are not fatal for redirection handling. Redis already
+			// told us where to retry, so log the stale-topology issue and fall back
+			// to a one-off node for the redirected attempt.
+			cluster.logger.Warnf("resolve redirection node refresh failed: source(%v), target(%s), err(%v)", source, addr, refreshErr)
+		}
+	}
+
+	// ASK redirections are temporary and MOVED refresh can still miss the target
+	// node, so always keep a direct-address fallback to preserve forward progress.
+	return cluster.newRedirectNode(addr), nil
+}
+
 func (cluster *Cluster) getNodeByAddr(addr string) (*redisNode, error) {
 	cluster.rwLock.RLock()
 	defer cluster.rwLock.RUnlock()
@@ -733,10 +878,26 @@ func GetSlot(arg interface{}) (uint16, error) {
 
 func key(arg interface{}) (string, error) {
 	switch arg := arg.(type) {
+	case int8:
+		return strconv.FormatInt(int64(arg), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(arg), 10), nil
 	case int:
-		return strconv.Itoa(arg), nil
+		return strconv.FormatInt(int64(arg), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(arg), 10), nil
 	case int64:
-		return strconv.Itoa(int(arg)), nil
+		return strconv.FormatInt(arg, 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(arg), 10), nil
+	case uint64:
+		return strconv.FormatUint(arg, 10), nil
 	case float64:
 		return strconv.FormatFloat(arg, 'g', -1, 64), nil
 	case string:

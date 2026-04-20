@@ -1,63 +1,89 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
 name: goci
 
 on:
   pull_request:
-    branches: [ "master" ]
-    
+    branches: ["master"]
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+concurrency:
+  group: goci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    services:
-      etcd:
-        image: bitnami/etcd:latest
-        ports:
-          - 2379:2379 
-        env:
-          ALLOW_NONE_AUTHENTICATION: yes
-      redis:
-        image: redis
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-    - name: Module cache
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go    
+      - name: Build
+        run: go build -v ./...
 
-    - name: Build 
-      run: go build -v ./...
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Test redis cluster
-      uses: vishnudxb/redis-cluster@1.0.9
-      with:
-        master1-port: 16300
-        master2-port: 5001
-        master3-port: 5002
-        slave1-port: 5003
-        slave2-port: 5004
-        slave3-port: 5005
-        sleep-duration: 5
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-    - name: Test 
-      run: |
-        go test -v ./...
+      - name: Unit tests
+        run: go test -v ./...
+
+  integration-redis:
+    runs-on: ubuntu-latest
+    env:
+      TEST_REDIS_ADDR: 127.0.0.1:6379
+      TEST_REDIS_CLUSTER_ADDR: 127.0.0.1:16300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+
+      - name: Start redis standalone and cluster
+        run: |
+          set -euo pipefail
+          source tests/nonbisync/lib/test_env.sh
+
+          tmp_root="$(mktemp -d)"
+          echo "TEST_REDIS_TMP_ROOT=${tmp_root}" >> "${GITHUB_ENV}"
+
+          shutdown_ports 6379 16300 5001 5002 5003 5004 5005
+          start_standalone "$(command -v redis-server)" "${tmp_root}" standalone 6379
+          start_cluster_with_replicas "$(command -v redis-server)" "${tmp_root}" ci 16300 5001 5002 5003 5004 5005
+
+      - name: Check redis topology
+        run: |
+          redis-cli -p 6379 ping
+          redis-cli -p 16300 cluster info
+          redis-cli -p 16300 cluster nodes
+
+      - name: Integration tests
+        run: go test -tags=integration -v ./cmd ./pkg/cluster ./pkg/redis/client/cluster ./pkg/redis/client/conn
+
+      - name: Stop redis
+        if: always()
+        run: |
+          set -euo pipefail
+          source tests/nonbisync/lib/test_env.sh
+          shutdown_ports 6379 16300 5001 5002 5003 5004 5005
+          rm -rf "${TEST_REDIS_TMP_ROOT:-}"

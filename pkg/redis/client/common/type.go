@@ -290,15 +290,26 @@ func StringMap(result interface{}, err error) (map[string]string, error) {
 
 	m := make(map[string]string, len(values)/2)
 	for i := 0; i < len(values); i += 2 {
-		key, okKey := values[i].([]byte)
-		value, okValue := values[i+1].([]byte)
+		key, okKey := stringLike(values[i])
+		value, okValue := stringLike(values[i+1])
 		if !okKey || !okValue {
 			return nil, errors.New("expect bulk string for StringMap")
 		}
-		m[string(key)] = string(value)
+		m[key] = value
 	}
 
 	return m, nil
+}
+
+func stringLike(v interface{}) (string, bool) {
+	switch s := v.(type) {
+	case string:
+		return s, true
+	case []byte:
+		return string(s), true
+	default:
+		return "", false
+	}
 }
 
 // Scan copies from src to the values pointed at by dest.

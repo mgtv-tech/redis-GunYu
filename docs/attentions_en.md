@@ -10,7 +10,9 @@
 
 ## Redis Version
 
-redis-GunYu supports Redis versions from 4.0 to 7.2.
+redis-GunYu supports Redis versions from 4.0 to 8.x.
+
+Redis 8 compatibility now includes RDB version 13 and the Redis 8 cluster `SLOT_INFO` metadata opcode.
 
 ### Source and Target 
 
@@ -58,4 +60,3 @@ During the migration of SLOT of source redis cluster, Redis will send the restor
 
 1. Perform a full synchronization, for example, migrated slot 10 from node A to node B, then perform a full synchronization on node B, refer to the [Forced Full Synchronization API](API_en.md#forced-full-synchronization).
 2. Modify the Redis scaling up, scaling down, and slot migration scripts.
-

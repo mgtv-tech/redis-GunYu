@@ -61,14 +61,17 @@ func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64,
 		return "", -1, nil, err
 	}
 
-	reply, err := sr.cli.ReceiveString()
+	reply, err := sr.receivePSyncReply()
 	if err != nil {
 		return "", -1, nil, err
 	}
 
 	xx := strings.Split(string(reply), " ")
 
-	if len(xx) == 1 && strings.ToLower(xx[0]) == "continue" {
+	if len(xx) >= 1 && strings.ToLower(xx[0]) == "continue" {
+		if len(xx) >= 2 && xx[1] != "" {
+			runid = xx[1]
+		}
 		return runid, offset - 1, nil, nil
 	} else if len(xx) >= 3 && strings.ToLower(xx[0]) == "fullresync" {
 		v, err := strconv.ParseInt(xx[2], 10, 64)
@@ -81,6 +84,21 @@ func (sr *StandaloneRedis) SendPSync(runid string, offset int64) (string, int64,
 	}
 
 	return "", -1, nil, fmt.Errorf("invalid psync response = '%s'", reply)
+}
+
+func (sr *StandaloneRedis) receivePSyncReply() (string, error) {
+	for {
+		reply, err := sr.cli.ReceiveString()
+		if err == nil {
+			return reply, nil
+		}
+		// Diskless/full sync may emit standalone LF heartbeats while the master is
+		// preparing the actual PSYNC response. Consume and continue waiting.
+		if err.Error() == "redis: invalid reply: \"\\n\"" {
+			continue
+		}
+		return "", err
+	}
 }
 
 // pipeline mode means that we don't wait all dump finish and run the next step
@@ -134,6 +152,25 @@ func (sr *StandaloneRedis) SendPSyncListeningPort(port int) error {
 	}
 	if strings.ToUpper(ret) != "OK" {
 		return fmt.Errorf("repl listening-port error : response(%s) is not ok", ret)
+	}
+	return nil
+}
+
+func (sr *StandaloneRedis) SendPSyncCapabilities() error {
+	// We currently persist full sync RDBs with a known byte length. Advertising
+	// EOF streaming would switch Redis into the `$EOF:<marker>` format, which the
+	// existing RDB reader/writer path does not fully support yet.
+	cmd := client.NewCommand("replconf", "capa", "psync2")
+	err := client.Encode(sr.cli.BufioWriter(), cmd, true)
+	if err != nil {
+		return err
+	}
+	ret, err := sr.cli.ReceiveString()
+	if err != nil {
+		return err
+	}
+	if strings.ToUpper(ret) != "OK" {
+		return fmt.Errorf("repl capa error : response(%s) is not ok", ret)
 	}
 	return nil
 }

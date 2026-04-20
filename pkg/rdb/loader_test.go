@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
@@ -13,9 +14,202 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
+
+func TestLoaderHeaderAcceptsRDBVersion13(t *testing.T) {
+	l := NewLoader(bytes.NewReader(buildEmptyRDB(t, 13)))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed for RDB version 13: %v", err)
+	}
+}
+
+func TestLoaderHeaderRejectsFutureRDBVersion(t *testing.T) {
+	l := NewLoader(bytes.NewReader(buildEmptyRDB(t, RdbVersion+1)))
+	err := l.Header()
+	if err == nil {
+		t.Fatalf("Header() unexpectedly accepted RDB version %d", RdbVersion+1)
+	}
+	want := fmt.Sprintf("unsupported version : %d", RdbVersion+1)
+	if err.Error() != want {
+		t.Fatalf("Header() error mismatch: got=%q want=%q", err.Error(), want)
+	}
+}
+
+func TestLoaderParseEmptyRDBVersion13(t *testing.T) {
+	l := NewLoader(bytes.NewReader(buildEmptyRDB(t, 13)))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed for RDB version 13: %v", err)
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() failed for empty RDB version 13: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("Next() returned unexpected entry for empty RDB: %+v", entry)
+	}
+	if err := l.Footer(); err != nil {
+		t.Fatalf("Footer() failed for empty RDB version 13: %v", err)
+	}
+}
+
+func TestLoaderSkipsSlotInfoOpcode(t *testing.T) {
+	l := NewLoader(bytes.NewReader(buildRDBPayload(t, 13, []byte{
+		RdbFlagSlotInfo,
+		encodeRDBLenByte(t, 1),
+		encodeRDBLenByte(t, 2),
+		encodeRDBLenByte(t, 3),
+		byte(RdbFlagEOF),
+	})))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed for RDB with slot info: %v", err)
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() failed for RDB with slot info: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("Next() returned unexpected entry for slot-info-only RDB: %+v", entry)
+	}
+	if err := l.Footer(); err != nil {
+		t.Fatalf("Footer() failed for RDB with slot info: %v", err)
+	}
+}
+
+func buildEmptyRDB(t *testing.T, version int64) []byte {
+	t.Helper()
+
+	return buildRDBPayload(t, version, []byte{byte(RdbFlagEOF)})
+}
+
+func buildRDBPayload(t *testing.T, version int64, body []byte) []byte {
+	t.Helper()
+
+	var payload bytes.Buffer
+	if _, err := payload.WriteString(fmt.Sprintf("REDIS%04d", version)); err != nil {
+		t.Fatalf("write header failed: %v", err)
+	}
+	if _, err := payload.Write(body); err != nil {
+		t.Fatalf("write body failed: %v", err)
+	}
+
+	crc := digest.New()
+	if _, err := crc.Write(payload.Bytes()); err != nil {
+		t.Fatalf("checksum write failed: %v", err)
+	}
+
+	var out bytes.Buffer
+	if _, err := out.Write(payload.Bytes()); err != nil {
+		t.Fatalf("copy payload failed: %v", err)
+	}
+	if err := binary.Write(&out, binary.LittleEndian, crc.Sum64()); err != nil {
+		t.Fatalf("append checksum failed: %v", err)
+	}
+	return out.Bytes()
+}
+
+func encodeRDBLenByte(t *testing.T, n uint8) byte {
+	t.Helper()
+	if n >= 1<<6 {
+		t.Fatalf("test helper only supports 6-bit lengths, got %d", n)
+	}
+	return n
+}
+
+func writeRDBLen(t *testing.T, w *bytes.Buffer, n uint8) {
+	t.Helper()
+	if err := w.WriteByte(encodeRDBLenByte(t, n)); err != nil {
+		t.Fatalf("write length failed: %v", err)
+	}
+}
+
+func writeRDBString(t *testing.T, w *bytes.Buffer, s string) {
+	t.Helper()
+	writeRDBLen(t, w, uint8(len(s)))
+	if _, err := w.WriteString(s); err != nil {
+		t.Fatalf("write string failed: %v", err)
+	}
+}
+
+func TestStreamListpacks4SkipsIDMPMetadata(t *testing.T) {
+	var body bytes.Buffer
+	body.WriteByte(byte(RdbFlagSelectDB))
+	writeRDBLen(t, &body, 0)
+
+	body.WriteByte(byte(RdbTypeStreamListPacks4))
+	writeRDBString(t, &body, "mq")
+	writeRDBLen(t, &body, 0) // listpacks
+	writeRDBLen(t, &body, 0) // stream length
+	writeRDBLen(t, &body, 0) // last id ms
+	writeRDBLen(t, &body, 0) // last id seq
+	writeRDBLen(t, &body, 0) // first id ms
+	writeRDBLen(t, &body, 0) // first id seq
+	writeRDBLen(t, &body, 0) // max deleted id ms
+	writeRDBLen(t, &body, 0) // max deleted id seq
+	writeRDBLen(t, &body, 0) // entries added
+	writeRDBLen(t, &body, 0) // consumer groups
+	writeRDBLen(t, &body, 5) // IDMP duration
+	writeRDBLen(t, &body, 3) // IDMP max entries
+	writeRDBLen(t, &body, 1) // IDMP producers
+	writeRDBString(t, &body, "pid")
+	writeRDBLen(t, &body, 1) // entries for producer
+	writeRDBString(t, &body, "iid")
+	writeRDBLen(t, &body, 1) // stream id ms
+	writeRDBLen(t, &body, 2) // stream id seq
+	writeRDBLen(t, &body, 1) // iids added
+	writeRDBLen(t, &body, 0) // duplicate iids
+
+	body.WriteByte(byte(RdbTypeString))
+	writeRDBString(t, &body, "after")
+	writeRDBString(t, &body, "ok")
+	body.WriteByte(byte(RdbFlagEOF))
+
+	l := NewLoader(bytes.NewReader(buildRDBPayload(t, 13, body.Bytes())), WithTargetRedisVersion("7"))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	streamEntry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() stream failed: %v", err)
+	}
+	if streamEntry == nil {
+		t.Fatalf("expected stream entry")
+	}
+	if got := streamEntry.ObjectParser.RdbType(); got != RdbTypeStreamListPacks4 {
+		t.Fatalf("stream rdb type mismatch: got=%d want=%d", got, RdbTypeStreamListPacks4)
+	}
+	var commands []string
+	streamEntry.ObjectParser.ExecCmd(func(cmd string, args ...interface{}) error {
+		commands = append(commands, cmd)
+		return nil
+	})
+	if len(commands) != 2 || commands[0] != "XADD" || commands[1] != "XSETID" {
+		t.Fatalf("unexpected stream replay commands: %v", commands)
+	}
+
+	stringEntry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() string failed after IDMP stream: %v", err)
+	}
+	if stringEntry == nil {
+		t.Fatalf("expected string entry after stream")
+	}
+	if string(stringEntry.Key) != "after" || string(stringEntry.Value()) != "ok" {
+		t.Fatalf("string entry mismatch after stream: key=%q value=%q", stringEntry.Key, stringEntry.Value())
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() EOF failed: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("unexpected extra entry: %+v", entry)
+	}
+	if err := l.Footer(); err != nil {
+		t.Fatalf("Footer() failed: %v", err)
+	}
+}
 
 func TestStringSuite(t *testing.T) {
 	suite.Run(t, new(stringTestSuite))
@@ -136,10 +330,10 @@ func (bs *baseSuite) SetupSuite() {
 		port int
 		dir  string
 	}{
-		// "4.0": {"127.0.0.1", 6400, "/home/ken/redis/redis4"},
-		// "5.0": {"127.0.0.1", 6500, "/home/ken/redis/redis5"},
-		// "7.2": {"127.0.0.1", 6700, "/home/ken/redis/data4/r1"},
-		// "7.0": {"127.0.0.1", 6701, "/home/ken/redis/data4/r2"},
+		// "4.0": {"127.0.0.1", 6400, "/path/to/redis4"},
+		// "5.0": {"127.0.0.1", 6500, "/path/to/redis5"},
+		// "7.2": {"127.0.0.1", 6700, "/path/to/redis-data/r1"},
+		// "7.0": {"127.0.0.1", 6701, "/path/to/redis-data/r2"},
 	}
 
 	for k, v := range bs.redisCfg {

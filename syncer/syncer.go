@@ -17,6 +17,7 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	rediscommon "github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
@@ -436,6 +437,7 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 	outputCfg := RedisOutputConfig{
 		InputName:                  s.cfg.Input.Address(),
 		RunId:                      id1,
+		BisyncEnabled:              *cfg.Replay.BisyncEnabled,
 		CanTransaction:             s.cfg.CanTransaction,
 		Redis:                      s.cfg.Output,
 		EnableResumeFromBreakPoint: *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint,
@@ -451,37 +453,423 @@ func (s *syncer) newOutput() (*RedisOutput, error) {
 		BatchBufferSize:            cfg.Replay.BatchBufferSize,
 		KeepaliveTicker:            cfg.Replay.KeepaliveTicker,
 		ReplayRdbParallel:          cfg.Replay.ReplayRdbParallel,
+		Parallelism:                cfg.Replay.Parallelism,
 		ReplayRdbEnableRestore:     *cfg.Replay.ReplayRdbEnableRestore,
+		ReplayMode:                 cfg.Replay.Mode,
 		UpdateCheckpointTicker:     cfg.Replay.UpdateCheckpointTicker,
-		ReplayPipeline:             cfg.Replay.AofPipelineMode,
+		ReplayPipeline:             cfg.Replay.Mode == config.ReplayModePipeline,
 		Stats:                      cfg.Replay.Stats,
 		Filter:                     config.GetSyncerConfig().Output.Filter,
 		SyncDelayTestKey:           config.GetSyncerConfig().Input.SyncDelayTestKey,
 	}
 
-	if *config.GetSyncerConfig().Output.Replay.ResumeFromBreakPoint {
+	needsBisyncNamespace := outputCfg.BisyncEnabled
+	if needsBisyncNamespace || outputCfg.EnableResumeFromBreakPoint {
 		var localCheckpoint string
-		if s.cfg.CanTransaction && s.cfg.Output.IsCluster() {
+		if needsBisyncNamespace {
+			localCheckpoint, err = s.resolveBisyncCheckpointName(wait, []string{id1, id2}, outputCfg.ReplayMode)
+		} else if s.cfg.CanTransaction && s.cfg.Output.IsCluster() {
 			localCheckpoint = choseKeyInSlots(config.CheckpointKey, s.cfg.Output.GetAllSlots())
 		} else {
 			localCheckpoint = config.CheckpointKey
+		}
+		if err != nil {
+			return nil, errors.Join(ErrRestart, err)
 		}
 		if len(localCheckpoint) == 0 {
 			err = fmt.Errorf("checkpoint name is empty : prefix(%s), redis(%s)", config.CheckpointKey, s.cfg.Output.Address())
 			s.logger.Errorf("%s", err.Error())
 			return nil, errors.Join(ErrQuit, err)
 		}
-		// update checkpoint name and run id,
 		err = s.updateCheckpoint(wait, localCheckpoint, []string{id1, id2})
 		if err != nil {
 			return nil, errors.Join(ErrRestart, err)
 		}
 		outputCfg.CheckpointName = localCheckpoint
-		s.logger.Debugf("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
+		if needsBisyncNamespace {
+			s.logger.Debugf("bisync checkpoint namespace : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
+		} else {
+			s.logger.Debugf("resume from checkpoint : runid(%s), cpName(%s), redis(%v)", id1, localCheckpoint, s.cfg.Input.Addresses)
+		}
 	}
 
 	output := NewRedisOutput(outputCfg)
 	return output, nil
+}
+
+func (s *syncer) resolveBisyncCheckpointName(wait usync.WaitCloser, ids []string, replayMode config.ReplayMode) (string, error) {
+	var checkpointName string
+	desiredMode := checkpoint.BisyncModeFromReplayMode(replayMode)
+	recoverySlots := bisyncRecoverySlotsForConfig(s.cfg.Output)
+	err := util.RetryLinearJitter(wait.Context(), func() error {
+		cli, err := client.NewRedis(s.cfg.Output)
+		if err != nil {
+			return err
+		}
+		defer cli.Close()
+
+		checkpointName, err = s.resolveBisyncCheckpointNameWithClient(cli, ids, desiredMode, recoverySlots)
+		if err != nil {
+			s.logger.Errorf("resolve bisync checkpoint name : redis(%s), ids(%v), mode(%s), error(%v)", s.cfg.Output.Address(), ids, desiredMode, err)
+		}
+		return err
+	}, 5, time.Second*1, 0.3)
+	return checkpointName, err
+}
+
+func (s *syncer) resolveBisyncCheckpointNameWithClient(cli client.Redis, ids []string, desiredMode checkpoint.BisyncMode, recoverySlots []uint16) (string, error) {
+	// Resolve the namespace currently referenced by the checkpoint hash.
+	cpName, cpRunID, err := checkpoint.GetCheckpointHash(cli, ids)
+	if err != nil {
+		return "", err
+	}
+	if cpName == "" {
+		// No checkpoint namespace exists yet, so create one and pin it to the desired mode.
+		cpName, err = checkpoint.ResolveOrCreateBisyncCheckpointName(cli, ids)
+		if err != nil {
+			return "", err
+		}
+		if err := checkpoint.SaveBisyncNamespaceMode(cli, cpName, desiredMode); err != nil {
+			return "", err
+		}
+		return cpName, nil
+	}
+
+	currentMode, ok, err := checkpoint.LoadBisyncNamespaceMode(cli, cpName)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		// Older namespaces may not have explicit mode metadata; infer it from stored bisync state.
+		currentMode, ok, err = s.inferBisyncNamespaceMode(cli, cpName, ids, recoverySlots)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			// Persist the inferred mode so later runs do not need to repeat inference.
+			if err := checkpoint.SaveBisyncNamespaceMode(cli, cpName, currentMode); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	if !ok {
+		// If inference still cannot determine the mode, treat this namespace as freshly initialized.
+		if err := checkpoint.SaveBisyncNamespaceMode(cli, cpName, desiredMode); err != nil {
+			return "", err
+		}
+		return cpName, nil
+	}
+	if currentMode == desiredMode {
+		// The namespace already matches the requested mode, so it can be reused directly.
+		return cpName, nil
+	}
+	if (currentMode.UsesLatest() && desiredMode.UsesLatest()) ||
+		(currentMode.UsesFrontier() && desiredMode.UsesFrontier()) {
+		// Modes inside the same recovery family share the same authoritative
+		// metadata format. The
+		// execution behavior can switch in place without moving namespaces.
+		if err := checkpoint.SaveBisyncNamespaceMode(cli, cpName, desiredMode); err != nil {
+			return "", err
+		}
+		return cpName, nil
+	}
+
+	// The namespace was created for a different mode. Seed a new namespace from the old recovery state,
+	// repoint the checkpoint hash, and retire the stale run-id mapping on a best-effort basis.
+	seed, err := s.loadBisyncMigrationSeed(cli, cpName, ids, currentMode, recoverySlots)
+	if err != nil {
+		return "", err
+	}
+	if seed != nil {
+		// Once the checkpoint hash is repointed, the new namespace must be readable
+		// through the current source run IDs instead of the historical one that
+		// produced the old authoritative state.
+		seed.RunID = preferredBisyncMigrationRunID(ids, seed.RunID)
+	}
+	newCheckpointName, err := checkpoint.NewBisyncCheckpointName()
+	if err != nil {
+		return "", err
+	}
+	if err := s.seedBisyncNamespace(cli, newCheckpointName, desiredMode, seed); err != nil {
+		return "", err
+	}
+	if err := checkpoint.SetCheckpointHash(cli, ids[0], newCheckpointName); err != nil {
+		return "", err
+	}
+	if cpRunID != "" && cpRunID != ids[0] {
+		if err := checkpoint.DelCheckpointHash(cli, cpRunID); err != nil {
+			s.logger.Warnf("delete old bisync checkpoint hash failed: runid(%s), cpName(%s), err(%v)", cpRunID, cpName, err)
+		}
+	}
+	if err := s.cleanupBisyncNamespace(cli, cpName, currentMode, recoverySlots); err != nil {
+		s.logger.Warnf("cleanup old bisync checkpoint namespace failed: cpName(%s), mode(%s), err(%v)", cpName, currentMode, err)
+	}
+	s.logger.Infof("bisync checkpoint namespace migrated: old(%s,%s) -> new(%s,%s)", cpName, currentMode, newCheckpointName, desiredMode)
+	return newCheckpointName, nil
+}
+
+// inferBisyncNamespaceMode backfills mode metadata for legacy bisync namespaces
+// by inspecting whichever recovery structures already exist in Redis.
+func (s *syncer) inferBisyncNamespaceMode(cli client.Redis, checkpointName string, ids []string, recoverySlots []uint16) (checkpoint.BisyncMode, bool, error) {
+	// A non-empty frontier snapshot can only be produced by `parallel` mode.
+	frontier, err := checkpoint.LoadBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(checkpointName), ids)
+	if err != nil {
+		return "", false, err
+	}
+	if frontier != nil && frontier.UnitSeq > 0 {
+		return checkpoint.BisyncModeParallel, true, nil
+	}
+
+	// Sync persists its authoritative recovery point as per-slot latest records.
+	best, _, err := checkpoint.LoadBisyncLatestStartRecord(cli, checkpointName, recoverySlots, ids)
+	if err != nil {
+		return "", false, err
+	}
+	if best != nil {
+		return checkpoint.BisyncModeSync, true, nil
+	}
+	return "", false, nil
+}
+
+// loadBisyncMigrationSeed extracts one authoritative recovery point from an
+// existing namespace so the checkpoint hash can be repointed to a new mode.
+func (s *syncer) loadBisyncMigrationSeed(cli client.Redis, checkpointName string, ids []string, currentMode checkpoint.BisyncMode, recoverySlots []uint16) (*checkpoint.BisyncNamespaceSeed, error) {
+	switch currentMode {
+	case checkpoint.BisyncModeSync:
+		// Sync already stores a recoverable latest record, so migration can
+		// reuse the best checkpoint directly.
+		best, _, err := checkpoint.LoadBisyncLatestStartRecord(cli, checkpointName, recoverySlots, ids)
+		if err != nil {
+			return nil, err
+		}
+		if best != nil {
+			return checkpoint.NewBisyncNamespaceSeedFromRecord(best)
+		}
+	case checkpoint.BisyncModePipeline, checkpoint.BisyncModeParallel:
+		// `pipeline` and `parallel` may need journal replay after the saved frontier snapshot to
+		// reconstruct the highest contiguous recovery point.
+		snapshot, err := checkpoint.LoadBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(checkpointName), ids)
+		if err != nil {
+			return nil, err
+		}
+		minSeq := int64(1)
+		if snapshot != nil && snapshot.UnitSeq > 0 {
+			minSeq = snapshot.UnitSeq + 1
+		}
+		records, err := checkpoint.LoadBisyncCommitRecords(cli, checkpointName, recoverySlots, ids, minSeq)
+		if err != nil {
+			return nil, err
+		}
+		frontier, err := checkpoint.RebuildBisyncFrontier(snapshot, records)
+		if err != nil {
+			return nil, err
+		}
+		if frontier != nil && frontier.UnitSeq > 0 {
+			// Sync recovery only needs one authoritative start point, so migration
+			// does not rebuild the full per-slot latest set ahead of time.
+			return checkpoint.NewBisyncNamespaceSeedFromFrontier(frontier, 0)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported bisync mode %q", currentMode)
+	}
+
+	return nil, fmt.Errorf("no bisync authoritative migration seed found: checkpoint(%s), mode(%s), ids(%v)", checkpointName, currentMode, ids)
+}
+
+// seedBisyncNamespace writes the minimum recovery state required for a fresh
+// namespace in the requested mode before persisting mode metadata.
+func (s *syncer) seedBisyncNamespace(cli client.Redis, checkpointName string, mode checkpoint.BisyncMode, seed *checkpoint.BisyncNamespaceSeed) error {
+	if seed != nil {
+		// The shared checkpoint offset is always written so both mode families retain a
+		// basic resume point even before their mode-specific state is consulted.
+		if err := checkpoint.SetCheckpoint(cli, &checkpoint.CheckpointInfo{
+			Key:     checkpointName,
+			RunId:   seed.RunID,
+			Offset:  seed.Offset,
+			Version: config.Version,
+		}); err != nil {
+			return err
+		}
+		switch mode {
+		case checkpoint.BisyncModePipeline, checkpoint.BisyncModeParallel:
+			// `pipeline` and `parallel` recovery use the namespace-level frontier snapshot as its
+			// authoritative contiguous progress marker.
+			if err := checkpoint.SaveBisyncFrontierSnapshot(cli, checkpoint.BisyncFrontierKey(checkpointName), seed.FrontierSnapshot()); err != nil {
+				return err
+			}
+		case checkpoint.BisyncModeSync:
+			// Sync recovery reads the latest record directly, so seed one record
+			// that matches the checkpoint offset written above.
+			record := seed.LatestRecord(checkpointName)
+			args := []interface{}{record.Key}
+			args = append(args, record.HashArgs()...)
+			if _, err := cli.Do("hset", args...); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported bisync mode %q", mode)
+		}
+	}
+	return checkpoint.SaveBisyncNamespaceMode(cli, checkpointName, mode)
+}
+
+func bisyncRecoverySlotsForConfig(redisCfg config.RedisConfig) []uint16 {
+	if !redisCfg.IsCluster() {
+		return []uint16{0}
+	}
+	slots := make([]uint16, 16384)
+	for slot := range slots {
+		slots[slot] = uint16(slot)
+	}
+	return slots
+}
+
+func preferredBisyncMigrationRunID(ids []string, fallback string) string {
+	for _, id := range ids {
+		if id != "" {
+			return id
+		}
+	}
+	return fallback
+}
+
+// cleanupBisyncNamespace best-effort deletes the old bisync namespace right
+// after a successful mode migration.
+//
+// The namespace is already detached from checkpoint-hash at this point, so the
+// periodic stale-checkpoint GC can no longer discover it by runID. Cleanup must
+// therefore happen while we still know the old checkpointName explicitly.
+func (s *syncer) cleanupBisyncNamespace(cli client.Redis, checkpointName string, mode checkpoint.BisyncMode, recoverySlots []uint16) error {
+	if checkpointName == "" {
+		return nil
+	}
+
+	// Deterministic per-slot keys can be reconstructed directly from
+	// checkpointName + slotTag, so we do not need to scan Redis keyspace.
+	slotKeys := make([]string, 0, len(recoverySlots)*3)
+	indexKeys := make([]string, 0, len(recoverySlots))
+	for _, slot := range recoverySlots {
+		slotTag := checkpoint.BisyncSlotTag(slot)
+		slotKeys = append(slotKeys,
+			checkpoint.BisyncMarkerKey(checkpointName, slotTag),
+			checkpoint.BisyncLatestCheckpointKey(checkpointName, slotTag),
+		)
+		indexKey := checkpoint.BisyncCommitIndexKey(checkpointName, slotTag)
+		slotKeys = append(slotKeys, indexKey)
+		indexKeys = append(indexKeys, indexKey)
+	}
+
+	var errs []error
+	if mode.UsesFrontier() {
+		// `pipeline`/`parallel` mode stores durable journal records behind per-slot indexes.
+		// We must resolve record keys from indexes first, then delete the records,
+		// and finally delete the indexes themselves.
+		commitKeys, err := loadBisyncCommitRecordKeys(cli, indexKeys)
+		if err != nil {
+			errs = append(errs, err)
+		} else if err := deleteBisyncKeysInChunks(cli, commitKeys, 256); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	rootKeys := []string{
+		checkpointName,
+		checkpoint.BisyncFrontierKey(checkpointName),
+	}
+	// Per-slot keys are independent from the root checkpoint/frontier keys, so
+	// delete them in separate chunks and aggregate any best-effort cleanup errors.
+	if err := deleteBisyncKeysInChunks(cli, slotKeys, 256); err != nil {
+		errs = append(errs, err)
+	}
+	if err := deleteBisyncKeysInChunks(cli, rootKeys, 256); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// loadBisyncCommitRecordKeys resolves all pipeline journal record keys from the
+// per-slot commit indexes so cleanup can delete the records without using KEYS.
+func loadBisyncCommitRecordKeys(cli client.Redis, indexKeys []string) ([]string, error) {
+	if len(indexKeys) == 0 {
+		return nil, nil
+	}
+
+	// Index lookups are read-only and independent, so batching them cuts round
+	// trips without changing cleanup semantics.
+	batcher := cli.NewBatcher(false)
+	for _, indexKey := range indexKeys {
+		if err := batcher.Put("zrangebyscore", indexKey, "-inf", "+inf"); err != nil {
+			return nil, err
+		}
+	}
+
+	replies, err := batcher.Exec()
+	if err != nil {
+		return nil, err
+	}
+	if len(replies) != len(indexKeys) {
+		return nil, fmt.Errorf("load bisync cleanup indexes: replies(%d) != keys(%d)", len(replies), len(indexKeys))
+	}
+
+	commitKeys := make([]string, 0)
+	for _, reply := range replies {
+		// Missing index keys are fine: migration may have happened before any
+		// journal was written for a slot, or previous GC may already have removed it.
+		if reply == nil {
+			continue
+		}
+		keys, err := rediscommon.Strings(reply, nil)
+		if err != nil {
+			return nil, err
+		}
+		commitKeys = append(commitKeys, keys...)
+	}
+	return commitKeys, nil
+}
+
+// deleteBisyncKeysInChunks deletes keys in bounded multi-key DEL calls.
+//
+// A single DEL already accepts many keys, so chunking keeps each Redis command
+// reasonably sized while still preserving one round trip per chunk. Using a
+// batcher here would not reduce the number of Redis delete commands; it would
+// only pipeline multiple DEL chunks, which adds little value for this best-
+// effort post-migration cleanup path.
+func deleteBisyncKeysInChunks(cli client.Redis, keys []string, chunkSize int) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+
+	var errs []error
+	args := make([]interface{}, 0, chunkSize)
+	flush := func() {
+		if len(args) == 0 {
+			return
+		}
+		// Each chunk is sent as one DEL command so cleanup stays simple and we can
+		// aggregate partial failures without tracking batched receive ordering.
+		if _, err := cli.Do("del", args...); err != nil {
+			errs = append(errs, err)
+		}
+		args = args[:0]
+	}
+
+	for _, key := range keys {
+		// Ignore empty placeholders so callers can build key slices without
+		// carrying extra filtering logic.
+		if key == "" {
+			continue
+		}
+		args = append(args, key)
+		if len(args) == chunkSize {
+			flush()
+		}
+	}
+	flush()
+	return errors.Join(errs...)
 }
 
 func (s *syncer) updateCheckpoint(wait usync.WaitCloser, localCheckpoint string, ids []string) error {
