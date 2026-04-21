@@ -174,6 +174,7 @@ run_cluster_to_standalone() {
   stop_pid "${SYNCER_PID}"
   SYNCER_PID=""
   write_phase cluster "${source_master}" "${prefix}" 3
+  write_bulk_dataset cluster "${source_master}" "${prefix}" "offline"
   redis_cmd standalone "${dst_port}" set "nonbisync:cat6:c2s:isolated:${name}" "target-only"
 
   SYNCER_PID=$(start_syncer_process "${TMP_ROOT}" "${conf_file}" "${TMP_ROOT}/${name}-c2s.restart.log")
@@ -183,6 +184,7 @@ run_cluster_to_standalone() {
   wait_for_redis_equal "${TMP_ROOT}" "${src_csv}" cluster 0 "127.0.0.1:${dst_port}" standalone 0 "${prefix}:*"
   source_master=$(find_first_master_port "${src_ports[@]}")
   assert_expected_standalone_state "${dst_port}" "${prefix}"
+  assert_min_key_count_standalone "${dst_port}" "${prefix}:*" "$(bulk_dataset_min_keys)"
   expect_absent "$(redis_call cluster "${source_master}" exists "nonbisync:cat6:c2s:isolated:${name}")" "cluster->standalone isolated target key on source"
   assert_no_bisync_metadata_standalone "${dst_port}"
   assert_checkpoint_signals_standalone "${dst_port}"
@@ -240,6 +242,7 @@ run_standalone_to_cluster() {
   stop_pid "${SYNCER_PID}"
   SYNCER_PID=""
   write_phase standalone "${src_port}" "${prefix}" 3
+  write_bulk_dataset standalone "${src_port}" "${prefix}" "offline"
   target_master=$(find_first_master_port "${dst_ports[@]}")
   redis_cmd cluster "${target_master}" set "nonbisync:cat6:s2c:isolated:${name}" "target-only"
 
@@ -250,6 +253,7 @@ run_standalone_to_cluster() {
   wait_for_redis_equal "${TMP_ROOT}" "127.0.0.1:${src_port}" standalone 0 "${dst_csv}" cluster 0 "${prefix}:*"
   target_master=$(find_first_master_port "${dst_ports[@]}")
   assert_expected_cluster_state "${target_master}" "${prefix}"
+  assert_min_key_count_cluster "${prefix}:*" "$(bulk_dataset_min_keys)" "${dst_ports[@]}"
   expect_absent "$(redis_call standalone "${src_port}" exists "nonbisync:cat6:s2c:isolated:${name}")" "standalone->cluster isolated target key on source"
   assert_no_bisync_metadata_cluster "${dst_ports[@]}"
   assert_checkpoint_signals_cluster "${target_master}" "${dst_ports[@]}"

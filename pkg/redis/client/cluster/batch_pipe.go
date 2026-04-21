@@ -220,6 +220,9 @@ func (bat *batch2) Receive() ([]interface{}, error) {
 		replies = append(replies, bat.batches[i].cmds[0].reply)
 		bat.batches[i].cmds = bat.batches[i].cmds[1:]
 	}
+	if err := common.CheckRepliesError(replies); err != nil {
+		return nil, err
+	}
 
 	return replies, nil
 }

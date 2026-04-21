@@ -298,6 +298,35 @@ redis_cmd_db() {
   redis_call_db "${mode}" "${port}" "${db}" "$@" >/dev/null
 }
 
+bulk_dataset_key_count() {
+  echo "${NONBISYNC_BULK_KEY_COUNT:-128}"
+}
+
+bulk_dataset_min_keys() {
+  local count=${1:-$(bulk_dataset_key_count)}
+  echo $((count * 6))
+}
+
+write_bulk_dataset() {
+  local mode=$1
+  local port=$2
+  local prefix=$3
+  local phase=$4
+  local count=${5:-$(bulk_dataset_key_count)}
+  local i suffix base
+
+  for i in $(seq 1 "${count}"); do
+    printf -v suffix "%04d" "${i}"
+    base="${prefix}:bulk:${phase}:${suffix}"
+    redis_cmd "${mode}" "${port}" set "${base}:string" "value-${phase}-${suffix}"
+    redis_cmd "${mode}" "${port}" incrby "${base}:counter" "$(((i % 17) + 1))"
+    redis_cmd "${mode}" "${port}" hset "${base}:hash" idx "${suffix}" phase "${phase}" state active
+    redis_cmd "${mode}" "${port}" rpush "${base}:list" "a-${suffix}" "b-${suffix}" "c-${suffix}"
+    redis_cmd "${mode}" "${port}" sadd "${base}:set" "red-${suffix}" "blue-${suffix}" "green-${suffix}"
+    redis_cmd "${mode}" "${port}" zadd "${base}:zset" "${i}" "member-${suffix}"
+  done
+}
+
 scan_keys() {
   local port=$1
   local pattern=$2
@@ -533,6 +562,30 @@ scan_count_standalone_db() {
   local db=$2
   local pattern=$3
   scan_keys_db "${port}" "${db}" "${pattern}" | wc -l | tr -d ' '
+}
+
+assert_min_key_count_cluster() {
+  local pattern=$1
+  local min_count=$2
+  shift 2
+  local count
+  count=$(scan_count_cluster "${pattern}" "$@")
+  if (( count < min_count )); then
+    echo "expected at least ${min_count} cluster keys for pattern ${pattern}, got ${count}" >&2
+    exit 1
+  fi
+}
+
+assert_min_key_count_standalone() {
+  local port=$1
+  local pattern=$2
+  local min_count=$3
+  local count
+  count=$(scan_count_standalone "${port}" "${pattern}")
+  if (( count < min_count )); then
+    echo "expected at least ${min_count} standalone keys for pattern ${pattern}, got ${count}" >&2
+    exit 1
+  fi
 }
 
 assert_no_bisync_metadata_cluster() {

@@ -110,6 +110,7 @@ run_scenario() {
   SYNCER_PID=""
 
   write_phase "${src_port}" "${prefix}" 2
+  write_bulk_dataset standalone "${src_port}" "${prefix}" "offline"
   redis_cmd standalone "${dst_port}" set "nonbisync:cat3:isolated:${name}" "target-only"
 
   SYNCER_PID=$(start_syncer_process "${TMP_ROOT}" "${conf_file}" "${TMP_ROOT}/${name}.restart.log")
@@ -119,6 +120,7 @@ run_scenario() {
   wait_for_standalone_equal "${src_port}" "${dst_port}" "${prefix}:*"
 
   assert_expected_state "${dst_port}" "${prefix}"
+  assert_min_key_count_standalone "${dst_port}" "${prefix}:*" "$(bulk_dataset_min_keys)"
   expect_absent "$(redis_call standalone "${src_port}" exists "nonbisync:cat3:isolated:${name}")" "isolated target key on source"
   assert_no_bisync_metadata_standalone "${dst_port}"
   assert_checkpoint_signals_standalone "${dst_port}"

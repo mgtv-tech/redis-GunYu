@@ -204,10 +204,13 @@ run_scenario() {
 
   source_master=$(find_first_master_port "${src_ports[@]}")
   write_phase "${source_master}" "${prefix}" 2
+  write_bulk_dataset cluster "${source_master}" "${prefix}" "leader-handover"
   redis_cmd standalone "${dst_port}" set "nonbisync:cat10:isolated:${name}" "target-only"
+  wait_for_redis_equal "${TMP_ROOT}" "${src_csv}" cluster 0 "127.0.0.1:${dst_port}" standalone 0 "${prefix}:*"
   wait_for_expected_state "${dst_port}" "${prefix}"
 
   assert_expected_state "${dst_port}" "${prefix}"
+  assert_min_key_count_standalone "${dst_port}" "${prefix}:*" "$(bulk_dataset_min_keys)"
   expect_absent "$(redis_call cluster "${source_master}" exists "nonbisync:cat10:isolated:${name}")" "isolated target key on source"
   assert_no_bisync_metadata_standalone "${dst_port}"
   assert_checkpoint_signals_standalone "${dst_port}"

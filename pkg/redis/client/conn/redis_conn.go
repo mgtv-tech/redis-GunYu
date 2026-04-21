@@ -281,6 +281,9 @@ func (tb *batcher) Exec() ([]interface{}, error) {
 
 		replies = append(replies, rpl)
 	}
+	if err := common.CheckRepliesError(replies); err != nil {
+		return nil, err
+	}
 	return replies, nil
 }
 
@@ -353,6 +356,9 @@ func (tb *batcher) Receive() ([]interface{}, error) {
 
 		replies = append(replies, rpl)
 	}
+	if err := common.CheckRepliesError(replies); err != nil {
+		return nil, err
+	}
 	return replies, nil
 }
 
@@ -381,6 +387,9 @@ func (tb *txnBatcher) Receive() ([]interface{}, error) {
 		}
 
 		replies = append(replies, rpl)
+	}
+	if err := common.CheckTxnRepliesError(replies, len(tb.cmds)); err != nil {
+		return nil, err
 	}
 	return replies, nil
 }

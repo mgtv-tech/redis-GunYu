@@ -153,7 +153,6 @@ func TestCampaign(t *testing.T) {
 		},
 	}
 
-	electionKey := "/test/"
 	for _, temp := range cfgs {
 		cfg := temp
 
@@ -164,10 +163,17 @@ func TestCampaign(t *testing.T) {
 
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
-			assert.Nil(t, err)
+			if !assert.Nil(t, err) {
+				return
+			}
+			defer rc1.Close()
 			rc2, err := NewRedisCluster(ctx, cfg, 2)
-			assert.Nil(t, err)
+			if !assert.Nil(t, err) {
+				return
+			}
+			defer rc2.Close()
 
+			electionKey := "/test/" + t.Name() + "/"
 			elt1 := rc1.NewElection(ctx, electionKey, "1")
 			elt2 := rc2.NewElection(ctx, electionKey, "2")
 
@@ -198,11 +204,10 @@ func TestCampaign(t *testing.T) {
 			assert.Equal(t, "2", leader1.Address)
 
 			// expired
-			time.Sleep(2 * time.Second)
-
-			role1, err = elt1.Campaign(context.Background())
-			assert.Nil(t, err)
-			assert.Equal(t, RoleLeader, role1)
+			assert.Eventually(t, func() bool {
+				role1, err = elt1.Campaign(context.Background())
+				return err == nil && role1 == RoleLeader
+			}, 5*time.Second, 100*time.Millisecond)
 		})
 	}
 }

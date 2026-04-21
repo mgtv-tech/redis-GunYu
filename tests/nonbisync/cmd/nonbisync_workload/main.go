@@ -71,7 +71,7 @@ func main() {
 	flag.StringVar(&prefix, "prefix", "", "key prefix used for this run")
 	flag.StringVar(&reportJSON, "report-json", "", "optional path to write a JSON summary")
 	flag.DurationVar(&soakDuration, "duration", 3*time.Minute, "duration for soak scenario")
-	flag.IntVar(&keySpace, "key-space", 32, "rolling key space for soak scenario")
+	flag.IntVar(&keySpace, "key-space", 32, "rich key set count or rolling key space for soak scenario")
 	flag.IntVar(&bigStringBytes, "big-string-bytes", 1<<20, "large string size in bytes")
 	flag.DurationVar(&throttle, "throttle", 0, "optional sleep between soak iterations")
 	flag.IntVar(&boundaryEvery, "boundary-every", 0, "write stable boundary data every N soak iterations; 0 disables it")
@@ -101,7 +101,7 @@ func main() {
 	startedAt := time.Now()
 	switch scenario {
 	case "rich":
-		err = runRich(writer, prefix, bigStringBytes)
+		err = runRich(writer, prefix, keySpace, bigStringBytes)
 	case "soak":
 		err = runSoakConcurrent(writer, splitAddrs(addrs), prefix, soakDuration, keySpace, bigStringBytes/4, throttle, boundaryEvery, volatileEvery, txnEvery, scriptEvery, targetQPS, workers)
 	default:
@@ -220,51 +220,53 @@ func splitAddrs(addrs string) []string {
 	return out
 }
 
-func runRich(w *clusterWriter, prefix string, bigStringBytes int) error {
-	base := fmt.Sprintf("%s:stable:rich", prefix)
-	if err := w.do("set", base+":string", "alpha"); err != nil {
-		return err
+func runRich(w *clusterWriter, prefix string, keySets int, bigStringBytes int) error {
+	for seq := 0; seq < keySets; seq++ {
+		base := fmt.Sprintf("%s:stable:rich:%04d", prefix, seq)
+		if err := w.do("set", base+":string", fmt.Sprintf("alpha:%04d", seq)); err != nil {
+			return err
+		}
+		if err := w.do("incrby", base+":counter", strconv.Itoa((seq%9)+1)); err != nil {
+			return err
+		}
+		if err := w.do("hset", base+":hash", "f1", "v1", "f2", "v2", "seq", strconv.Itoa(seq)); err != nil {
+			return err
+		}
+		if err := w.do("rpush", base+":list", "a", "b", "c", fmt.Sprintf("seq:%04d", seq)); err != nil {
+			return err
+		}
+		if err := w.do("sadd", base+":set", "red", "blue", "green", fmt.Sprintf("seq:%04d", seq)); err != nil {
+			return err
+		}
+		if err := w.do("zadd", base+":zset", "-1", "negative", "0", "zero", "9007199254740991", "large"); err != nil {
+			return err
+		}
+		if err := w.do("xadd", base+":stream", "*", "side", "source", "seq", strconv.Itoa(seq*2)); err != nil {
+			return err
+		}
+		if err := w.do("xadd", base+":stream", "*", "side", "source", "seq", strconv.Itoa(seq*2+1)); err != nil {
+			return err
+		}
+		if err := w.do("set", base+":delete-me", "gone"); err != nil {
+			return err
+		}
+		if err := w.do("del", base+":delete-me"); err != nil {
+			return err
+		}
+		if err := writeBoundarySet(w, prefix, seq, bigStringBytes); err != nil {
+			return err
+		}
+		if err := writeVolatileSet(w, prefix, seq); err != nil {
+			return err
+		}
+		if err := writeTxnSet(w, prefix, seq); err != nil {
+			return err
+		}
+		if err := writeScriptSet(w, prefix, seq); err != nil {
+			return err
+		}
+		w.stats.addIteration()
 	}
-	if err := w.do("incrby", base+":counter", "9"); err != nil {
-		return err
-	}
-	if err := w.do("hset", base+":hash", "f1", "v1", "f2", "v2"); err != nil {
-		return err
-	}
-	if err := w.do("rpush", base+":list", "a", "b", "c"); err != nil {
-		return err
-	}
-	if err := w.do("sadd", base+":set", "red", "blue", "green"); err != nil {
-		return err
-	}
-	if err := w.do("zadd", base+":zset", "-1", "negative", "0", "zero", "9007199254740991", "large"); err != nil {
-		return err
-	}
-	if err := w.do("xadd", base+":stream", "*", "side", "source", "seq", "1"); err != nil {
-		return err
-	}
-	if err := w.do("xadd", base+":stream", "*", "side", "source", "seq", "2"); err != nil {
-		return err
-	}
-	if err := w.do("set", base+":delete-me", "gone"); err != nil {
-		return err
-	}
-	if err := w.do("del", base+":delete-me"); err != nil {
-		return err
-	}
-	if err := writeBoundarySet(w, prefix, 0, bigStringBytes); err != nil {
-		return err
-	}
-	if err := writeVolatileSet(w, prefix, 0); err != nil {
-		return err
-	}
-	if err := writeTxnSet(w, prefix, 0); err != nil {
-		return err
-	}
-	if err := writeScriptSet(w, prefix, 0); err != nil {
-		return err
-	}
-	w.stats.addIteration()
 	return nil
 }
 

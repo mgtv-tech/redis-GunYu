@@ -6,6 +6,7 @@ TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat8"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
+RICH_KEY_SETS="${RICH_KEY_SETS:-64}"
 SYNC_SRC_BASE="${SYNC_SRC_BASE:-34700}"
 SYNC_DST_BASE="${SYNC_DST_BASE:-34800}"
 SYNC_HTTP_PORT="${SYNC_HTTP_PORT:-34780}"
@@ -71,6 +72,7 @@ run_scenario() {
     --scenario rich \
     --addrs "${src_csv}" \
     --prefix "${prefix}" \
+    --key-space "${RICH_KEY_SETS}" \
     --report-json "${TMP_ROOT}/${name}.json" >/dev/null
 
   target_master=$(find_first_master_port "${dst_ports[@]}")
@@ -78,6 +80,7 @@ run_scenario() {
 
   wait_for_cluster_equal "${TMP_ROOT}" "${src_csv}" "${dst_csv}" "${prefix}:stable:*"
   cluster_compare "${TMP_ROOT}" "${src_csv}" "${dst_csv}" "${prefix}:stable:*"
+  assert_min_key_count_cluster "${prefix}:stable:*" "$((RICH_KEY_SETS * 16))" "${dst_ports[@]}"
 
   sleep 3
   wait_for_absent_db cluster "${target_master}" 0 "${prefix}:volatile:000000:ttl-short" "short ttl key on target"

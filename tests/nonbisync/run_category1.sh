@@ -112,6 +112,7 @@ run_scenario() {
   source_master=$(find_first_master_port "${src_ports[@]}")
   target_master=$(find_first_master_port "${dst_ports[@]}")
   write_source_data "${source_master}" "${prefix}"
+  write_bulk_dataset cluster "${source_master}" "${prefix}" "steady"
   redis_cmd cluster "${target_master}" set "nonbisync:cat1:isolated:${name}" "target-only"
 
   wait_for_cluster_equal "${TMP_ROOT}" "${src_csv}" "${dst_csv}" "${prefix}:*"
@@ -120,6 +121,7 @@ run_scenario() {
   target_master=$(find_first_master_port "${dst_ports[@]}")
   source_master=$(find_first_master_port "${src_ports[@]}")
   assert_expected_state "${target_master}" "${prefix}"
+  assert_min_key_count_cluster "${prefix}:*" "$(bulk_dataset_min_keys)" "${dst_ports[@]}"
   expect_absent "$(redis_call cluster "${source_master}" exists "nonbisync:cat1:isolated:${name}")" "isolated target key on source"
   assert_no_bisync_metadata_cluster "${dst_ports[@]}"
   assert_checkpoint_signals_cluster "${target_master}" "${dst_ports[@]}"
