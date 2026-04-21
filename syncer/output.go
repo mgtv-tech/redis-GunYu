@@ -16,7 +16,6 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/config"
 	pkgCommon "github.com/mgtv-tech/redis-GunYu/pkg/common"
 	"github.com/mgtv-tech/redis-GunYu/pkg/filter"
-	"github.com/mgtv-tech/redis-GunYu/pkg/io/net"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
 	"github.com/mgtv-tech/redis-GunYu/pkg/rdb"
@@ -675,30 +674,6 @@ func (ro *RedisOutput) sendAof(ctx context.Context, runId string, reader *bufio.
 	return replayQuit.Error()
 }
 
-func (ro *RedisOutput) outputReply(wait usync.WaitCloser, cli client.Redis) error {
-	for !wait.IsClosed() {
-		err := ro.receiveReply(cli)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (ro *RedisOutput) receiveReply(cli client.Redis) error {
-	_, err := cli.Receive()
-	if err != nil {
-		ro.logger.Errorf("output reply error : redis(%v), err(%v)", cli.Addresses(), err)
-		failCounter.Inc(ro.cfg.InputName)
-		if net.CheckHandleNetError(err) {
-			return fmt.Errorf("network error : %w", err)
-		}
-		return fmt.Errorf("reply error : %w", err)
-	}
-	succCounter.Inc(ro.cfg.InputName)
-	return nil
-}
-
 func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufio.Reader, startOffset int64, sendBuf chan cmdExecution) error {
 	var (
 		currentDB = -1
@@ -897,315 +872,6 @@ func (ro *RedisOutput) checkpoint(ctx context.Context, runIds []string) (cpi *ch
 	return
 }
 
-func (ro *RedisOutput) sendCmds(replayWait usync.WaitCloser, conn client.Redis, runId string, sendBuf chan cmdExecution) error {
-	checkpointKv := checkpoint.CheckpointInfo{
-		Key:   ro.cfg.CheckpointName,
-		RunId: runId,
-	}
-	sendOffsetChan := make(chan int64, 1000)
-	var repliedOffset, committedOffset atomic.Int64
-	updateCp := func() error {
-		offset := repliedOffset.Load()
-		committed := committedOffset.Load()
-		if offset == committed {
-			return nil
-		}
-		_, err := conn.Do("hset", checkpointKv.Key, checkpointKv.OffsetKey(), offset)
-		if err != nil {
-			ro.logger.Errorf("update checkpoint error : cp(%v), offset(%d), error(%v)", checkpointKv, offset, err)
-			return err
-		}
-		committedOffset.Store(offset)
-		return nil
-	}
-	defer updateCp()
-
-	usync.SafeGo(func() {
-		updateCpTicker := time.NewTicker(ro.cfg.UpdateCheckpointTicker)
-		defer updateCpTicker.Stop()
-		var err error
-		for {
-			select {
-			case <-replayWait.Done():
-				return
-			case offset := <-sendOffsetChan:
-				err = ro.receiveReply(conn)
-				if err != nil {
-					replayWait.Close(err)
-					return
-				}
-				ackOffsetGauge.Set(float64(offset), ro.cfg.InputName)
-				repliedOffset.Store(offset)
-			case <-updateCpTicker.C:
-				err = updateCp()
-				if err != nil {
-					replayWait.Close(err)
-					return
-				}
-			}
-		}
-	}, func(i interface{}) {
-		replayWait.Close(fmt.Errorf("panic: %v", i))
-	})
-
-	for {
-		select {
-		case item, ok := <-sendBuf:
-			if !ok {
-				return nil
-			}
-			err := conn.SendAndFlush(item.Cmd, item.Args...)
-			if err != nil {
-				batchSendCounter.Add(1, ro.cfg.InputName, "no", "error")
-				ro.logger.Errorf("send cmds error : cmd(%s), args(%v), offset(%d), err(%v)", item.Cmd, item.Args, item.Offset, err)
-				return err
-			}
-			batchSendCounter.Add(1, ro.cfg.InputName, "no", "ok")
-
-			sendOffsetGauge.Set(float64(item.Offset), ro.cfg.InputName)
-			sendOffsetChan <- item.Offset
-			length := len(item.Cmd)
-			for i := range item.Args {
-				length += len(item.Args[i].([]byte))
-			}
-			ro.sendCounterAdd(1)
-			sendSizeCounter.Add(float64(length), ro.cfg.InputName)
-			if item.syncDelayNs > 0 {
-				delay := time.Now().UnixNano() - item.syncDelayNs
-				syncDelayGauge.Set(float64(delay), item.syncDelayHost)
-			}
-		case <-replayWait.Done():
-			return nil
-		}
-	}
-}
-
-func (ro *RedisOutput) sendCmdsInTransaction(replayWait usync.WaitCloser, conn client.Redis, runId string, sendBuf chan cmdExecution) error {
-	conn, err := ro.NewRedisConn(replayWait.Context())
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	usync.SafeGo(func() {
-		err := ro.outputReply(replayWait, conn)
-		if err != nil {
-			replayWait.Close(err)
-		}
-	}, func(i interface{}) {
-		replayWait.Close(fmt.Errorf("panic: %v", i))
-	})
-
-	var queuedCmdCount uint
-	var queuedByteSize uint64
-	var txnStatus txnStatus // transaction status
-	var needFlush bool
-
-	cmdQueue := make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
-	checkpointKv := checkpoint.CheckpointInfo{
-		Key:     ro.cfg.CheckpointName,
-		RunId:   runId,
-		Version: config.Version,
-	}
-	ticker := time.NewTicker(time.Duration(ro.cfg.BatchTicker))
-	defer ticker.Stop()
-
-	keepaliveTicker := time.NewTicker(time.Duration(ro.cfg.KeepaliveTicker))
-	defer keepaliveTicker.Stop()
-
-	cpInDbs := make(map[int]struct{})
-
-	// transaction : call sendFunc when command is "exec", never break down a transaction
-	// non-transaction : call sendFunc when queue is full or ticker is delivered
-
-	sendFunc := func(isTransaction, shouldUpdateCP bool) error {
-		if len(cmdQueue) == 0 {
-			return nil
-		}
-
-		needBatch := false
-		if isTransaction || shouldUpdateCP {
-			needBatch = true
-		}
-		batcher := conn.NewBatcher(false)
-
-		if needBatch {
-			batcher.Put("multi")
-		}
-
-		lastOffset := int64(0)
-		delayNs := int64(0)
-		for _, ce := range cmdQueue {
-			batcher.Put(ce.Cmd, ce.Args...)
-			// if err := conn.Send(ce.Cmd, ce.Args...); err != nil {
-			// 	return handleDirectError(fmt.Errorf("send cmd error : cmd(%s), args(%v), error(%v)", ce.Cmd, ce.Args, err))
-			// }
-			lastOffset = ce.Offset
-			if ce.syncDelayNs > 0 && delayNs == 0 {
-				delayNs = ce.syncDelayNs
-				//delay := time.Now().UnixNano() - ce.syncDelayNs
-				//syncDelayGauge.Set(float64(delay), ro.cfg.InputName)
-			}
-		}
-
-		syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
-		sendOffsetGauge.Set(float64(lastOffset), ro.cfg.InputName)
-		ro.sendCounterAdd(queuedCmdCount)
-		sendSizeCounter.Add(float64(queuedByteSize), ro.cfg.InputName)
-
-		if needBatch {
-			if shouldUpdateCP {
-				lastCmd := cmdQueue[len(cmdQueue)-1]
-				offset := lastCmd.Offset
-				if _, ok := cpInDbs[lastCmd.Db]; !ok {
-					cpInDbs[lastCmd.Db] = struct{}{}
-					batcher.Put("hset", checkpointKv.Key, checkpointKv.RunIdKey(), runId,
-						checkpointKv.VersionKey(), config.Version, checkpointKv.OffsetKey(), offset)
-					// if err := conn.Send("hset", checkpointKv.Key, checkpointKv.RunIdKey(), runId,
-					// 	checkpointKv.VersionKey(), config.Version, checkpointKv.OffsetKey(), offset); err != nil {
-					// 	return handleDirectError(fmt.Errorf("hset checkpoint error : key(%s), runid(%s), version(%s), offset(%d), error(%w)",
-					// 		checkpointKv.Key, checkpointKv.RunId, checkpointKv.Version, offset, err))
-					// }
-				} else {
-					batcher.Put("hset", checkpointKv.Key, checkpointKv.OffsetKey(), offset)
-					// if err := conn.Send("hset", checkpointKv.Key, checkpointKv.OffsetKey(), offset); err != nil {
-					// 	return handleDirectError(fmt.Errorf("hset checkpoint error : key(%s), offset(%d), error(%w)", checkpointKv.Key, checkpointKv.Offset, err))
-					// }
-				}
-			}
-
-			batcher.Put("exec")
-			// if err := conn.Send("exec"); err != nil {
-			// 	batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
-			// 	return handleDirectError(fmt.Errorf("send exec error : %w", err))
-			// } else {
-			// 	batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
-			// }
-		}
-
-		// if err := conn.Flush(); err != nil {
-		// 	return handleDirectError(fmt.Errorf("flush error : %w", err))
-		// }
-		rets, err := batcher.Exec()
-		if err != nil {
-			failCounter.Inc(ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
-			return handleDirectError(err)
-		}
-		err = ro.checkReplies(rets)
-		if err != nil {
-			failCounter.Inc(ro.cfg.InputName)
-			batchSendCounter.Add(1, ro.cfg.InputName, "yes", "error")
-			return err
-		}
-
-		succCounter.Inc(ro.cfg.InputName)
-		batchSendCounter.Add(1, ro.cfg.InputName, "yes", "ok")
-		ackOffsetGauge.Set(float64(cmdQueue[len(cmdQueue)-1].Offset), ro.cfg.InputName)
-
-		if uint(len(cmdQueue)) > ro.cfg.BatchCmdCount*2 { // avoid occuping huge memory
-			cmdQueue = make([]cmdExecution, 0, ro.cfg.BatchCmdCount+1)
-		} else {
-			cmdQueue = cmdQueue[:0]
-		}
-
-		queuedCmdCount = 0
-		queuedByteSize = 0
-		return nil
-	}
-
-	isTransaction := false
-	lastOffset := int64(-1)
-	for {
-		shouldUpdateCP := ro.cfg.EnableResumeFromBreakPoint
-		select {
-		case item, ok := <-sendBuf:
-			if !ok {
-				return nil
-			}
-			length := len(item.Cmd)
-			for i := range item.Args {
-				length += len(item.Args[i].([]byte))
-			}
-
-			lastOffset = item.Offset
-			if item.Cmd == "ping" { // skip ping command, keepaliveTicker handle it[multi/exec, ping issue for cluster]
-				continue
-			}
-
-			txnStatus, needFlush = transactionStatus(item.Cmd, txnStatus)
-			if needFlush {
-				// flush previous data
-				err := sendFunc(isTransaction, shouldUpdateCP)
-				if err != nil {
-					return err
-				}
-				needFlush = false
-				isTransaction = false
-			}
-
-			if txnStatus != txnStatusBegin && txnStatus != txnStatusCommit {
-				cmdQueue = append(cmdQueue, item)
-				queuedCmdCount++
-				queuedByteSize += uint64(length)
-			} else if txnStatus == txnStatusBegin {
-				isTransaction = true
-			}
-		case <-ticker.C:
-			if !isTransaction && (len(cmdQueue) > 0) {
-				needFlush = true
-			}
-		case <-keepaliveTicker.C:
-			if !isTransaction {
-				if len(cmdQueue) == 0 {
-					cmdQueue = append(cmdQueue, cmdExecution{
-						Cmd:    "ping",
-						Offset: lastOffset,
-					})
-				}
-				if !needFlush {
-					needFlush = true
-				}
-			}
-		case <-replayWait.Done():
-			return nil
-		}
-
-		if !needFlush && !isTransaction &&
-			(queuedCmdCount >= ro.cfg.BatchCmdCount ||
-				queuedByteSize >= ro.cfg.BatchBufferSize) {
-			needFlush = true
-		}
-
-		if needFlush {
-			err := sendFunc(isTransaction, shouldUpdateCP)
-			if err != nil {
-				return err
-			}
-			needFlush = false
-			isTransaction = false
-		}
-	}
-}
-
-func (ro *RedisOutput) checkReplies(replies []interface{}) error {
-	if len(replies) == 0 {
-		return fmt.Errorf("replies is empmty")
-	}
-	// for _, rpl := range replies {
-	// 	switch tt := rpl.(type) {
-	// 	case []interface{}:
-	// 		err := ro.checkReplies(tt)
-	// 		if err != nil {
-	// 			return err
-	// 		}
-	// 	case string:
-	// 	case common.RedisError:
-	// 	}
-	// }
-	return nil
-}
-
 func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Redis, runId string,
 	sendBuf chan cmdExecution, transactionMode bool, isPipeline bool) error {
 
@@ -1273,17 +939,12 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				case <-replayWait.Done():
 					return
 				}
-				rets, err := bat.bt.Receive()
+				_, err := bat.bt.Receive()
 				if err != nil {
 					handleError(bat, err)
 					return
 				}
 
-				err = ro.checkReplies(rets)
-				if err != nil {
-					handleError(bat, err)
-					return
-				}
 				if bat.delayNs > 0 {
 					syncDelayGauge.Set(float64(time.Now().UnixNano()-bat.delayNs), ro.cfg.InputName)
 				}
@@ -1295,6 +956,10 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 	}
 
 	sendFuncOnce := func(shouldInTransaction, shouldUpdateCP bool, lastOffset int64) error {
+		if len(cmdQueue) == 0 && shouldInTransaction && !shouldUpdateCP {
+			return nil
+		}
+
 		batcher := conn.NewBatcher(isPipeline)
 		cmdCounter := uint(0)
 
@@ -1338,11 +1003,10 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 		}
 
 		var err error
-		var rets []interface{}
 		if isPipeline {
 			err = batcher.Dispatch()
 		} else {
-			rets, err = batcher.Exec()
+			_, err = batcher.Exec()
 		}
 
 		if err != nil {
@@ -1368,12 +1032,6 @@ func (ro *RedisOutput) sendCmdsBatch(replayWait usync.WaitCloser, conn client.Re
 				return replayWait.Error()
 			}
 		} else {
-			err = ro.checkReplies(rets)
-			if err != nil {
-				failCounter.Add(float64(cmdCounter), ro.cfg.InputName)
-				batchSendCounter.Add(1, ro.cfg.InputName, transactionLabel, "error")
-				return err
-			}
 			if delayNs > 0 {
 				syncDelayGauge.Set(float64(time.Now().UnixNano()-delayNs), ro.cfg.InputName)
 			}

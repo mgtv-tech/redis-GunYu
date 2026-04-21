@@ -136,6 +136,9 @@ func (tb *txnBatcher) Receive() ([]interface{}, error) {
 		replies, err := tb.request.Wait()
 		tb.request = nil
 		if err == nil {
+			if err := common.CheckTxnRepliesError(replies, len(tb.cmds)); err != nil {
+				return nil, err
+			}
 			return replies, nil
 		}
 

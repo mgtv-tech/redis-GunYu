@@ -96,6 +96,78 @@ func TestTxnBatcherWrapsStandaloneCommandsInMultiExec(t *testing.T) {
 	}
 }
 
+func TestTxnBatcherReturnsQueueTimeErrorBeforeExecAbort(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	conn := &RedisConn{
+		conn:        clientConn,
+		protoReader: proto.NewReader(clientConn, ReaderBufferSize),
+		protoWriter: proto.NewWriter(clientConn, WriterBufferSize),
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		rd := proto.NewReader(serverConn, ReaderBufferSize)
+		want := [][]string{
+			{"multi"},
+			{"incrby", "tx:other"},
+			{"set", "tx:other", "ok"},
+			{"exec"},
+		}
+
+		for _, expected := range want {
+			reply, err := rd.ReadReply()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			got, err := readCommand(reply)
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			if !reflect.DeepEqual(got, expected) {
+				serverErr <- fmt.Errorf("unexpected command: got=%v want=%v", got, expected)
+				return
+			}
+		}
+
+		_, err := serverConn.Write([]byte("+OK\r\n-ERR wrong number of arguments for 'incrby' command\r\n+QUEUED\r\n-EXECABORT Transaction discarded because of previous errors.\r\n"))
+		serverErr <- err
+	}()
+
+	batcher := conn.NewBatcher(false)
+	if err := batcher.Put("multi"); err != nil {
+		t.Fatalf("put multi failed: %v", err)
+	}
+	if err := batcher.Put("incrby", "tx:other"); err != nil {
+		t.Fatalf("put incrby failed: %v", err)
+	}
+	if err := batcher.Put("set", "tx:other", "ok"); err != nil {
+		t.Fatalf("put set failed: %v", err)
+	}
+	if err := batcher.Put("exec"); err != nil {
+		t.Fatalf("put exec failed: %v", err)
+	}
+
+	replies, err := batcher.Exec()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if replies != nil {
+		t.Fatalf("expected nil replies on queue-time error, got %v", replies)
+	}
+	if err.Error() != "ERR wrong number of arguments for 'incrby' command" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server assertion failed: %v", err)
+	}
+}
+
 func readCommand(reply interface{}) ([]string, error) {
 	values, err := common.Values(reply, nil)
 	if err != nil {
