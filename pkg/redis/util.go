@@ -436,15 +436,35 @@ func GetAllClusterShard(cli client.Redis, version string) ([]*config.RedisCluste
 	}
 }
 
-func GetRedisRoleOnline(redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
-	cli, err := client.NewRedis(*redisCfg)
-
-	// fix addresses
-	if err != nil {
-		err = errors.Errorf("GetRedisRoleOnline : new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
-		return config.RedisRoleSlave, err
+func parseRedisRoleFromReplicationInfo(content []byte) (config.RedisRole, error) {
+	infoKV := ParseRedisInfo(content)
+	role, ok := infoKV["role"]
+	if !ok {
+		return config.RedisRoleSlave, errors.Errorf("miss redis role info")
 	}
-	defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
+
+	switch role {
+	case config.RedisRoleMasterStr:
+		return config.RedisRoleMaster, nil
+	case config.RedisRoleSlaveStr:
+		return config.RedisRoleSlave, nil
+	default:
+		return config.RedisRoleSlave, errors.Errorf("invalid redis role info : %s", role)
+	}
+}
+
+func getRedisRoleOnline(cli client.Redis, redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
+	if redisCfg.IsStanalone() {
+		if redisCfg.Address() != address {
+			return config.RedisRoleSlave, nil
+		}
+
+		infoStr, err := common.Bytes(cli.Do("info", "replication"))
+		if err != nil {
+			return config.RedisRoleSlave, err
+		}
+		return parseRedisRoleFromReplicationInfo(infoStr)
+	}
 
 	// fix shards and slots
 	shards, err := GetAllClusterShard(cli, redisCfg.Version)
@@ -458,6 +478,19 @@ func GetRedisRoleOnline(redisCfg *config.RedisConfig, address string) (config.Re
 		}
 	}
 	return config.RedisRoleSlave, nil
+}
+
+func GetRedisRoleOnline(redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
+	cli, err := client.NewRedis(*redisCfg)
+
+	// fix addresses
+	if err != nil {
+		err = errors.Errorf("GetRedisRoleOnline : new redis error : addr(%s), error(%w)", redisCfg.Address(), err)
+		return config.RedisRoleSlave, err
+	}
+	defer func() { log.LogIfError(cli.Close(), "close redis conn") }()
+
+	return getRedisRoleOnline(cli, redisCfg, address)
 }
 
 func GetAllClusterShard7(cli client.Redis) ([]*config.RedisClusterShard, error) {

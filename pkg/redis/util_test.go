@@ -1,12 +1,17 @@
 package redis
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,4 +194,141 @@ func (uts *utilTestSuite) TestHashCmds() {
 
 	uts.Equal(len(sets), len(ret))
 
+}
+
+func TestParseRedisRoleFromReplicationInfo(t *testing.T) {
+	t.Run("master", func(t *testing.T) {
+		role, err := parseRedisRoleFromReplicationInfo([]byte("role:master\r\nconnected_slaves:1\r\n"))
+		require.NoError(t, err)
+		assert.Equal(t, config.RedisRoleMaster, role)
+	})
+
+	t.Run("slave", func(t *testing.T) {
+		role, err := parseRedisRoleFromReplicationInfo([]byte("role:slave\r\nmaster_host:127.0.0.1\r\n"))
+		require.NoError(t, err)
+		assert.Equal(t, config.RedisRoleSlave, role)
+	})
+
+	t.Run("missing role", func(t *testing.T) {
+		_, err := parseRedisRoleFromReplicationInfo([]byte("connected_slaves:1\r\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "miss redis role info")
+	})
+}
+
+func TestGetRedisRoleOnlineStandalone(t *testing.T) {
+	addr := requireTestRedis(t)
+	role, err := GetRedisRoleOnline(&config.RedisConfig{
+		Addresses: []string{addr},
+		Type:      config.RedisTypeStandalone,
+	}, addr)
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleMaster, role)
+}
+
+func TestGetRedisRoleOnlineStandaloneUsesReplicationInfo(t *testing.T) {
+	cfg := &config.RedisConfig{
+		Addresses: []string{"127.0.0.1:6379"},
+		Type:      config.RedisTypeStandalone,
+	}
+
+	cli := &fakeRoleRedis{
+		doFn: func(cmd string, args ...interface{}) (interface{}, error) {
+			require.Equal(t, "info", cmd)
+			require.Equal(t, []interface{}{"replication"}, args)
+			return []byte("role:master\r\nconnected_slaves:1\r\n"), nil
+		},
+	}
+
+	role, err := getRedisRoleOnline(cli, cfg, "127.0.0.1:6379")
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleMaster, role)
+}
+
+func TestGetRedisRoleOnlineStandaloneAddressMismatch(t *testing.T) {
+	cfg := &config.RedisConfig{
+		Addresses: []string{"127.0.0.1:6379"},
+		Type:      config.RedisTypeStandalone,
+	}
+
+	cli := &fakeRoleRedis{
+		doFn: func(cmd string, args ...interface{}) (interface{}, error) {
+			t.Fatalf("unexpected command %q with args %v", cmd, args)
+			return nil, nil
+		},
+	}
+
+	role, err := getRedisRoleOnline(cli, cfg, "127.0.0.1:6380")
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleSlave, role)
+}
+
+type fakeRoleRedis struct {
+	doFn func(cmd string, args ...interface{}) (interface{}, error)
+}
+
+func (f *fakeRoleRedis) Close() error { return nil }
+
+func (f *fakeRoleRedis) Do(cmd string, args ...interface{}) (interface{}, error) {
+	if f.doFn == nil {
+		return nil, errors.New("unexpected Do")
+	}
+	return f.doFn(cmd, args...)
+}
+
+func (f *fakeRoleRedis) Send(string, ...interface{}) error { return errors.New("unexpected Send") }
+
+func (f *fakeRoleRedis) SendAndFlush(string, ...interface{}) error {
+	return errors.New("unexpected SendAndFlush")
+}
+
+func (f *fakeRoleRedis) Receive() (interface{}, error) { return nil, errors.New("unexpected Receive") }
+
+func (f *fakeRoleRedis) ReceiveString() (string, error) {
+	return "", errors.New("unexpected ReceiveString")
+}
+
+func (f *fakeRoleRedis) ReceiveBool() (bool, error) {
+	return false, errors.New("unexpected ReceiveBool")
+}
+
+func (f *fakeRoleRedis) BufioReader() *bufio.Reader { return bufio.NewReader(strings.NewReader("")) }
+
+func (f *fakeRoleRedis) BufioWriter() *bufio.Writer { return bufio.NewWriter(io.Discard) }
+
+func (f *fakeRoleRedis) Flush() error { return nil }
+
+func (f *fakeRoleRedis) RedisType() config.RedisType { return config.RedisTypeStandalone }
+
+func (f *fakeRoleRedis) Addresses() []string { return nil }
+
+func (f *fakeRoleRedis) NewBatcher(bool) common.CmdBatcher { return nil }
+
+func (f *fakeRoleRedis) NewTxnBatcher() common.CmdBatcher { return nil }
+
+func (f *fakeRoleRedis) IterateNodes(func(string, interface{}, error), string, ...interface{}) {}
+
+func TestGetRedisRoleOnlineCluster(t *testing.T) {
+	cfg := &config.RedisConfig{
+		Addresses: []string{"127.0.0.1:16300"},
+		Type:      config.RedisTypeCluster,
+		Version:   "6.2.0",
+	}
+
+	cli := &fakeRoleRedis{
+		doFn: func(cmd string, args ...interface{}) (interface{}, error) {
+			require.Equal(t, "cluster", cmd)
+			require.Equal(t, []interface{}{"nodes"}, args)
+			return "node-master 127.0.0.1:16300@26300 master - 0 1 1 connected 0-5461\n" +
+				"node-slave 127.0.0.1:16301@26301 slave node-master 0 1 1 connected\n", nil
+		},
+	}
+
+	role, err := getRedisRoleOnline(cli, cfg, "127.0.0.1:16300")
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleMaster, role)
+
+	role, err = getRedisRoleOnline(cli, cfg, "127.0.0.1:16301")
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleSlave, role)
 }
