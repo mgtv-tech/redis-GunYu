@@ -685,12 +685,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 
 	if ro.startDbId > 0 { // select db
 		select {
-		case sendBuf <- cmdExecution{
-			Cmd:    "select",
-			Args:   []interface{}{[]byte{byte(ro.startDbId + '0')}},
-			Offset: startOffset,
-			Db:     ro.startDbId,
-		}:
+		case sendBuf <- buildSelectCmdExecution(ro.startDbId, startOffset):
 		case <-replayQuit.Context().Done():
 			return nil
 		}
@@ -763,12 +758,7 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 			if sdb, ok := ro.selectDB(currentDB, selectDB); ok {
 				currentDB = sdb
 				select {
-				case sendBuf <- cmdExecution{
-					Cmd:    "select",
-					Args:   []interface{}{[]byte{byte(currentDB + '0')}},
-					Offset: startOffset + incrOffset,
-					Db:     currentDB,
-				}:
+				case sendBuf <- buildSelectCmdExecution(currentDB, startOffset+incrOffset):
 				case <-replayQuit.Context().Done():
 					return nil
 				}
@@ -813,6 +803,15 @@ func (ro *RedisOutput) parseAofCommand(replayQuit usync.WaitCloser, reader *bufi
 	}
 
 	return nil
+}
+
+func buildSelectCmdExecution(db int, offset int64) cmdExecution {
+	return cmdExecution{
+		Cmd:    "select",
+		Args:   []interface{}{[]byte(strconv.Itoa(db))},
+		Offset: offset,
+		Db:     db,
+	}
 }
 
 func (ro *RedisOutput) StartPoint(ctx context.Context, runIds []string) (sp StartPoint, err error) {

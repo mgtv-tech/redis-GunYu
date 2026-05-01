@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -144,6 +145,92 @@ func TestSendAofRejectsInjectedTxnExecReplyError(t *testing.T) {
 	}
 }
 
+func TestParseAofCommandEncodesMultiDigitSelectDB(t *testing.T) {
+	ro := newReplyTestOutput()
+	replayQuit := usync.NewWaitCloser(nil)
+	sendBuf := make(chan cmdExecution, 4)
+
+	var payload bytes.Buffer
+	writeAofCommand(t, &payload, "SELECT", "10")
+	writeAofCommand(t, &payload, "SET", "k", "v")
+
+	err := ro.parseAofCommand(replayQuit, bufio.NewReader(bytes.NewReader(payload.Bytes())), 100, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+
+	selectCmd := <-sendBuf
+	if selectCmd.Cmd != "select" {
+		t.Fatalf("expected select command, got %q", selectCmd.Cmd)
+	}
+	if got := string(selectCmd.Args[0].([]byte)); got != "10" {
+		t.Fatalf("unexpected select arg: got %q want %q", got, "10")
+	}
+	if selectCmd.Db != 10 {
+		t.Fatalf("unexpected select db: got %d want %d", selectCmd.Db, 10)
+	}
+
+	setCmd := <-sendBuf
+	if setCmd.Cmd != "set" {
+		t.Fatalf("expected set command, got %q", setCmd.Cmd)
+	}
+	if setCmd.Db != 10 {
+		t.Fatalf("unexpected set db: got %d want %d", setCmd.Db, 10)
+	}
+}
+
+func TestParseAofCommandEncodesResumeStartDB(t *testing.T) {
+	ro := newReplyTestOutput()
+	ro.startDbId = 12
+	replayQuit := usync.NewWaitCloser(nil)
+	sendBuf := make(chan cmdExecution, 2)
+
+	err := ro.parseAofCommand(replayQuit, bufio.NewReader(bytes.NewReader(nil)), 42, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+
+	selectCmd := <-sendBuf
+	if selectCmd.Cmd != "select" {
+		t.Fatalf("expected select command, got %q", selectCmd.Cmd)
+	}
+	if got := string(selectCmd.Args[0].([]byte)); got != "12" {
+		t.Fatalf("unexpected select arg: got %q want %q", got, "12")
+	}
+	if selectCmd.Offset != 42 {
+		t.Fatalf("unexpected offset: got %d want %d", selectCmd.Offset, 42)
+	}
+}
+
+func TestParseAofCommandEncodesMappedMultiDigitTargetDB(t *testing.T) {
+	ro := newReplyTestOutput()
+	ro.cfg.TargetDbMap = map[int]int{1: 15}
+	replayQuit := usync.NewWaitCloser(nil)
+	sendBuf := make(chan cmdExecution, 4)
+
+	var payload bytes.Buffer
+	writeAofCommand(t, &payload, "SELECT", "1")
+	writeAofCommand(t, &payload, "SET", "k", "v")
+
+	err := ro.parseAofCommand(replayQuit, bufio.NewReader(bytes.NewReader(payload.Bytes())), 0, sendBuf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+
+	selectCmd := <-sendBuf
+	if got := string(selectCmd.Args[0].([]byte)); got != "15" {
+		t.Fatalf("unexpected mapped select arg: got %q want %q", got, "15")
+	}
+	if selectCmd.Db != 15 {
+		t.Fatalf("unexpected mapped db: got %d want %d", selectCmd.Db, 15)
+	}
+
+	setCmd := <-sendBuf
+	if setCmd.Db != 15 {
+		t.Fatalf("unexpected mapped set db: got %d want %d", setCmd.Db, 15)
+	}
+}
+
 type fakeReplyBatcher struct {
 	cmds           []string
 	args           [][]interface{}
@@ -248,6 +335,7 @@ func newReplyTestOutput() *RedisOutput {
 	return NewRedisOutput(RedisOutputConfig{
 		InputName:              "127.0.0.1:6379",
 		CheckpointName:         "redis-gunyu-checkpoint:test-check-replies",
+		TargetDb:               -1,
 		BatchCmdCount:          1,
 		BatchBufferSize:        1024,
 		BatchTicker:            time.Hour,
