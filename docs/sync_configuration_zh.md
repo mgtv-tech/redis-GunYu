@@ -146,6 +146,9 @@ filter:
 ### 缓存区
 
 配置
+- type ： channel后端类型，支持 `storer` 和 `memory`
+  - `storer` ： 将本地RDB/AOF缓存落盘，这是默认行为
+  - `memory` ： 仅在内存中维护本地channel，避免磁盘读写。注意进程重启后这部分本地缓存不会保留
 - storer ： rdb和aof存储区
   - dirPath ： 存储目录，默认使用`/tmp/redis-gunyu`
   - maxSize ： 存储最大空间，单位字节，默认50GiB
@@ -155,6 +158,9 @@ filter:
     - everyWrite ： 每次写入命令到aof后，进行同步
     - dirtySize ： 当写入aof文件数据超过dirtySize，则进行同步
     - auto ： 由操作系统自己决定
+- memory ： 内存channel配置
+  - maxSize ： 内存缓存最大空间，单位字节，默认512MiB
+  - logSize ： AOF逻辑分段大小，单位字节，默认100MiB
 - verifyCrc : 默认false
 - staleCheckpointDuration ： 多久以前的快照视为过期快照，默认12小时
 

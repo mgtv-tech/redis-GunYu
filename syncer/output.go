@@ -24,14 +24,13 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
-	"github.com/mgtv-tech/redis-GunYu/pkg/store"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 type Output interface {
 	StartPoint(ctx context.Context, runIds []string) (StartPoint, error)
-	Send(ctx context.Context, reader *store.Reader) error
+	Send(ctx context.Context, reader ChannelReader) error
 	SetRunId(ctx context.Context, runId string) error
 	Close()
 }
@@ -242,7 +241,7 @@ func (ro *RedisOutput) SetRunId(ctx context.Context, id string) error {
 	}, 3, time.Second*4, 0.3)
 }
 
-func (ro *RedisOutput) Send(ctx context.Context, reader *store.Reader) error {
+func (ro *RedisOutput) Send(ctx context.Context, reader ChannelReader) error {
 	if reader.IsAof() {
 		return ro.SendAof(ctx, reader)
 	}
@@ -274,7 +273,7 @@ func (ro *RedisOutput) stats(ctx context.Context) {
 	}, nil)
 }
 
-func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error {
+func (ro *RedisOutput) SendRdb(ctx context.Context, reader ChannelReader) error {
 	err := ro.sendRdb(ctx, reader)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -289,7 +288,7 @@ func (ro *RedisOutput) SendRdb(ctx context.Context, reader *store.Reader) error 
 	return err
 }
 
-func (ro *RedisOutput) SendAof(ctx context.Context, reader *store.Reader) error {
+func (ro *RedisOutput) SendAof(ctx context.Context, reader ChannelReader) error {
 	ro.stats(ctx)
 	err := ro.sendAof(ctx, reader.RunId(), reader.IoReader(), reader.Left(), reader.Size())
 	if err != nil {
@@ -415,7 +414,7 @@ func (ro *RedisOutput) rdbReplay(ctx context.Context, pipe <-chan *rdb.BinEntry)
 	}
 }
 
-func (ro *RedisOutput) sendRdb(pctx context.Context, reader *store.Reader) error {
+func (ro *RedisOutput) sendRdb(pctx context.Context, reader ChannelReader) error {
 	ro.logger.Infof("send rdb : runId(%s), offset(%d), size(%d), parallel(%d)", reader.RunId(), reader.Left(), reader.Size(), ro.cfg.ReplayRdbParallel)
 
 	ctx, cancel := context.WithCancel(pctx)

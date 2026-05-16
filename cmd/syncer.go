@@ -299,9 +299,9 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 	}
 
 	if len(cfgs) > 0 {
-		maxSize := config.GetSyncerConfig().Channel.Storer.MaxSize / int64(len(cfgs))
+		maxSize := config.GetSyncerConfig().Channel.BackendMaxSize() / int64(len(cfgs))
 		for i := 0; i < len(cfgs); i++ {
-			cfgs[i].Channel.Storer.MaxSize = maxSize
+			cfgs[i].Channel.SetBackendMaxSize(maxSize)
 		}
 	}
 
@@ -728,7 +728,7 @@ var (
 )
 
 func (sc *SyncerCmd) storageSize(ctx context.Context) {
-	if config.GetSyncerConfig().Channel == nil || config.GetSyncerConfig().Channel.Storer == nil {
+	if config.GetSyncerConfig().Channel == nil || config.GetSyncerConfig().Channel.Type != config.ChannelTypeStorer || config.GetSyncerConfig().Channel.Storer == nil {
 		return
 	}
 	dirPath := config.GetSyncerConfig().Channel.Storer.DirPath
@@ -822,6 +822,9 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 
 	// @TODO maxSize
 	gcStaleStorer := func() {
+		if config.GetSyncerConfig().Channel.Type != config.ChannelTypeStorer || config.GetSyncerConfig().Channel.Storer == nil {
+			return
+		}
 		dirPath := config.GetSyncerConfig().Channel.Storer.DirPath
 		entries, err := os.ReadDir(dirPath)
 		if err != nil {

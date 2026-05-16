@@ -88,13 +88,7 @@ func NewSyncer(cfg SyncerConfig) Syncer {
 		cfg:    cfg,
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%s)] ", cfg.Input.Address()))),
 	}
-	sy.channel = NewStoreChannel(StorerConf{
-		InputId: cfg.Input.Address(),
-		Dir:     cfg.Channel.Storer.DirPath,
-		MaxSize: cfg.Channel.Storer.MaxSize,
-		LogSize: cfg.Channel.Storer.LogSize,
-		flush:   cfg.Channel.Storer.Flush,
-	})
+	sy.channel = NewChannel(cfg.Channel, cfg.Input.Address())
 	sy.wait = usync.NewWaitCloser(nil)
 	return sy
 }

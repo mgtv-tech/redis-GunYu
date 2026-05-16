@@ -183,31 +183,57 @@ func (ic *InputConfig) RdbLimiter() chan struct{} {
 }
 
 type ChannelConfig struct {
+	Type                    string `yaml:"type"`
 	Storer                  *StorerConfig
+	Memory                  *MemoryConfig
 	VerifyCrc               bool
 	StaleCheckpointDuration time.Duration `yaml:"staleCheckpointDuration"`
 }
 
 func (cc *ChannelConfig) Clone() *ChannelConfig {
-	storer := *cc.Storer
+	var storer *StorerConfig
+	if cc.Storer != nil {
+		storerCopy := *cc.Storer
+		storer = &storerCopy
+	}
+	var memory *MemoryConfig
+	if cc.Memory != nil {
+		memoryCopy := *cc.Memory
+		memory = &memoryCopy
+	}
 	return &ChannelConfig{
+		Type:                    cc.Type,
 		VerifyCrc:               cc.VerifyCrc,
-		StaleCheckpointDuration: staleCheckpointDuration,
-		Storer:                  &storer,
+		StaleCheckpointDuration: cc.StaleCheckpointDuration,
+		Storer:                  storer,
+		Memory:                  memory,
 	}
 }
 
 func (cc *ChannelConfig) fix() error {
-	if cc.Storer == nil {
-		cc.Storer = &StorerConfig{}
-	}
 	if cc.StaleCheckpointDuration == 0 {
 		cc.StaleCheckpointDuration = staleCheckpointDuration
 	}
 	if cc.StaleCheckpointDuration < time.Minute*5 {
 		cc.StaleCheckpointDuration = time.Minute * 5
 	}
-	return cc.Storer.fix()
+	if cc.Type == "" {
+		cc.Type = ChannelTypeStorer
+	}
+	switch cc.Type {
+	case ChannelTypeStorer:
+		if cc.Storer == nil {
+			cc.Storer = &StorerConfig{}
+		}
+		return cc.Storer.fix()
+	case ChannelTypeMemory:
+		if cc.Memory == nil {
+			cc.Memory = &MemoryConfig{}
+		}
+		return cc.Memory.fix()
+	default:
+		return newConfigError("invalid channel.type : %s", cc.Type)
+	}
 }
 
 type StorerConfig struct {
@@ -242,6 +268,65 @@ func (sc *StorerConfig) fix() error {
 	}
 
 	return err
+}
+
+const (
+	ChannelTypeStorer = "storer"
+	ChannelTypeMemory = "memory"
+)
+
+type MemoryConfig struct {
+	MaxSize int64 `yaml:"maxSize"` // -1 is unlimited, default is 512MiB
+	LogSize int64 `yaml:"logSize"` // logical AOF segment size, default is 100MiB
+}
+
+func (mc *MemoryConfig) fix() error {
+	if mc.MaxSize == 0 {
+		mc.MaxSize = 512 * 1024 * 1024
+	}
+	if mc.LogSize <= 0 {
+		mc.LogSize = 100 * 1024 * 1024
+	}
+	if mc.MaxSize > 0 && mc.LogSize > mc.MaxSize {
+		mc.LogSize = mc.MaxSize
+	}
+	return nil
+}
+
+func (cc *ChannelConfig) BackendMaxSize() int64 {
+	if cc == nil {
+		return 0
+	}
+	switch cc.Type {
+	case ChannelTypeMemory:
+		if cc.Memory == nil {
+			return 0
+		}
+		return cc.Memory.MaxSize
+	default:
+		if cc.Storer == nil {
+			return 0
+		}
+		return cc.Storer.MaxSize
+	}
+}
+
+func (cc *ChannelConfig) SetBackendMaxSize(size int64) {
+	if cc == nil {
+		return
+	}
+	switch cc.Type {
+	case ChannelTypeMemory:
+		if cc.Memory == nil {
+			cc.Memory = &MemoryConfig{}
+		}
+		cc.Memory.MaxSize = size
+	default:
+		if cc.Storer == nil {
+			cc.Storer = &StorerConfig{}
+		}
+		cc.Storer.MaxSize = size
+	}
 }
 
 func cloneBoolPointer(vp *bool) *bool {
