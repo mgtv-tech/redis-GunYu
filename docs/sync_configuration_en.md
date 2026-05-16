@@ -146,6 +146,9 @@ output:
 ### Cache
 
 Configuration:
+- type: Channel backend type, supports `storer` and `memory`
+  - `storer`: Persist local RDB/AOF cache on disk. This is the default behavior.
+  - `memory`: Keep the local channel in memory and avoid disk I/O. The in-memory cache is not preserved across process restarts.
 - storer: Storage for RDB and AOF
   - dirPath: Storage directory, default is `/tmp/redis-gunyu`
   - maxSize: Maximum storage size, in bytes, default is 50GiB
@@ -155,6 +158,9 @@ Configuration:
     - everyWrite: Synchronize after each command write to AOF
     - dirtySize: Synchronize when AOF file data exceeds dirtySize
     - auto: Depends on operating system
+- memory: In-memory channel configuration
+  - maxSize: Maximum in-memory cache size, in bytes, default is 512MiB
+  - logSize: Logical AOF segment size, in bytes, default is 100MiB
 - verifyCrc: Default is false
 - staleCheckpointDuration: The checkpoints which are older than staleCheckpointDuration are expired, default is 12 hours
 

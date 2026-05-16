@@ -1,15 +1,39 @@
 package syncer
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"io"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/store"
+	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 )
 
 var _ Channel = &StoreChannel{}
+
+type ChannelReader interface {
+	Start(wait usync.WaitCloser)
+	Left() int64
+	RunId() string
+	Size() int64
+	IoReader() *bufio.Reader
+	IsAof() bool
+	Close()
+}
+
+type RdbChannelWriter interface {
+	Start()
+	Wait(ctx context.Context) error
+	Close() error
+}
+
+type AofChannelWriter interface {
+	RdbChannelWriter
+	Right() int64
+}
 
 type Channel interface {
 	StartPoint([]string) (StartPoint, error)
@@ -19,9 +43,9 @@ type Channel interface {
 	IsValidOffset(Offset) bool
 	GetOffsetRange(string) (int64, int64)
 	GetRdb(string) (int64, int64)
-	NewRdbWriter(io.Reader, int64, int64) (*store.RdbWriter, error)
-	NewAofWritter(r io.Reader, offset int64) (*store.AofWriter, error)
-	NewReader(Offset) (*store.Reader, error)
+	NewRdbWriter(io.Reader, int64, int64) (RdbChannelWriter, error)
+	NewAofWritter(r io.Reader, offset int64) (AofChannelWriter, error)
+	NewReader(Offset) (ChannelReader, error)
 	Close() error
 }
 
@@ -29,6 +53,25 @@ type StoreChannel struct {
 	storer    *store.Storer
 	StorerCfg StorerConf
 	logger    log.Logger
+}
+
+func NewChannel(cfg config.ChannelConfig, inputId string) Channel {
+	switch cfg.Type {
+	case config.ChannelTypeMemory:
+		return NewMemoryChannel(MemoryConf{
+			InputId: inputId,
+			MaxSize: cfg.Memory.MaxSize,
+			LogSize: cfg.Memory.LogSize,
+		})
+	default:
+		return NewStoreChannel(StorerConf{
+			InputId: inputId,
+			Dir:     cfg.Storer.DirPath,
+			MaxSize: cfg.Storer.MaxSize,
+			LogSize: cfg.Storer.LogSize,
+			flush:   cfg.Storer.Flush,
+		})
+	}
 }
 
 func NewStoreChannel(cfg StorerConf) Channel {
@@ -87,7 +130,7 @@ func (sc *StoreChannel) GetRdb(runId string) (int64, int64) {
 	return sc.storer.GetRdb()
 }
 
-func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {
+func (sc *StoreChannel) NewReader(offset Offset) (ChannelReader, error) {
 	// if offset.RunId != sc.storer.RunId() {
 	// 	err := sc.storer.SetRunId(offset.RunId)
 	// 	if err != nil {
@@ -102,7 +145,7 @@ func (sc *StoreChannel) NewReader(offset Offset) (*store.Reader, error) {
 	return r, err
 }
 
-func (sc *StoreChannel) NewRdbWriter(reader io.Reader, offset int64, size int64) (*store.RdbWriter, error) {
+func (sc *StoreChannel) NewRdbWriter(reader io.Reader, offset int64, size int64) (RdbChannelWriter, error) {
 	w, err := sc.storer.GetRdbWriter(reader, offset, size)
 	if err != nil {
 		sc.logger.Errorf("get rdb writer error : offset(%d), size(%d), err(%w)", offset, size, err)
@@ -110,7 +153,7 @@ func (sc *StoreChannel) NewRdbWriter(reader io.Reader, offset int64, size int64)
 	return w, err
 }
 
-func (sc *StoreChannel) NewAofWritter(r io.Reader, offset int64) (*store.AofWriter, error) {
+func (sc *StoreChannel) NewAofWritter(r io.Reader, offset int64) (AofChannelWriter, error) {
 	w, err := sc.storer.GetAofWritter(r, offset)
 	if err != nil {
 		sc.logger.Errorf("get aof writer error : offset(%d), err(%w)", offset, err)
