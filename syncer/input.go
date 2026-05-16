@@ -15,7 +15,6 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/pkg/metric"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
-	"github.com/mgtv-tech/redis-GunYu/pkg/store"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
 	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
@@ -329,8 +328,8 @@ func (ri *RedisInput) syncMeta(ctx context.Context, redisCli *redis.StandaloneRe
 }
 
 func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.StandaloneRedis, isFullSync bool, rdbSize int64, offset int64) {
-	var rdbWriter *store.RdbWriter
-	var aofWriter *store.AofWriter
+	var rdbWriter RdbChannelWriter
+	var aofWriter AofChannelWriter
 	var err error
 	if isFullSync { // create writers before start readers
 		inputStateGauge.Set(1, ri.inputAddr, "leader")
@@ -386,7 +385,7 @@ func (ri *RedisInput) syncData(wait usync.WaitCloser, redisCli *redis.Standalone
 	}, func(i interface{}) { wait.Close(fmt.Errorf("panic : %v", i)) })
 }
 
-func (ri *RedisInput) syncRdb(ctx context.Context, reader *bufio.Reader, writer *store.RdbWriter) error {
+func (ri *RedisInput) syncRdb(ctx context.Context, reader *bufio.Reader, writer RdbChannelWriter) error {
 	ri.fsm.SetState(SyncStateFullSyncing)
 	writer.Start()
 	err := writer.Wait(ctx)
@@ -400,7 +399,7 @@ func (ri *RedisInput) syncRdb(ctx context.Context, reader *bufio.Reader, writer 
 	return err
 }
 
-func (ri *RedisInput) syncIncr(ctx context.Context, reader *bufio.Reader, offset int64, writer *store.AofWriter) error {
+func (ri *RedisInput) syncIncr(ctx context.Context, reader *bufio.Reader, offset int64, writer AofChannelWriter) error {
 	ri.fsm.SetState(SyncStateIncrSyncing)
 	writer.Start()
 	err := writer.Wait(ctx)
@@ -415,7 +414,7 @@ func (ri *RedisInput) syncIncr(ctx context.Context, reader *bufio.Reader, offset
 	return err
 }
 
-func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer *store.AofWriter, cli *redis.StandaloneRedis) {
+func (ri *RedisInput) startSyncAck(wait usync.WaitCloser, writer AofChannelWriter, cli *redis.StandaloneRedis) {
 	usync.SafeGo(func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -538,7 +537,7 @@ func (ri *RedisInput) run() error {
 	return runScope.Error()
 }
 
-func (ri *RedisInput) readChannel(wait usync.WaitCloser, readerOffset StartPoint) *store.Reader {
+func (ri *RedisInput) readChannel(wait usync.WaitCloser, readerOffset StartPoint) ChannelReader {
 	if wait.IsClosed() {
 		return nil
 	}
@@ -552,7 +551,7 @@ func (ri *RedisInput) readChannel(wait usync.WaitCloser, readerOffset StartPoint
 	return reader
 }
 
-func (ri *RedisInput) sendOutput(wait usync.WaitCloser, reader *store.Reader) {
+func (ri *RedisInput) sendOutput(wait usync.WaitCloser, reader ChannelReader) {
 	if wait.IsClosed() {
 		return
 	}
