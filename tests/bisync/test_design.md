@@ -110,15 +110,16 @@ bisync 的高风险点主要有：
 | 编号 | 场景 | 核心检查点 | 自动化建议 |
 | --- | --- | --- | --- |
 | P2-01 | Redis 版本矩阵 | 7.0、7.2、更新版本 keyspec 行为一致 | 新增 `run_category7.sh` |
-| P2-02 | 模块命令矩阵 | RedisJSON、RedisBloom 等模块命令 key 解析正确 | 复用 `keyspec_verify --samples-file`，当前暂不支持 `JSON.SET`、`JSON.DEL`、`JSON.MSET`、`BF.ADD`、`CMS.MERGE`、`TDIGEST.MERGE`、`TOPK.ADD` |
+| P2-02 | 模块命令矩阵 | RedisJSON、RedisBloom、RediSearch 等模块命令 key 解析正确 | 复用 `keyspec_verify` 内置模块样本，并可通过 `--samples-file` 扩展生产命令集 |
 | P2-03 | 升级/回滚 | 旧版本 checkpoint + 新版本 bisync 恢复正确；回滚后不破坏数据 | 新增升级回归 runner |
 | P2-04 | 异常注入 | 目标端写失败、网络抖动、磁盘空间紧张时 fail-stop 行为清晰 | 新增故障注入脚本 |
 
 当前模块命令状态说明：
 
-- 现阶段对 RedisJSON / RedisBloom 模块命令仍按“暂时不支持”管理，命令清单为 `JSON.SET`、`JSON.DEL`、`JSON.MSET`、`BF.ADD`、`CMS.MERGE`、`TDIGEST.MERGE`、`TOPK.ADD`。
-- 原因不是静态 keyspec 完全缺失，而是模块实例、`COMMAND GETKEYS` 校验、strict routing 回归和发布门禁尚未形成稳定闭环。
-- 后续需要把带模块的 Redis 实例纳入 `category4` / `keyspec_verify` 常态化验证，再解除这批命令的“暂时不支持”状态。
+- 已为 `JSON.SET`、`JSON.DEL`、`JSON.MSET`、`BF.ADD`、`CMS.MERGE`、`TDIGEST.MERGE`、`TOPK.ADD`、`FT.CREATE`、`FT.SEARCH`、`FT.DROPINDEX` 建立静态 keyspec 和 `keyspec_verify` 样本。
+- 这些样本只证明命令路由所需的 key 解析能力；模块自定义 RDB 数据类型仍需要单独验证。
+- 已新增 `tests/bisync/run_category10.sh` 作为 Redis Modules 回归脚本，覆盖 Redis Stack `keyspec`、RedisJSON / RedisBloom 的真实 RDB 恢复，以及 `moduleAuxPolicy=fail|skip` 边界。
+- 后续需要继续扩展生产实际使用的模块命令样本，并根据生产模块版本补版本矩阵。
 
 ## 7. 对现有 `tests/bisync` 的落地建议
 

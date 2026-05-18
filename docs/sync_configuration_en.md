@@ -86,6 +86,9 @@ The output configuration is as follows:
   - functionExists: Behavior for replaying function fields, similar to the `FUNCTION RESTORE` command parameters.
     - flush:
     - replace:
+  - moduleAuxPolicy: Behavior when RDB contains Redis Module global `MODULE_AUX` metadata.
+    - fail: Stop RDB replay before checkpointing. This is the default.
+    - skip: Skip unsupported module aux metadata and continue. Use only when the metadata is known to be rebuilt by incremental module commands or external procedures.
   - maxProtoBulkLen: Maximum size of the protocol's buffer, referring to the Redis configuration `proto-max-bulk-len`. The default is 512 MiB.
   - targetDbMap : DB mapping, map structure, e.g., syncing DB0 to DB1, DB2 to DB3， `{"targetDbMap":{"0":1,"2":3}}`
   - targetDb: Which database will be synced. The default value is -1, it is all database of input redis.

@@ -68,6 +68,14 @@ Current scripts:
   plane, one leader process is terminated, and the follower process must take
   over and continue single-direction replication.
 
+- `run_category11.sh`
+  Runs Redis Modules incremental replay checks against temporary Redis Stack
+  source and destination instances. It validates standalone single-direction
+  replay of RedisJSON, RedisBloom, and RediSearch commands with
+  `bisyncEnabled: false`. The runner sets `moduleAuxPolicy: skip` so Redis
+  Stack's global module metadata does not block the initial full sync before
+  incremental module commands are checked.
+
 - `run_all.sh`
   Executes category1 through category10 sequentially and writes a Markdown
   report with case status, duration, and tail logs.
@@ -120,6 +128,7 @@ Current scope:
 - Mixed topology replay (`cluster -> standalone`, `standalone -> cluster`)
 - RDB `keyExists` and output filter matrix
 - Rich command/data-type boundaries including streams and TTL edges
+- Redis Modules incremental replay on standalone Redis Stack instances
 - Single-direction soak with restart/offline windows and resource sampling
 - Redis control-plane HA for multiple non-bisync syncers
 - Negative assertions that non-bisync runs do not create

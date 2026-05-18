@@ -50,6 +50,12 @@ load:
       prefixKeyBlacklist: test_ignore
 ```
 
+### Redis Modules RDB 边界
+
+RDB load 对 Redis 模块 keyspace 数据类型采用 opaque `RESTORE` 回放，不解析模块内部格式。目标 Redis 必须加载兼容模块，并保持 `replay.replayRdbEnableRestore: true`。
+
+已用 Redis Stack 验证 RedisJSON / RedisBloom 的 keyspace module object 可以恢复。RediSearch index 等 `MODULE_AUX` 全局模块元数据当前不支持。默认 `replay.moduleAuxPolicy: fail` 会在发现这类元数据时停止 RDB 回放且不写 checkpoint；只有确认被跳过的元数据会由增量模块命令或外部流程重建时，才应设置 `replay.moduleAuxPolicy: skip`。
+
 
 ## 解析RDB文件，输出到标准输出或者文件中
 
@@ -73,4 +79,3 @@ load:
 ```
 ./redisGunYu -cmd=rdb -rdb.action=print -rdb.rdbPath=/tmp/dump.rdb -rdb.print.output=/tmp/rdb.log -rdb.print.noLogKey=true -rdb.print.noLogValue=true
 ```
-
