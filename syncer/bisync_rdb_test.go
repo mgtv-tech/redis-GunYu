@@ -390,6 +390,93 @@ func TestBuildBisyncRdbReplayUnitReplaceUsesRestoreWhenSupported(t *testing.T) {
 	}
 }
 
+func TestBuildBisyncRdbReplayUnitModuleUsesRestore(t *testing.T) {
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:              "127.0.0.1:6379",
+		BatchCmdCount:          4,
+		BatchBufferSize:        1024,
+		CanTransaction:         true,
+		KeyExists:              "replace",
+		ReplayRdbEnableRestore: true,
+		MaxProtoBulkLen:        1024,
+		Redis: config.RedisConfig{
+			Type:    config.RedisTypeStandalone,
+			Version: "7.0.0",
+		},
+	})
+
+	entry := &rdb.BinEntry{
+		Key: []byte("json{tag}"),
+		ObjectParser: &fakeRdbParser{
+			otype:      rdb.RdbObjectModule,
+			firstBin:   true,
+			canRestore: true,
+			key:        []byte("json{tag}"),
+			dumpValue:  []byte("module-dump"),
+			dumpSize:   len("module-dump"),
+			cmds: []fakeRdbExecCmd{
+				{cmd: "JSON.SET", args: []interface{}{[]byte("json{tag}"), []byte("$"), []byte(`{"a":1}`)}},
+			},
+		},
+	}
+
+	unit, skip, err := ro.buildBisyncRdbReplayUnit(&fakeTxnRedis{}, 321, entry, newBisyncRdbReplayState())
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+	if skip {
+		t.Fatalf("module entry should not skip replay unit")
+	}
+	if len(unit.Commands) != 1 || unit.Commands[0].Cmd != "restore" {
+		t.Fatalf("expected module object to use RESTORE only, got %#v", unit.Commands)
+	}
+	if got := string(unit.Commands[0].Args[0]); got != "json{tag}" {
+		t.Fatalf("unexpected restore key: %s", got)
+	}
+}
+
+func TestBuildBisyncRdbReplayUnitModuleFailsWithoutRestore(t *testing.T) {
+	ro := NewRedisOutput(RedisOutputConfig{
+		InputName:              "127.0.0.1:6379",
+		BatchCmdCount:          4,
+		BatchBufferSize:        1024,
+		CanTransaction:         true,
+		KeyExists:              "replace",
+		ReplayRdbEnableRestore: false,
+		MaxProtoBulkLen:        1024,
+		Redis: config.RedisConfig{
+			Type:    config.RedisTypeStandalone,
+			Version: "7.0.0",
+		},
+	})
+
+	entry := &rdb.BinEntry{
+		Key: []byte("json{tag}"),
+		ObjectParser: &fakeRdbParser{
+			otype:      rdb.RdbObjectModule,
+			firstBin:   true,
+			canRestore: true,
+			key:        []byte("json{tag}"),
+			dumpValue:  []byte("module-dump"),
+			dumpSize:   len("module-dump"),
+			cmds: []fakeRdbExecCmd{
+				{cmd: "JSON.SET", args: []interface{}{[]byte("json{tag}"), []byte("$"), []byte(`{"a":1}`)}},
+			},
+		},
+	}
+
+	_, skip, err := ro.buildBisyncRdbReplayUnit(&fakeTxnRedis{}, 321, entry, newBisyncRdbReplayState())
+	if err == nil {
+		t.Fatalf("expected module object to fail when RESTORE is disabled")
+	}
+	if skip {
+		t.Fatalf("module restore failure should not be reported as skip")
+	}
+	if !strings.Contains(err.Error(), "requires RESTORE replay") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestBuildBisyncRdbReplayUnitIgnoreSkipsSplitKeyOnce(t *testing.T) {
 	ro := NewRedisOutput(RedisOutputConfig{
 		InputName:       "127.0.0.1:6379",

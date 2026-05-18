@@ -349,6 +349,7 @@ type ReplayConfig struct {
 	KeyExists              string        `yaml:"keyExists"` // replace|ignore|error
 	KeyExistsLog           bool          `yaml:"keyExistsLog"`
 	FunctionExists         string        `yaml:"functionExists"`
+	ModuleAuxPolicy        string        `yaml:"moduleAuxPolicy"` // fail|skip
 	MaxProtoBulkLen        int           `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
 	TargetDbCfg            *int          `yaml:"targetDb" default:"-1"`
 	TargetDb               int           `yaml:"-"`
@@ -377,6 +378,22 @@ const (
 	ReplayModePipeline ReplayMode = "pipeline"
 	ReplayModeParallel ReplayMode = "parallel"
 )
+
+const (
+	ModuleAuxPolicyFail = "fail"
+	ModuleAuxPolicySkip = "skip"
+)
+
+func NormalizeModuleAuxPolicy(raw string) (string, error) {
+	policy := strings.ToLower(strings.TrimSpace(raw))
+	if policy == "" {
+		return ModuleAuxPolicyFail, nil
+	}
+	if !slices.Contains([]string{ModuleAuxPolicyFail, ModuleAuxPolicySkip}, policy) {
+		return "", newConfigError("invalid moduleAuxPolicy %q, expected fail or skip", raw)
+	}
+	return policy, nil
+}
 
 func NormalizeReplayMode(raw ReplayMode) (ReplayMode, error) {
 	mode := ReplayMode(strings.ToLower(strings.TrimSpace(string(raw))))
@@ -465,6 +482,11 @@ func (of *ReplayConfig) fix() error {
 	if !slices.Contains([]string{"replace", "ignore", "error"}, of.KeyExists) {
 		of.KeyExists = "replace"
 	}
+	moduleAuxPolicy, err := NormalizeModuleAuxPolicy(of.ModuleAuxPolicy)
+	if err != nil {
+		return err
+	}
+	of.ModuleAuxPolicy = moduleAuxPolicy
 	if of.MaxProtoBulkLen <= 0 {
 		of.MaxProtoBulkLen = 512 * (1024 * 1024) // redis default value is 512MiB, [1MiB, max_int]
 	}

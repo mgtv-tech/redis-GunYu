@@ -57,6 +57,9 @@ func (rr *RdbReplay) Replay(e *rdb.BinEntry) (err error) {
 	}
 
 	if !restoreCmd {
+		if ot == rdb.RdbObjectModule {
+			return fmt.Errorf("rdb module object requires RESTORE replay for key %s", e.Key)
+		}
 		if e.FirstBin() {
 			exist, err := common.Bool(rr.Client.Do("exists", e.Key))
 			if err != nil {

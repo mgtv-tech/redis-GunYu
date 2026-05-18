@@ -144,6 +144,11 @@ func (ro *RedisOutput) Close() {
 
 func NewRedisOutput(cfg RedisOutputConfig) *RedisOutput {
 	//labels := map[string]string{"id": strconv.Itoa(cfg.Id), "input": cfg.InputName}
+	if policy, err := config.NormalizeModuleAuxPolicy(cfg.ModuleAuxPolicy); err == nil {
+		cfg.ModuleAuxPolicy = policy
+	} else {
+		cfg.ModuleAuxPolicy = config.ModuleAuxPolicyFail
+	}
 	ro := &RedisOutput{
 		cfg:    cfg,
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[RedisOutput(%s)] ", cfg.InputName))),
@@ -192,6 +197,7 @@ type RedisOutputConfig struct {
 	KeyExists              string             `yaml:"keyExists"` // replace|ignore|error
 	KeyExistsLog           bool               `yaml:"keyExistsLog"`
 	FunctionExists         string             `yaml:"functionExists"`
+	ModuleAuxPolicy        string             `yaml:"moduleAuxPolicy"`
 	MaxProtoBulkLen        int                `yaml:"maxProtoBulkLen"` // proto-max-bulk-len, default value of redis is 512MiB
 	TargetDb               int                `yaml:"-"`
 	TargetDbMap            map[int]int        `yaml:"targetDbMap"`
@@ -209,6 +215,17 @@ type RedisOutputConfig struct {
 
 	Filter           config.FilterConfig
 	SyncDelayTestKey string
+}
+
+func (ro *RedisOutput) rdbParseOptions() []rdb.RdbParseOption {
+	opts := []rdb.RdbParseOption{
+		rdb.WithTargetRedisVersion(ro.cfg.Redis.Version),
+		rdb.WithFunctionExists(ro.cfg.FunctionExists),
+	}
+	if ro.cfg.ModuleAuxPolicy == config.ModuleAuxPolicyFail {
+		opts = append(opts, rdb.WithFailOnModuleAux())
+	}
+	return opts
 }
 
 type cmdExecution struct {
@@ -450,8 +467,7 @@ func (ro *RedisOutput) sendRdb(pctx context.Context, reader ChannelReader) error
 		}
 	}()
 
-	rdbPipe := rdb.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize,
-		rdb.WithTargetRedisVersion(ro.cfg.Redis.Version), rdb.WithFunctionExists(ro.cfg.FunctionExists))
+	rdbPipe := rdb.ParseRdb(reader.IoReader(), &readBytes, config.RdbPipeSize, ro.rdbParseOptions()...)
 	useBisyncGlobalLane := ro.bisyncEnabled() && ro.cfg.Redis.IsCluster()
 	errChanSize := ro.cfg.ReplayRdbParallel + 1
 	if useBisyncGlobalLane {

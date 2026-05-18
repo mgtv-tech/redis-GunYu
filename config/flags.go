@@ -46,7 +46,10 @@ func (rcf *RdbCmdConfig) fix() error {
 	if rcf.Action == "load" {
 		return rcf.Load.fix()
 	}
-	return nil
+	if rcf.Action == "print" {
+		return rcf.Print.fix()
+	}
+	return newConfigError("unknown rdb action : %s", rcf.Action)
 }
 
 type RdbCmdLoad struct {
@@ -67,9 +70,19 @@ func (rcl *RdbCmdLoad) fix() error {
 }
 
 type RdbCmdPrint struct {
-	NoLogKey   bool
-	NoLogValue bool
-	Output     string `yaml:"output" usage:"output file path, default is stdout"`
+	NoLogKey        bool
+	NoLogValue      bool
+	Output          string `yaml:"output" usage:"output file path, default is stdout"`
+	ModuleAuxPolicy string `yaml:"moduleAuxPolicy" usage:"RDB MODULE_AUX handling policy: fail or skip"`
+}
+
+func (rcp *RdbCmdPrint) fix() error {
+	policy, err := NormalizeModuleAuxPolicy(rcp.ModuleAuxPolicy)
+	if err != nil {
+		return err
+	}
+	rcp.ModuleAuxPolicy = policy
+	return nil
 }
 
 type DiffCmdFlags struct {

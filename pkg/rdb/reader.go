@@ -154,6 +154,22 @@ func (r *RdbReader) ReadDouble() (float64, error) {
 	return float64(math.Float64frombits(bits)), nil
 }
 
+func (r *RdbReader) ReadBinaryFloatP() float64 {
+	f, e := r.ReadBinaryFloat()
+	panicIfErr(e)
+	return f
+}
+
+func (r *RdbReader) ReadBinaryFloat() (float64, error) {
+	var buf = make([]byte, 4)
+	err := r.readFull(buf)
+	if err != nil {
+		return 0, err
+	}
+	bits := binary.LittleEndian.Uint32(buf)
+	return float64(math.Float32frombits(bits)), nil
+}
+
 func (r *RdbReader) ReadFloatP() float64 {
 	f, e := r.ReadFloat()
 	panicIfErr(e)

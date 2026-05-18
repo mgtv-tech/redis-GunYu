@@ -208,6 +208,43 @@ func TestReplayConfigFixRejectsConflictingReplayMode(t *testing.T) {
 	assert.NotNil(t, err)
 }
 
+func TestReplayConfigFixDefaultsModuleAuxPolicyFail(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	assert.Equal(t, ModuleAuxPolicyFail, cfg.ModuleAuxPolicy)
+}
+
+func TestReplayConfigFixNormalizesModuleAuxPolicy(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		ModuleAuxPolicy:        " SKIP ",
+	}
+
+	err := cfg.fix()
+	assert.Nil(t, err)
+	assert.Equal(t, ModuleAuxPolicySkip, cfg.ModuleAuxPolicy)
+}
+
+func TestReplayConfigFixRejectsInvalidModuleAuxPolicy(t *testing.T) {
+	cfg := ReplayConfig{
+		ResumeFromBreakPoint:   boolPtr(true),
+		ReplayRdbEnableRestore: boolPtr(true),
+		ReplayTransaction:      boolPtr(true),
+		ModuleAuxPolicy:        "warn",
+	}
+
+	err := cfg.fix()
+	assert.NotNil(t, err)
+}
+
 func boolPtr(v bool) *bool {
 	return &v
 }

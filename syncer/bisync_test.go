@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	redispkg "github.com/mgtv-tech/redis-GunYu/pkg/redis"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/checkpoint"
 	redisclient "github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	rediscommon "github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
@@ -432,6 +433,31 @@ func TestBuildBisyncReplayUnitCrossSlotFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected cross-slot build error")
+	}
+}
+
+func TestBuildBisyncReplayUnitModuleMergeUsesDestinationSlotOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cmd  string
+	}{
+		{name: "cms", cmd: "cms.merge"},
+		{name: "tdigest", cmd: "tdigest.merge"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			unit, err := buildBisyncReplayUnit(1, 0, 1, false, []bisyncAofCommand{
+				{Cmd: tt.cmd, Args: [][]byte{[]byte("dst{a}"), []byte("1"), []byte("src{b}")}},
+			})
+			if err != nil {
+				t.Fatalf("expected destination-only key extraction, got %v", err)
+			}
+			if unit == nil {
+				t.Fatalf("unexpected replay unit: %+v", unit)
+			}
+			if got, want := unit.Slot, redispkg.KeyToSlot("dst{a}"); got != want {
+				t.Fatalf("unexpected replay unit slot: got=%d want=%d unit=%+v", got, want, unit)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/digest"
+	"github.com/mgtv-tech/redis-GunYu/pkg/rdb"
 	redisclient "github.com/mgtv-tech/redis-GunYu/pkg/redis/client"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	usync "github.com/mgtv-tech/redis-GunYu/pkg/sync"
@@ -83,6 +86,85 @@ func TestSendCmdsBatchPipelineClosesWaitOnInjectedReplyError(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for pipeline sender exit")
 	}
+}
+
+func TestRdbParseOptionsFailOnModuleAux(t *testing.T) {
+	ro := NewRedisOutput(RedisOutputConfig{
+		ModuleAuxPolicy: config.ModuleAuxPolicyFail,
+	})
+
+	l := rdb.NewLoader(bytes.NewReader(buildOutputTestRDBPayload(t, []byte{
+		byte(rdb.RdbFlagModuleAux),
+		0x01,
+		0x00,
+		byte(rdb.RdbFlagEOF),
+	})), ro.rdbParseOptions()...)
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	_, err := l.Next()
+	if err == nil {
+		t.Fatalf("expected module aux fail-fast error")
+	}
+}
+
+func TestRdbParseOptionsSkipModuleAux(t *testing.T) {
+	ro := NewRedisOutput(RedisOutputConfig{
+		ModuleAuxPolicy: config.ModuleAuxPolicySkip,
+	})
+
+	l := rdb.NewLoader(bytes.NewReader(buildOutputTestRDBPayload(t, []byte{
+		byte(rdb.RdbFlagModuleAux),
+		0x01,
+		0x00,
+		byte(rdb.RdbFlagEOF),
+	})), ro.rdbParseOptions()...)
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() failed with skip policy: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+}
+
+func TestRdbParseOptionsInvalidPolicyFailsSafe(t *testing.T) {
+	ro := NewRedisOutput(RedisOutputConfig{
+		ModuleAuxPolicy: "warn",
+	})
+
+	if ro.cfg.ModuleAuxPolicy != config.ModuleAuxPolicyFail {
+		t.Fatalf("unexpected normalized module aux policy: %s", ro.cfg.ModuleAuxPolicy)
+	}
+}
+
+func buildOutputTestRDBPayload(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var payload bytes.Buffer
+	if _, err := payload.WriteString("REDIS0013"); err != nil {
+		t.Fatalf("write header failed: %v", err)
+	}
+	if _, err := payload.Write(body); err != nil {
+		t.Fatalf("write body failed: %v", err)
+	}
+
+	crc := digest.New()
+	if _, err := crc.Write(payload.Bytes()); err != nil {
+		t.Fatalf("checksum write failed: %v", err)
+	}
+
+	var out bytes.Buffer
+	if _, err := out.Write(payload.Bytes()); err != nil {
+		t.Fatalf("copy payload failed: %v", err)
+	}
+	if err := binary.Write(&out, binary.LittleEndian, crc.Sum64()); err != nil {
+		t.Fatalf("append checksum failed: %v", err)
+	}
+	return out.Bytes()
 }
 
 func TestSendAofRejectsInjectedTxnExecReplyError(t *testing.T) {

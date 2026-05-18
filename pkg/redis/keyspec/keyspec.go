@@ -134,7 +134,6 @@ var commandKeyPositions = map[string]redisKeyPosition{
 	"cms.incrby":           genericKeyPos,
 	"cms.initbydim":        genericKeyPos,
 	"cms.initbyprob":       genericKeyPos,
-	"cms.merge":            genericKeyPos,
 	"tdigest.add":          genericKeyPos,
 	"tdigest.byrevrank":    genericKeyPos,
 	"tdigest.byrevscore":   genericKeyPos,
@@ -142,7 +141,6 @@ var commandKeyPositions = map[string]redisKeyPosition{
 	"tdigest.cdf":          genericKeyPos,
 	"tdigest.incrby":       genericKeyPos,
 	"tdigest.max":          genericKeyPos,
-	"tdigest.merge":        genericKeyPos,
 	"tdigest.min":          genericKeyPos,
 	"tdigest.quantile":     genericKeyPos,
 	"tdigest.rank":         genericKeyPos,
@@ -153,6 +151,9 @@ var commandKeyPositions = map[string]redisKeyPosition{
 	"topk.incrby":          genericKeyPos,
 	"topk.list":            genericKeyPos,
 	"topk.reserve":         genericKeyPos,
+	"ft.create":            genericKeyPos,
+	"ft.search":            genericKeyPos,
+	"ft.dropindex":         genericKeyPos,
 	"del":                  {1, 0, 1},
 	"unlink":               {1, -1, 1},
 }
@@ -169,7 +170,8 @@ var commandKeyExtractors = map[string]getkeysProc{
 	"zunionstore":       numkeysExtractor(1, 2, 0),
 	"zinterstore":       numkeysExtractor(1, 2, 0),
 	"zdiffstore":        numkeysExtractor(1, 2, 0),
-	"tdigest.merge":     numkeysExtractor(1, 2, 0),
+	"cms.merge":         fixedKeyExtractor(0),
+	"tdigest.merge":     fixedKeyExtractor(0),
 	"georadius":         geoRadiusStoreExtractor,
 	"georadiusbymember": geoRadiusStoreExtractor,
 	"xgroup":            xgroupExtractor,
@@ -186,6 +188,22 @@ var commandKeyExtractors = map[string]getkeysProc{
 // fixedKeys can be used to include additional fixed key positions, such as a STORE destination key.
 func numkeysExtractor(numkeysIdx int, firstKeyIdx int, fixedKeys ...int) getkeysProc {
 	return numkeysStepExtractor(numkeysIdx, firstKeyIdx, 1, fixedKeys...)
+}
+
+// fixedKeyExtractor returns a stable list of 0-based key argument indexes.
+// It is used for commands where Redis only treats selected arguments as keys
+// even if other key-like arguments follow later in the command.
+func fixedKeyExtractor(indexes ...int) getkeysProc {
+	return func(args []string) []int {
+		keys := make([]int, 0, len(indexes))
+		for _, idx := range indexes {
+			if idx < 0 || idx >= len(args) {
+				return nil
+			}
+			keys = append(keys, idx)
+		}
+		return keys
+	}
 }
 
 // numkeysStepExtractor extends numkeysExtractor to support keys distributed with a fixed step.
