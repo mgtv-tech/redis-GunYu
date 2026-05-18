@@ -150,8 +150,13 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 		case RdbFlagEOF:
 			return nil, nil // means EOF
 		case RdbFlagModuleAux:
-			_ = l.ReadLength64P() // uint64_t moduleid = rdbLoadLen(rdb,NULL);
-			rdbLoadCheckModuleValue(l)
+			moduleID := l.ReadLength64P() // uint64_t moduleid = rdbLoadLen(rdb,NULL);
+			moduleName := moduleTypeNameByID(moduleID)
+			rdbLoadCheckModuleValue(l.RdbReader)
+			l.logger.Warnf("unsupported module aux data skipped : module(%s)", moduleName)
+			if l.options.failOnModuleAux {
+				return nil, fmt.Errorf("rdb module aux data is unsupported: module(%s)", moduleName)
+			}
 		case RdbFlagIdle:
 			idle := l.ReadLengthP()
 			entry.IdleTime = idle
@@ -174,11 +179,10 @@ func (l *Loader) Next() (entry *BinEntry, err error) {
 	}
 }
 
-func rdbLoadCheckModuleValue(l *Loader) {
+func rdbLoadCheckModuleValue(r *RdbReader) {
 	var whenOpCode uint32
 	for {
-		whenOpCode = l.ReadLengthP() // int when_opcode = rdbLoadLen(rdb,NULL);
-		_ = l.ReadLengthP()          // when
+		whenOpCode = r.ReadLengthP() // int when_opcode = rdbLoadLen(rdb,NULL);
 		if whenOpCode == rdbModuleOpcodeEof {
 			break
 		}
@@ -187,13 +191,13 @@ func rdbLoadCheckModuleValue(l *Loader) {
 		case rdbModuleOpcodeSint:
 			fallthrough
 		case rdbModuleOpcodeUint:
-			_ = l.ReadLengthP()
+			_ = r.ReadLengthP()
 		case rdbModuleOpcodeString:
-			l.ReadStringP()
+			r.ReadStringP()
 		case rdbModuleOpcodeFloat:
-			l.ReadFloatP()
+			r.ReadBinaryFloatP()
 		case rdbModuleOpcodeDouble:
-			l.ReadDoubleP()
+			r.ReadDoubleP()
 		}
 	}
 }

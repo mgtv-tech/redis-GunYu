@@ -75,7 +75,14 @@ func (rc *RdbCmd) Print(rdbPath string, cfg *config.RdbCmdPrint) error {
 		return err
 	}
 	var stat atomic.Int64
-	pipe := rdb.ParseRdb(file, &stat, config.RdbPipeSize, rdb.WithTargetRedisVersion("7.2"), rdb.WithFunctionExists("flush")) // @TODO version
+	parseOpts := []rdb.RdbParseOption{
+		rdb.WithTargetRedisVersion("7.2"), // @TODO version
+		rdb.WithFunctionExists("flush"),
+	}
+	if cfg.ModuleAuxPolicy == config.ModuleAuxPolicyFail {
+		parseOpts = append(parseOpts, rdb.WithFailOnModuleAux())
+	}
+	pipe := rdb.ParseRdb(file, &stat, config.RdbPipeSize, parseOpts...)
 	for {
 		select {
 		case e, ok := <-pipe:
@@ -148,6 +155,7 @@ func (rc *RdbCmd) Load(rdbPath string, cfg *config.RdbCmdLoad) error {
 		KeyExists:                  cfg.Replay.KeyExists,
 		KeyExistsLog:               cfg.Replay.KeyExistsLog,
 		FunctionExists:             cfg.Replay.FunctionExists,
+		ModuleAuxPolicy:            cfg.Replay.ModuleAuxPolicy,
 		MaxProtoBulkLen:            cfg.Replay.MaxProtoBulkLen,
 		TargetDb:                   cfg.Replay.TargetDb,
 		TargetDbMap:                cfg.Replay.TargetDbMap,
