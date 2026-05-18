@@ -76,6 +76,7 @@ run_case category7 bash ./tests/nonbisync/run_category7.sh
 run_case category8 bash ./tests/nonbisync/run_category8.sh
 run_case category9 bash ./tests/nonbisync/run_category9.sh
 run_case category10 bash ./tests/nonbisync/run_category10.sh
+run_case category11 bash ./tests/nonbisync/run_category11.sh
 
 write_report
 echo "report=${REPORT_FILE}"

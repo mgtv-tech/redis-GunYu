@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -75,6 +76,76 @@ func TestLoaderSkipsSlotInfoOpcode(t *testing.T) {
 	}
 	if err := l.Footer(); err != nil {
 		t.Fatalf("Footer() failed for RDB with slot info: %v", err)
+	}
+}
+
+func TestLoaderModuleAuxCanFailFast(t *testing.T) {
+	var body bytes.Buffer
+	body.WriteByte(byte(RdbFlagModuleAux))
+	writeRDBLen(t, &body, 1) // module id
+	writeRDBLen(t, &body, rdbModuleOpcodeEof)
+	body.WriteByte(byte(RdbFlagEOF))
+
+	l := NewLoader(bytes.NewReader(buildRDBPayload(t, 13, body.Bytes())), WithFailOnModuleAux())
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	_, err := l.Next()
+	if err == nil {
+		t.Fatalf("expected module aux fail-fast error")
+	}
+	if !strings.Contains(err.Error(), "module aux") {
+		t.Fatalf("unexpected module aux error: %v", err)
+	}
+}
+
+func TestLoaderModuleAuxSkippedByDefault(t *testing.T) {
+	var body bytes.Buffer
+	body.WriteByte(byte(RdbFlagModuleAux))
+	writeRDBLen(t, &body, 1) // module id
+	writeRDBLen(t, &body, rdbModuleOpcodeEof)
+	body.WriteByte(byte(RdbTypeString))
+	writeRDBString(t, &body, "after")
+	writeRDBString(t, &body, "ok")
+	body.WriteByte(byte(RdbFlagEOF))
+
+	l := NewLoader(bytes.NewReader(buildRDBPayload(t, 13, body.Bytes())))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() failed after skipped module aux: %v", err)
+	}
+	if entry == nil || string(entry.Key) != "after" || string(entry.Value()) != "ok" {
+		t.Fatalf("unexpected entry after skipped module aux: %+v", entry)
+	}
+}
+
+func TestLoaderModuleAuxSkipsBinaryFloat(t *testing.T) {
+	var body bytes.Buffer
+	body.WriteByte(byte(RdbFlagModuleAux))
+	writeRDBLen(t, &body, 1) // module id
+	writeRDBLen(t, &body, rdbModuleOpcodeFloat)
+	if err := binary.Write(&body, binary.LittleEndian, math.Float32bits(1.5)); err != nil {
+		t.Fatalf("write module float failed: %v", err)
+	}
+	writeRDBLen(t, &body, rdbModuleOpcodeEof)
+	body.WriteByte(byte(RdbTypeString))
+	writeRDBString(t, &body, "after")
+	writeRDBString(t, &body, "ok")
+	body.WriteByte(byte(RdbFlagEOF))
+
+	l := NewLoader(bytes.NewReader(buildRDBPayload(t, 13, body.Bytes())))
+	if err := l.Header(); err != nil {
+		t.Fatalf("Header() failed: %v", err)
+	}
+	entry, err := l.Next()
+	if err != nil {
+		t.Fatalf("Next() failed after skipped module aux float: %v", err)
+	}
+	if entry == nil || string(entry.Key) != "after" || string(entry.Value()) != "ok" {
+		t.Fatalf("unexpected entry after skipped module aux float: %+v", entry)
 	}
 }
 

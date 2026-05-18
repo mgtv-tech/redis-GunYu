@@ -150,6 +150,27 @@ func (ro *RedisOutput) bisyncRdbUseRestore(e *rdb.BinEntry) bool {
 	return true
 }
 
+func bisyncRdbRequiresRestore(e *rdb.BinEntry) bool {
+	return e != nil && e.ObjectParser != nil && e.ObjectParser.Type() == rdb.RdbObjectModule
+}
+
+func (ro *RedisOutput) bisyncRdbRestoreUnavailableReason(e *rdb.BinEntry) string {
+	switch {
+	case !ro.cfg.ReplayRdbEnableRestore:
+		return "restore replay is disabled"
+	case e == nil || e.ObjectParser == nil:
+		return "rdb parser is nil"
+	case !e.CanRestore():
+		return "object cannot be restored"
+	case e.ObjectParser.ValueDumpSize() > ro.cfg.MaxProtoBulkLen:
+		return fmt.Sprintf("dump size %d exceeds max proto bulk len %d", e.ObjectParser.ValueDumpSize(), ro.cfg.MaxProtoBulkLen)
+	case e.ObjectParser.IsSplited():
+		return "object is split across rdb bins"
+	default:
+		return "restore replay is unavailable"
+	}
+}
+
 // rewriteBisyncRdbCommandKeys rewrites key arguments inside expanded commands
 // when the destination key differs from the source key.
 func rewriteBisyncRdbCommandKeys(cmd string, args [][]byte, sourceKey []byte, targetKey []byte) [][]byte {
@@ -523,6 +544,9 @@ func (ro *RedisOutput) buildBisyncRdbReplayUnit(conn client.Redis, fullSyncOffse
 		// allow it.
 		commands, err = captureBisyncRdbRestoreCommand(ro.cfg.Redis.Version, ro.cfg.KeyExists, e, targetKey)
 	} else {
+		if hasBusinessKey && bisyncRdbRequiresRestore(e) {
+			return nil, false, fmt.Errorf("rdb module object requires RESTORE replay for key %s: %s", targetKey, ro.bisyncRdbRestoreUnavailableReason(e))
+		}
 		// Fall back to expanded commands for split objects, oversized payloads,
 		// or entry types that cannot be represented by RESTORE.
 		commands, err = captureBisyncRdbExpandedCommands(e, e.Key, targetKey)

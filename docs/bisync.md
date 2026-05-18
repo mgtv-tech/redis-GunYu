@@ -148,23 +148,24 @@ output:
 
 ## 5. 不支持或暂不建议使用的命令
 
-### 5.1 暂不支持的模块命令
+### 5.1 模块命令支持边界
 
-当前 RedisJSON / RedisBloom 等模块命令尚未形成稳定发布门禁，以下命令暂按不支持管理：
+当前已为部分 RedisJSON、RedisBloom、RediSearch 命令补充静态 keyspec，并通过 Redis Stack 模块实例与 `COMMAND GETKEYS` 做过 key 解析对齐：
 
 | 模块 | 命令 |
 | --- | --- |
 | RedisJSON | `JSON.SET`、`JSON.DEL`、`JSON.MSET` |
 | RedisBloom | `BF.ADD`、`CMS.MERGE`、`TDIGEST.MERGE`、`TOPK.ADD` |
+| RediSearch | `FT.CREATE`、`FT.SEARCH`、`FT.DROPINDEX` |
 
-原因是这些命令需要同时满足：
+这表示 bisync cluster 路由可以证明这些命令涉及的 key 集合；但这不等同于 Redis Modules 已完整支持。模块命令进入生产链路前仍需要同时满足：
 
 - 目标 Redis 已加载对应模块
 - `COMMAND GETKEYS` 或静态 keyspec 能给出可证明的 key 集合
 - strict routing 能判断 cluster 下是否单 slot
 - 已纳入 `tests/bisync/run_category4.sh` 或扩展样本的稳定回归
 
-在完成这些验证前，生产流量中应避免让这类命令进入 bisync 链路。
+RDB 全量同步对 keyspace module object 采用 opaque `RESTORE` 路径，要求目标端加载兼容模块，并且 `replayRdbEnableRestore: true`。真实 Redis Stack 验证已覆盖 RedisJSON 和 RedisBloom keyspace 数据类型。RediSearch index 等 `MODULE_AUX` 全局模块元数据当前不支持，默认 `replay.moduleAuxPolicy: fail` 会停止 RDB 回放且不推进 checkpoint。只有确认这类索引会通过模块命令增量重建或外部流程重建时，才应设置 `replay.moduleAuxPolicy: skip`。
 
 ### 5.2 无法解析 key 的命令
 

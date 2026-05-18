@@ -47,6 +47,12 @@ load:
       prefixKeyBlacklist: test_ignore
 ```
 
+### Redis Modules RDB Boundary
+
+RDB load replays Redis module keyspace data types through opaque `RESTORE`; it does not parse module internals. The target Redis must load compatible modules, and `replay.replayRdbEnableRestore: true` must stay enabled.
+
+Redis Stack validation covers RedisJSON / RedisBloom keyspace module objects. RediSearch indexes and other `MODULE_AUX` global module metadata are not supported yet. By default, `replay.moduleAuxPolicy: fail` stops RDB replay before checkpointing when such metadata is found. Set `replay.moduleAuxPolicy: skip` only when the skipped metadata is known to be rebuilt through incremental module commands or an external procedure.
+
 
 ## Parse RDB file and print key/value
 
@@ -70,5 +76,3 @@ Demo
 ```
 ./redisGunYu -cmd=rdb -rdb.action=print -rdb.rdbPath=/tmp/dump.rdb -rdb.print.output=/tmp/rdb.log -rdb.print.noLogKey=true -rdb.print.noLogValue=true
 ```
-
-

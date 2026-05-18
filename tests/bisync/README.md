@@ -49,6 +49,9 @@ Current scripts:
 - `run_category9.sh`
   Runs the release durability soak test against temporary local Redis clusters with replicas and AOF enabled. It supports manually gated tiers with `SOAK_TIER=2h`, `SOAK_TIER=4h`, and `SOAK_TIER=6h`. Each invocation runs only the selected tier, injects scheduled syncer restarts, Redis failovers, and an offline-syncer resume window while the workload continues writing, then emits per-mode Markdown reports plus JSONL resource samples. Review and accept the report before starting the next tier.
 
+- `run_category10.sh`
+  Runs the Redis Modules regression set against temporary Redis Stack instances. It verifies module-command `keyspec` against real `COMMAND GETKEYS`, confirms RedisJSON and RedisBloom keyspace module objects are present in the source RDB, validates the documented `moduleAuxPolicy=fail` stop behavior, and validates that `moduleAuxPolicy=skip` restores RedisJSON / RedisBloom keyspace data while RediSearch index metadata remains absent on the target.
+
 Binary and deploy-root discovery:
 
 - `run_category1/2/3/5/8.sh` accept either `REDIS_SERVER_BIN=/path/to/redis-server` or `REDIS_DEPLOY_ROOT=/path/to/redis-deploy`.
@@ -80,3 +83,10 @@ WAN_LATENCY=40ms WAN_JITTER=10ms BENCH_DURATION=10m BENCH_TARGET_QPS_LIST=5000 S
 When a benchmark needs distinct local-vs-remote routing, set `FWD_INPUT_ADDRS`, `FWD_OUTPUT_ADDRS`, `REV_INPUT_ADDRS`, and `REV_OUTPUT_ADDRS`. `run_benchmark_cloud_local.sh` wires these automatically so each syncer reads from its colocated source cluster and writes to the remote cluster through the WAN-emulation proxy, while the workload and final compare still use the direct local cluster addresses.
 
 `run_category9.sh` validates the local `redis-server` major version before starting. Use Redis 7 for the normal durability gate by setting `REDIS_SERVER_BIN=/path/to/redis-server` when needed. Redis 8 currently exercises an unsupported RDB format path in this codebase; set `ALLOW_UNSUPPORTED_REDIS=1` only when the goal is compatibility investigation rather than release gating.
+
+Redis Modules regression example:
+
+```bash
+bash ./tests/bisync/run_category10.sh
+MODULE_IMAGE=redis/redis-stack-server:latest bash ./tests/bisync/run_category10.sh
+```

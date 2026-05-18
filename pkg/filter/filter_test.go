@@ -355,7 +355,25 @@ func TestCommandKeys(t *testing.T) {
 		{
 			cmd:  "tdigest.merge",
 			args: [][]byte{[]byte("dst{t}"), []byte("2"), []byte("src1{t}"), []byte("src2{t}")},
-			keys: []string{"dst{t}", "src1{t}", "src2{t}"},
+			keys: []string{"dst{t}"},
+			ok:   true,
+		},
+		{
+			cmd:  "ft.create",
+			args: [][]byte{[]byte("idx{t}"), []byte("ON"), []byte("JSON"), []byte("PREFIX"), []byte("1"), []byte("doc:{t}:"), []byte("SCHEMA"), []byte("$.name"), []byte("AS"), []byte("name"), []byte("TEXT")},
+			keys: []string{"idx{t}"},
+			ok:   true,
+		},
+		{
+			cmd:  "ft.search",
+			args: [][]byte{[]byte("idx{t}"), []byte("@name:alice")},
+			keys: []string{"idx{t}"},
+			ok:   true,
+		},
+		{
+			cmd:  "ft.dropindex",
+			args: [][]byte{[]byte("idx{t}")},
+			keys: []string{"idx{t}"},
 			ok:   true,
 		},
 		{

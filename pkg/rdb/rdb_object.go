@@ -1021,7 +1021,6 @@ func (mp *ModuleParser) ReadBuffer(lr *Loader) {
 		panic(errors.New("does not support module type 1"))
 	}
 
-	// skip 64 bit
 	moduleId, err := r.ReadLength64()
 	panicIfErr(err)
 
@@ -1029,14 +1028,16 @@ func (mp *ModuleParser) ReadBuffer(lr *Loader) {
 
 	mp.id = moduleId
 	mp.name = moduleName
-	//
-	// parse modules
-	log.Errorf("module parser error : %s", moduleName)
+	rdbLoadCheckModuleValue(r)
 	mp.readBufferEnd(lr)
 }
 
+func (mp *ModuleParser) CanRestore() bool {
+	return true
+}
+
 func (mp *ModuleParser) ExecCmd(cb RdbObjExecutor) {
-	log.Warnf("unsupported module : id(%d), name(%s)", mp.id, mp.name)
+	panic(fmt.Errorf("module object requires RESTORE replay: id(%d), name(%s)", mp.id, mp.name))
 }
 
 // function

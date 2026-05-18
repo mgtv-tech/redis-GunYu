@@ -89,6 +89,9 @@ output配置如下：
   - functionExists ： 如何回放函数字段，参考`FUNCTION RESTORE`命令参数
     - flush ： 
     - replace ： 
+  - moduleAuxPolicy ： RDB 中出现 Redis Module 全局 `MODULE_AUX` 元数据时的处理策略
+    - fail ： 停止 RDB 回放，不写 checkpoint。默认值
+    - skip ： 跳过不支持的 module aux 元数据并继续。仅在确认这些元数据会由增量模块命令或外部流程重建时使用
   - maxProtoBulkLen ： 协议最大的缓存区大小，参考redis配置`proto-max-bulk-len`，默认是512MiB
   - targetDbMap : DB映射，map结构，如将DB 0同步到DB1， DB2同步到DB3，`{"targetDbMap":{"0":1,"2":3}}`
   - targetDb ： 选择同步到output的db，默认-1，表示根据input的db进行对应同步

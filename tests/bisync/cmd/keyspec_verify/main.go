@@ -78,6 +78,9 @@ var builtinSamples = []sampleCase{
 	{name: "cms-merge", cmd: "cms.merge", args: []string{"dst{t}", "2", "src1{t}", "src2{t}"}, tags: []string{"module", "module-bloom", "module-bloom-dst-only"}},
 	{name: "tdigest-merge", cmd: "tdigest.merge", args: []string{"dst{t}", "2", "src1{t}", "src2{t}"}, tags: []string{"module", "module-bloom"}},
 	{name: "topk-add", cmd: "topk.add", args: []string{"topk{t}", "item"}, tags: []string{"module", "module-bloom"}},
+	{name: "ft-create", cmd: "ft.create", args: []string{"idx{t}", "ON", "JSON", "PREFIX", "1", "doc:{t}:", "SCHEMA", "$.name", "AS", "name", "TEXT"}, tags: []string{"module", "module-search"}},
+	{name: "ft-search", cmd: "ft.search", args: []string{"idx{t}", "@name:alice"}, tags: []string{"module", "module-search"}},
+	{name: "ft-dropindex", cmd: "ft.dropindex", args: []string{"idx{t}"}, tags: []string{"module", "module-search"}},
 }
 
 func main() {

@@ -16,6 +16,7 @@ type RdbParseOption func(o *rdbParseOptions)
 type rdbParseOptions struct {
 	targetRedisVersion   string
 	targetFunctionExists string
+	failOnModuleAux      bool
 }
 
 func WithTargetRedisVersion(version string) RdbParseOption {
@@ -27,6 +28,12 @@ func WithTargetRedisVersion(version string) RdbParseOption {
 func WithFunctionExists(functionExists string) RdbParseOption {
 	return func(o *rdbParseOptions) {
 		o.targetFunctionExists = functionExists
+	}
+}
+
+func WithFailOnModuleAux() RdbParseOption {
+	return func(o *rdbParseOptions) {
+		o.failOnModuleAux = true
 	}
 }
 
@@ -96,9 +103,9 @@ func (r *CountReader) Read(p []byte) (int, error) {
 }
 
 const (
-	RdbRedisSignature   = "REDIS"
-	RdbAuxFieldMarker   = 0xFA
-	RdbRedisVersionKey  = "redis-ver"
+	RdbRedisSignature  = "REDIS"
+	RdbAuxFieldMarker  = 0xFA
+	RdbRedisVersionKey = "redis-ver"
 )
 
 func ParseRdbVersion(reader *os.File) (string, error) {
@@ -121,7 +128,7 @@ func ParseRdbVersion(reader *os.File) (string, error) {
 	signature := make([]byte, len(RdbRedisSignature))
 	_, err = io.ReadFull(reader, signature)
 	if err != nil {
-		return restorePosition(reader, startPos, "",  err)
+		return restorePosition(reader, startPos, "", err)
 	}
 	if string(signature) != RdbRedisSignature {
 		return restorePosition(reader, startPos, "", errors.New("invalid RDB file signature"))
