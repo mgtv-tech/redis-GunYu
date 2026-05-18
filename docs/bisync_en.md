@@ -137,23 +137,24 @@ These keys are GunYu control-plane keys. Business clients must not read, write, 
 
 ## 6. Unsupported or Not Recommended Commands
 
-### 6.1 Module Commands Not Yet Supported
+### 6.1 Module Command Support Boundary
 
-RedisJSON / RedisBloom command support has not been closed by stable release gates yet. The following commands are currently treated as unsupported:
+Static keyspec coverage has been added for selected RedisJSON, RedisBloom, and RediSearch commands, and their key extraction has been checked against Redis Stack module instances with `COMMAND GETKEYS`:
 
 | Module | Commands |
 | --- | --- |
 | RedisJSON | `JSON.SET`, `JSON.DEL`, `JSON.MSET` |
 | RedisBloom | `BF.ADD`, `CMS.MERGE`, `TDIGEST.MERGE`, `TOPK.ADD` |
+| RediSearch | `FT.CREATE`, `FT.SEARCH`, `FT.DROPINDEX` |
 
-These commands need all of the following before being enabled:
+This means bisync cluster routing can prove the key set for these commands; it does not mean Redis Modules are fully supported. Before sending module commands through a production bisync link, all of the following still need to hold:
 
 - the target Redis loads the corresponding module
 - `COMMAND GETKEYS` or static keyspec can return a provable key set
 - strict routing can prove whether the command is single-slot in cluster mode
 - the command is covered by `tests/bisync/run_category4.sh` or additional stable samples
 
-Avoid sending these commands through a production bisync link until they are verified.
+For RDB full sync, keyspace module objects use the opaque `RESTORE` path. The target Redis must load compatible modules and `replayRdbEnableRestore: true` must stay enabled. Real Redis Stack validation covers RedisJSON and RedisBloom keyspace data types. RediSearch indexes and other `MODULE_AUX` global module metadata are not supported yet. By default, `replay.moduleAuxPolicy: fail` stops RDB replay before checkpointing when such metadata is found. Set `replay.moduleAuxPolicy: skip` only when those indexes are known to be rebuilt through incremental module commands or an external procedure.
 
 ### 6.2 Commands Whose Keys Cannot Be Parsed
 
