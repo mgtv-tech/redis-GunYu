@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
+	"github.com/mgtv-tech/redis-GunYu/pkg/util"
 )
 
 func newRouteTestCluster() *Cluster {
@@ -36,6 +37,28 @@ func TestResolveCommandKeysPrefersStaticTable(t *testing.T) {
 	}
 	if called != 0 {
 		t.Fatalf("expected static table hit to skip command getkeys, got %d calls", called)
+	}
+}
+
+func TestChooseNodeWithCmdRoutesInfoToRandomNode(t *testing.T) {
+	cluster := newRouteTestCluster()
+	cluster.safeRand = util.NewSafeRand(1)
+	node := &redisNode{address: "node-a"}
+	for slot := range cluster.slots {
+		cluster.slots[slot] = node
+	}
+	cluster.nodes[node.address] = node
+	cluster.commandGetKeysFn = func(string, ...interface{}) ([]string, error) {
+		t.Fatal("INFO should not use COMMAND GETKEYS")
+		return nil, nil
+	}
+
+	got, err := cluster.ChooseNodeWithCmd("info", "server")
+	if err != nil {
+		t.Fatalf("unexpected INFO route error: %v", err)
+	}
+	if got != node {
+		t.Fatalf("unexpected INFO node: got=%p want=%p", got, node)
 	}
 }
 
