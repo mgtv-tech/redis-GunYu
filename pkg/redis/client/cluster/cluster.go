@@ -316,7 +316,7 @@ func (cluster *Cluster) chooseNodeWithCmdAndKeys(cmd string, strict bool, args .
 	var err error
 
 	switch strings.ToUpper(cmd) {
-	case "PING", "CLUSTER":
+	case "PING", "CLUSTER", "INFO":
 		if node, err = cluster.getRandomNode(); err != nil {
 			return nil, nil, err
 		}
