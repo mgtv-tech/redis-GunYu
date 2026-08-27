@@ -263,6 +263,28 @@ func TestGetRedisRoleOnlineStandaloneAddressMismatch(t *testing.T) {
 	assert.Equal(t, config.RedisRoleSlave, role)
 }
 
+func TestGetRedisRoleOnlineClusterShardDirectConnection(t *testing.T) {
+	cfg := &config.RedisConfig{
+		Addresses: []string{"127.0.0.1:16301"},
+		Type:      config.RedisTypeStandalone,
+		Otype:     config.RedisTypeCluster,
+		Version:   "6.2.0",
+	}
+
+	cli := &fakeRoleRedis{
+		doFn: func(cmd string, args ...interface{}) (interface{}, error) {
+			require.Equal(t, "cluster", cmd)
+			require.Equal(t, []interface{}{"nodes"}, args)
+			return "node-master 127.0.0.1:16300@26300 master - 0 1 1 connected 0-5461\n" +
+				"node-slave 127.0.0.1:16301@26301 slave node-master 0 1 1 connected\n", nil
+		},
+	}
+
+	role, err := getRedisRoleOnline(cli, cfg, "127.0.0.1:16300")
+	require.NoError(t, err)
+	assert.Equal(t, config.RedisRoleMaster, role)
+}
+
 type fakeRoleRedis struct {
 	doFn func(cmd string, args ...interface{}) (interface{}, error)
 }

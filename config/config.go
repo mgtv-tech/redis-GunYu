@@ -674,7 +674,7 @@ func (rc *RedisConfig) Clone() *RedisConfig {
 		Password:       rc.Password,
 		TlsEnable:      rc.TlsEnable,
 		Type:           rc.Type,
-		Otype:          rc.Type,
+		Otype:          rc.Otype,
 		Version:        rc.Version,
 		slotLeft:       rc.slotLeft,
 		slotRight:      rc.slotRight,

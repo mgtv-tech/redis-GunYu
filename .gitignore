@@ -34,3 +34,16 @@ Thumbs.db
 # Build output
 /bin/
 /dist/
+
+# AI agent
+.omo/
+.agents/
+.opencode/
+.codex/
+.claude/
+.cursor/
+.aider/
+.cline/
+.continuous/
+.windsurf/
+

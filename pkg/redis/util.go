@@ -454,7 +454,7 @@ func parseRedisRoleFromReplicationInfo(content []byte) (config.RedisRole, error)
 }
 
 func getRedisRoleOnline(cli client.Redis, redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
-	if redisCfg.IsStanalone() {
+	if redisCfg.IsStanalone() && redisCfg.Otype != config.RedisTypeCluster {
 		if redisCfg.Address() != address {
 			return config.RedisRoleSlave, nil
 		}
