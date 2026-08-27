@@ -299,7 +299,7 @@ func (s *Storer) GetReader(offset int64, verifyCrc bool) (*Reader, error) {
 	rd.size = -1
 	rd.logger = log.WithLogger(config.LogModuleName("[Reader(aof)] "))
 
-	err = rr.Seek(offset)
+	err = rr.SeekOffset(offset)
 	if err != nil {
 		rr.Close()
 		return nil, err

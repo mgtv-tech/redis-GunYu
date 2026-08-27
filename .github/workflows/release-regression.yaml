@@ -1,0 +1,192 @@
+name: Release Regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      redis_version:
+        description: Exact Redis source tag used for qualification
+        required: true
+        default: "7.4.1"
+        type: string
+      previous_ref:
+        description: Previous Git tag or commit used for upgrade/rollback verification
+        required: true
+        default: "v1.14"
+        type: string
+      replay_modes:
+        description: Comma-separated replay modes
+        required: true
+        default: "sync,pipeline"
+        type: string
+      soak_tier:
+        description: Durability tier
+        required: true
+        default: none
+        type: choice
+        options: [none, 2h, 4h, 6h]
+      benchmark_duration:
+        description: Benchmark duration
+        required: true
+        default: "15m"
+        type: string
+      benchmark_qps:
+        description: Comma-separated target QPS values
+        required: true
+        default: "1000,5000,10000"
+        type: string
+      sync_delay_max_ms:
+        description: Hard maximum sync-delay threshold in milliseconds
+        required: true
+        default: "1000"
+        type: string
+
+concurrency:
+  group: release-regression-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+      - name: Build pinned Redis
+        env:
+          REDIS_VERSION: ${{ inputs.redis_version }}
+        run: bash ./tests/integration/install_redis_source.sh "${REDIS_VERSION}" .tools/redis
+      - name: Run release qualification
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/bin/redis-server
+        run: |
+          export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
+          make test-release
+      - name: Run security matrix
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/bin/redis-server
+          ENABLE_TLS: "1"
+        run: |
+          export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
+          bash ./tests/nonbisync/run_security_matrix.sh
+      - name: Build previous release
+        env:
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+        run: |
+          mkdir -p .tools/previous-src .tools/previous
+          git archive "${PREVIOUS_REF}" | tar -x -C .tools/previous-src
+          (cd .tools/previous-src && go build -o "${{ github.workspace }}/.tools/previous/redisGunYu" ./main.go)
+      - name: Verify upgrade and rollback checkpoints
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/bin/redis-server
+          PREVIOUS_GUNYU_BIN: ${{ github.workspace }}/.tools/previous/redisGunYu
+        run: |
+          export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
+          make test-upgrade-rollback
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-qualification-${{ inputs.redis_version }}
+          path: .artifacts/tests
+          if-no-files-found: error
+
+  durability:
+    if: ${{ inputs.soak_tier != 'none' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+      - name: Build pinned Redis
+        env:
+          REDIS_VERSION: ${{ inputs.redis_version }}
+        run: bash ./tests/integration/install_redis_source.sh "${REDIS_VERSION}" .tools/redis
+      - name: Run durability tier
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/bin/redis-server
+          SOAK_TIER: ${{ inputs.soak_tier }}
+          SCENARIOS: ${{ inputs.replay_modes }}
+          KEEP_TMP: "1"
+        run: |
+          export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
+          TMPDIR="${{ github.workspace }}/.artifacts/tests/release-soak" bash ./tests/bisync/run_category9.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-durability-${{ inputs.redis_version }}-${{ inputs.soak_tier }}
+          path: .artifacts/tests/release-soak
+          if-no-files-found: error
+
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+      - name: Build pinned Redis
+        env:
+          REDIS_VERSION: ${{ inputs.redis_version }}
+        run: bash ./tests/integration/install_redis_source.sh "${REDIS_VERSION}" .tools/redis
+      - name: Run local benchmark
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/bin/redis-server
+          BENCH_DURATION: ${{ inputs.benchmark_duration }}
+          BENCH_TARGET_QPS_LIST: ${{ inputs.benchmark_qps }}
+          SCENARIOS: ${{ inputs.replay_modes }}
+          SYNC_DELAY_MAX_MS: ${{ inputs.sync_delay_max_ms }}
+          KEEP_TMP: "1"
+        run: |
+          export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
+          TMPDIR="${{ github.workspace }}/.artifacts/tests/release-benchmark" bash ./tests/bisync/run_benchmark_local.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-benchmark-${{ inputs.redis_version }}
+          path: .artifacts/tests/release-benchmark
+          if-no-files-found: error
+
+  modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run module release gates
+        run: |
+          mkdir -p .artifacts/tests/release-modules
+          TMPDIR="${{ github.workspace }}/.artifacts/tests/release-modules" KEEP_TMP=1 bash ./tests/bisync/run_category10.sh
+          TMPDIR="${{ github.workspace }}/.artifacts/tests/release-modules" KEEP_TMP=1 bash ./tests/nonbisync/run_category11.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-modules
+          path: .artifacts/tests/release-modules
+          if-no-files-found: error

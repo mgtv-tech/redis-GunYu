@@ -37,6 +37,17 @@ func testRedisClusterAddr() string {
 	return "127.0.0.1:16300"
 }
 
+func requireRedisAvailable(t *testing.T, address string) {
+	t.Helper()
+	if isRedisAvailable(address) {
+		return
+	}
+	if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+		t.Fatalf("Redis not available at %s", address)
+	}
+	t.Skipf("Redis not available at %s, skipping integration test", address)
+}
+
 func TestRegistry(t *testing.T) {
 
 	cfgs := []config.RedisConfig{
@@ -54,9 +65,7 @@ func TestRegistry(t *testing.T) {
 		cfg := temp
 
 		t.Run("", func(t *testing.T) {
-			if !isRedisAvailable(cfg.Addresses[0]) {
-				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
-			}
+			requireRedisAvailable(t, cfg.Addresses[0])
 
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
@@ -103,9 +112,7 @@ func TestRegistry(t *testing.T) {
 		})
 
 		t.Run("keepalive", func(t *testing.T) {
-			if !isRedisAvailable(cfg.Addresses[0]) {
-				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
-			}
+			requireRedisAvailable(t, cfg.Addresses[0])
 
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)
@@ -157,9 +164,7 @@ func TestCampaign(t *testing.T) {
 		cfg := temp
 
 		t.Run("", func(t *testing.T) {
-			if !isRedisAvailable(cfg.Addresses[0]) {
-				t.Skipf("Redis not available at %s, skipping integration test", cfg.Addresses[0])
-			}
+			requireRedisAvailable(t, cfg.Addresses[0])
 
 			ctx := context.Background()
 			rc1, err := NewRedisCluster(ctx, cfg, 2)

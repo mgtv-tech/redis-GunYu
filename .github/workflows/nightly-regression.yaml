@@ -1,0 +1,302 @@
+name: Nightly Regression
+
+on:
+  schedule:
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+    inputs:
+      run_etcd_tests:
+        description: Run the optional etcd control-plane suite
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: nightly-regression-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-redis:
+    name: Build Redis ${{ matrix.redis }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        redis: ["7.4.1", "8.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .tools/redis/${{ matrix.redis }}
+          key: redis-source-${{ runner.os }}-${{ matrix.redis }}-v1
+      - name: Install build dependencies
+        if: ${{ hashFiles(format('.tools/redis/{0}/bin/redis-server', matrix.redis)) == '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+      - name: Build pinned Redis
+        if: ${{ hashFiles(format('.tools/redis/{0}/bin/redis-server', matrix.redis)) == '' }}
+        run: bash ./tests/integration/install_redis_source.sh "${{ matrix.redis }}" ".tools/redis/${{ matrix.redis }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redis-${{ matrix.redis }}
+          path: .tools/redis/${{ matrix.redis }}
+          if-no-files-found: error
+
+  race-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make test-race-all
+
+  compatibility:
+    name: Compatibility Redis ${{ matrix.redis }}
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        redis: ["7.4.1", "8.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-${{ matrix.redis }}
+          path: .tools/redis/${{ matrix.redis }}
+      - name: Run integration and E2E compatibility gates
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin/redis-server
+          NIGHTLY_SUITE: compatibility
+        run: |
+          chmod +x ".tools/redis/${{ matrix.redis }}/bin/"*
+          export PATH="${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-compatibility-${{ matrix.redis }}
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  nonbisync-core:
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        redis: ["7.4.1", "8.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-${{ matrix.redis }}
+          path: .tools/redis/${{ matrix.redis }}
+      - name: Run non-bisync core
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin/redis-server
+          NIGHTLY_SUITE: nonbisync-core
+        run: |
+          chmod +x ".tools/redis/${{ matrix.redis }}/bin/"*
+          export PATH="${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-nonbisync-${{ matrix.redis }}
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  bisync-core:
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        redis: ["7.4.1", "8.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-${{ matrix.redis }}
+          path: .tools/redis/${{ matrix.redis }}
+      - name: Run bisync core
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin/redis-server
+          NIGHTLY_SUITE: bisync-core
+        run: |
+          chmod +x ".tools/redis/${{ matrix.redis }}/bin/"*
+          export PATH="${{ github.workspace }}/.tools/redis/${{ matrix.redis }}/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-bisync-${{ matrix.redis }}
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  resilience-control-plane:
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-7.4.1
+          path: .tools/redis/7.4.1
+      - name: Run resilience and control-plane tests
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/7.4.1/bin/redis-server
+          NIGHTLY_SUITE: nonbisync-resilience
+        run: |
+          chmod +x .tools/redis/7.4.1/bin/*
+          export PATH="${{ github.workspace }}/.tools/redis/7.4.1/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-resilience-control-plane
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  etcd-control-plane:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_etcd_tests }}
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-7.4.1
+          path: .tools/redis/7.4.1
+      - name: Install etcd
+        run: bash ./tests/integration/install_etcd.sh 3.5.15 .tools/etcd
+      - name: Run optional etcd control-plane tests
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/7.4.1/bin/redis-server
+          ETCD_BIN: ${{ github.workspace }}/.tools/etcd/bin/etcd
+          ENABLE_ETCD_TESTS: "1"
+          NIGHTLY_SUITE: etcd
+        run: |
+          chmod +x .tools/redis/7.4.1/bin/* .tools/etcd/bin/*
+          export PATH="${{ github.workspace }}/.tools/redis/7.4.1/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-etcd-control-plane
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  external-cluster:
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-7.4.1
+          path: .tools/redis/7.4.1
+      - name: Run owned external-cluster regression
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/7.4.1/bin/redis-server
+          NIGHTLY_SUITE: external-cluster
+          EXTERNAL_SOAK_DURATION: 2m
+        run: |
+          chmod +x .tools/redis/7.4.1/bin/*
+          export PATH="${{ github.workspace }}/.tools/redis/7.4.1/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-external-cluster
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  security:
+    needs: build-redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: redis-7.4.1
+          path: .tools/redis/7.4.1
+      - name: Run auth and TLS matrix
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/7.4.1/bin/redis-server
+          NIGHTLY_SUITE: security
+          ENABLE_TLS: "1"
+        run: |
+          chmod +x .tools/redis/7.4.1/bin/*
+          export PATH="${{ github.workspace }}/.tools/redis/7.4.1/bin:${PATH}"
+          bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-security
+          path: .artifacts/tests/nightly
+          if-no-files-found: error
+
+  modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run Redis Modules regression
+        env:
+          NIGHTLY_SUITE: modules
+        run: bash ./tests/integration/run_nightly.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-modules
+          path: .artifacts/tests/nightly
+          if-no-files-found: error

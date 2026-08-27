@@ -10,14 +10,14 @@ type Range struct {
 }
 
 type RangeList struct {
-	list []*Range
+	list     []*Range
 	minLeft  uint16
 	maxRight uint16
 }
 
 func NewRangeList() *RangeList {
 	return &RangeList{
-		list: make([]*Range, 0),
+		list:     make([]*Range, 0),
 		minLeft:  0,
 		maxRight: 0,
 	}

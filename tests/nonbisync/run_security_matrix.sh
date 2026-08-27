@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-security"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+require_test_commands go redis-server redis-cli curl
 
 AUTH_PASSWORD="${AUTH_PASSWORD:-nonbisync-pass}"
 AUTH_USER="${AUTH_USER:-}"
@@ -21,15 +22,27 @@ TEST_PREFIX="${TEST_PREFIX:-nonbisync:security:$(date +%s)}"
 SYNCER_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
 
+shutdown_security_redis() {
+  local port
+  for port in \
+    "${AUTH_STD_SRC_PORT}" "${AUTH_STD_DST_PORT}" \
+    "${AUTH_CLUSTER_SRC_BASE}" "$((AUTH_CLUSTER_SRC_BASE + 1))" "$((AUTH_CLUSTER_SRC_BASE + 2))" \
+    "${AUTH_CLUSTER_DST_BASE}" "$((AUTH_CLUSTER_DST_BASE + 1))" "$((AUTH_CLUSTER_DST_BASE + 2))"; do
+    redis-cli -a "${AUTH_PASSWORD}" -p "${port}" shutdown nosave >/dev/null 2>&1 || true
+  done
+
+  if [[ -f "${TMP_ROOT}/tls/ca.crt" ]]; then
+    for port in "${TLS_SRC_PORT}" "${TLS_DST_PORT}"; do
+      redis-cli --tls --cacert "${TMP_ROOT}/tls/ca.crt" -p "${port}" shutdown nosave >/dev/null 2>&1 || true
+    done
+  fi
+}
+
 cleanup() {
   local code=$?
   set +e
   stop_pid "${SYNCER_PID:-}"
-  shutdown_ports \
-    "${AUTH_STD_SRC_PORT}" "${AUTH_STD_DST_PORT}" \
-    "${AUTH_CLUSTER_SRC_BASE}" "$((AUTH_CLUSTER_SRC_BASE + 1))" "$((AUTH_CLUSTER_SRC_BASE + 2))" \
-    "${AUTH_CLUSTER_DST_BASE}" "$((AUTH_CLUSTER_DST_BASE + 1))" "$((AUTH_CLUSTER_DST_BASE + 2))" \
-    "${TLS_SRC_PORT}" "${TLS_DST_PORT}"
+  shutdown_security_redis
   if [[ "${KEEP_TMP:-0}" != "1" ]]; then
     rm -rf "${TMP_ROOT}"
   fi
@@ -55,7 +68,7 @@ wait_for_ping_auth() {
 wait_for_cluster_ok_auth() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -a "${AUTH_PASSWORD}" -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -a "${AUTH_PASSWORD}" -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2
@@ -103,7 +116,10 @@ write_security_conf() {
   local storer_dir=$7
   local replay_mode=$8
   local tls_enable=${9:-false}
-  local redis_password=${10:-$AUTH_PASSWORD}
+  local redis_password=${AUTH_PASSWORD}
+  if [[ $# -ge 10 ]]; then
+    redis_password=${10}
+  fi
 
   mkdir -p "${storer_dir}"
   cat > "${file}" <<EOF
@@ -336,14 +352,7 @@ run_tls_standalone() {
   if [[ "${ENABLE_TLS}" != "1" ]]; then
     return 0
   fi
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "openssl not found; skipping tls standalone test" >&2
-    return 0
-  fi
-  if ! "${REDIS_SERVER_BIN}" --help 2>&1 | rg -q 'tls-port'; then
-    echo "redis-server has no TLS support; skipping tls standalone test" >&2
-    return 0
-  fi
+  require_test_commands openssl
 
   echo "[security] tls standalone"
   mkdir -p "${cert_dir}"

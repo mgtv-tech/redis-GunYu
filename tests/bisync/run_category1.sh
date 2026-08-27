@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat1"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl
 SRC_PORTS=("${SRC_PORT_1:-19100}" "${SRC_PORT_2:-19101}" "${SRC_PORT_3:-19102}")
 DST_PORTS=("${DST_PORT_1:-19200}" "${DST_PORT_2:-19201}" "${DST_PORT_3:-19202}")
 FWD_HTTP_PORT="${FWD_HTTP_PORT:-19180}"
@@ -79,7 +80,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2

@@ -5,6 +5,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-etcd"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
 
+CONTROL_PLANE="${CONTROL_PLANE:-etcd}"
+CONTROL_PLANE=$(printf '%s' "${CONTROL_PLANE}" | tr '[:upper:]' '[:lower:]')
+if [[ "${CONTROL_PLANE}" != "etcd" && "${CONTROL_PLANE}" != "redis" ]]; then
+  echo "unknown CONTROL_PLANE=${CONTROL_PLANE}; expected etcd or redis" >&2
+  exit 1
+fi
+if [[ "${CONTROL_PLANE}" == "etcd" && "${ENABLE_ETCD_TESTS:-0}" != "1" ]]; then
+  echo "etcd control-plane tests are disabled; set ENABLE_ETCD_TESTS=1 to run them"
+  exit 0
+fi
+require_test_commands go redis-server redis-cli curl
+
 ETCD_BIN="${ETCD_BIN:-$(command -v etcd || true)}"
 ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-23990}"
 ETCD_PEER_PORT="${ETCD_PEER_PORT:-23991}"
@@ -12,7 +24,6 @@ LEFT_PORT="${LEFT_PORT:-36500}"
 RIGHT_PORT="${RIGHT_PORT:-36600}"
 FWD_HTTP_PORT="${FWD_HTTP_PORT:-36580}"
 REV_HTTP_PORT="${REV_HTTP_PORT:-36680}"
-CONTROL_PLANE="${CONTROL_PLANE:-etcd}"
 REPLAY_MODE="${REPLAY_MODE:-sync}"
 TEST_PREFIX="${TEST_PREFIX:-bisync:etcd:$(date +%s)}"
 FWD_PID=""
@@ -34,13 +45,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CONTROL_PLANE=$(printf '%s' "${CONTROL_PLANE}" | tr '[:upper:]' '[:lower:]')
-if [[ "${CONTROL_PLANE}" != "etcd" && "${CONTROL_PLANE}" != "redis" ]]; then
-  echo "unknown CONTROL_PLANE=${CONTROL_PLANE}; expected etcd or redis" >&2
-  exit 1
-fi
-
 if [[ "${CONTROL_PLANE}" == "etcd" && ( -z "${ETCD_BIN}" || ! -x "${ETCD_BIN}" ) ]]; then
+  if [[ "${REQUIRE_ETCD_INTEGRATION:-0}" == "1" ]]; then
+    echo "etcd binary not found but REQUIRE_ETCD_INTEGRATION=1" >&2
+    exit 1
+  fi
   echo "etcd binary not found; skipping bisync etcd control-plane test" >&2
   exit 0
 fi

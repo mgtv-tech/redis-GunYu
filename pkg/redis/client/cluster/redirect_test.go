@@ -40,8 +40,8 @@ func TestClusterHandleMoveRefreshesUnknownTargetNode(t *testing.T) {
 			return fmt.Errorf("unexpected source command: got=%v want=%v", got, want)
 		}
 
-		_, err = conn.Write([]byte(clusterSlotsReply(targetLn.Addr().String())))
-		return err
+		_, writeErr := conn.Write([]byte(clusterSlotsReply(targetLn.Addr().String())))
+		return writeErr
 	})
 
 	targetDone := serveOnce(t, targetLn, func(conn net.Conn) error {
@@ -56,8 +56,8 @@ func TestClusterHandleMoveRefreshesUnknownTargetNode(t *testing.T) {
 			return fmt.Errorf("unexpected redirected command: got=%v want=%v", got, want)
 		}
 
-		_, err = conn.Write([]byte("+OK\r\n"))
-		return err
+		_, writeErr := conn.Write([]byte("+OK\r\n"))
+		return writeErr
 	})
 
 	cluster := newRedirectTestCluster()
@@ -116,8 +116,8 @@ func TestTxnBatcherRetriesOnAsk(t *testing.T) {
 			}
 		}
 
-		_, err = conn.Write([]byte(fmt.Sprintf("+OK\r\n-ASK 8338 %s\r\n", targetLn.Addr().String())))
-		return err
+		_, writeErr := conn.Write([]byte(fmt.Sprintf("+OK\r\n-ASK 8338 %s\r\n", targetLn.Addr().String())))
+		return writeErr
 	})
 
 	targetDone := serveOnce(t, targetLn, func(conn net.Conn) error {
@@ -140,8 +140,8 @@ func TestTxnBatcherRetriesOnAsk(t *testing.T) {
 			}
 		}
 
-		_, err = conn.Write([]byte("+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n"))
-		return err
+		_, writeErr := conn.Write([]byte("+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n"))
+		return writeErr
 	})
 
 	cluster := newRedirectTestCluster()

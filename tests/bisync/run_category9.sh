@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl python3
 
 SOAK_TIER="${SOAK_TIER:-2h}"
 case "${SOAK_TIER}" in
@@ -137,7 +138,7 @@ validate_redis_server_version() {
     return 1
   fi
   if (( major > 7 )) && [[ "${ALLOW_UNSUPPORTED_REDIS}" != "1" ]]; then
-    echo "redis-server ${version} is not accepted for category9 by default; current RDB loader is validated for Redis <= 7. Set REDIS_SERVER_BIN to a Redis 7 binary, or set ALLOW_UNSUPPORTED_REDIS=1 for compatibility investigation." >&2
+    echo "redis-server ${version} is not durability-qualified for category9; Redis 8 core smoke is supported, but the 2h/4h/6h sequence is pending. Use Redis 7 for release gating, or set ALLOW_UNSUPPORTED_REDIS=1 for compatibility investigation." >&2
     return 1
   fi
 }
@@ -178,7 +179,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 160); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.25
@@ -411,7 +412,7 @@ cluster_ok_count() {
   local port
   IFS=',' read -r -a ports <<< "${ports_csv}"
   for port in "${ports[@]}"; do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       ok=$((ok + 1))
     fi
   done
@@ -557,12 +558,12 @@ assert_no_syncer_fatal_logs() {
   local fwd_log="${TMP_ROOT}/${mode}-forward.log"
   local rev_log="${TMP_ROOT}/${mode}-reverse.log"
   local rdb_errors
-  if rg -q 'panic|fatal' "${fwd_log}" "${rev_log}" 2>/dev/null; then
+  if match_regex_quiet 'panic|fatal' "${fwd_log}" "${rev_log}" 2>/dev/null; then
     echo "fatal syncer log detected for ${mode}" >&2
-    rg -n 'panic|fatal' "${fwd_log}" "${rev_log}" >&2 || true
+    print_regex_matches 'panic|fatal' "${fwd_log}" "${rev_log}" >&2 || true
     return 1
   fi
-  rdb_errors=$(rg -n 'send rdb ERROR' "${fwd_log}" "${rev_log}" 2>/dev/null | rg -v 'context canceled' || true)
+  rdb_errors=$(print_regex_matches 'send rdb ERROR' "${fwd_log}" "${rev_log}" 2>/dev/null | exclude_regex_matches 'context canceled' || true)
   if [[ -n "${rdb_errors}" ]]; then
     echo "non-cancelled RDB error detected for ${mode}" >&2
     printf '%s\n' "${rdb_errors}" >&2

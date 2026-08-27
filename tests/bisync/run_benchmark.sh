@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark}"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-cli curl python3
 
 TEST_PREFIX="${TEST_PREFIX:-bisync:bench:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
@@ -47,6 +48,7 @@ fi
 if [[ -z "${RIGHT_ADDRS}" ]]; then
   RIGHT_ADDRS="127.0.0.1:${RIGHT_PORTS[0]},127.0.0.1:${RIGHT_PORTS[1]},127.0.0.1:${RIGHT_PORTS[2]}"
 fi
+require_destructive_redis_test_authorization "${LEFT_ADDRS},${RIGHT_ADDRS}"
 if [[ -z "${FWD_INPUT_ADDRS}" ]]; then
   FWD_INPUT_ADDRS="${LEFT_ADDRS}"
 fi

@@ -321,7 +321,7 @@ func (hp *HashPaser) zipmap(cb RdbObjExecutor) {
 	var length int
 	zipmap := r.ReadStringP()
 	buf := util.NewSliceBuffer(zipmap)
-	lenByte := buf.ReadByte()
+	lenByte := buf.MustReadByte()
 	if lenByte >= 254 { // we need to count the items manually
 		length = r.CountZipmapItemsP(buf)
 	} else {

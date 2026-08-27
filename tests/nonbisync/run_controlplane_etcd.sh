@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-etcd"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
 
+if [[ "${ENABLE_ETCD_TESTS:-0}" != "1" ]]; then
+  echo "etcd control-plane tests are disabled; set ENABLE_ETCD_TESTS=1 to run them"
+  exit 0
+fi
+require_test_commands go redis-server redis-cli curl
+
 ETCD_BIN="${ETCD_BIN:-$(command -v etcd || true)}"
 ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-23990}"
 ETCD_PEER_PORT="${ETCD_PEER_PORT:-23991}"
@@ -33,6 +39,10 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${ETCD_BIN}" || ! -x "${ETCD_BIN}" ]]; then
+  if [[ "${REQUIRE_ETCD_INTEGRATION:-0}" == "1" ]]; then
+    echo "etcd binary not found but REQUIRE_ETCD_INTEGRATION=1" >&2
+    exit 1
+  fi
   echo "etcd binary not found; skipping etcd control-plane test" >&2
   exit 0
 fi
@@ -131,9 +141,9 @@ pick_leader() {
   local pid_a=$2
   local log_b=$3
   local pid_b=$4
-  if rg -q 'new_role\(leader\)|RunLeader' "${log_a}"; then
+  if match_regex_quiet 'new_role\(leader\)|RunLeader' "${log_a}"; then
     printf '%s|%s\n' "${pid_a}" "${log_a}"
-  elif rg -q 'new_role\(leader\)|RunLeader' "${log_b}"; then
+  elif match_regex_quiet 'new_role\(leader\)|RunLeader' "${log_b}"; then
     printf '%s|%s\n' "${pid_b}" "${log_b}"
   else
     return 1

@@ -92,6 +92,7 @@ Current scripts:
 - `run_controlplane_etcd.sh`
   Optional etcd-backed control-plane HA runner. It starts a temporary etcd,
   launches two syncers using `cluster.metaEtcd`, and verifies leader handover.
+  It is disabled by default; set `ENABLE_ETCD_TESTS=1` to run it.
 
 Shared helpers live under `tests/nonbisync/lib/` and intentionally reuse
 `tests/bisync/lib/redis_env.sh` for Redis binary resolution.
@@ -136,3 +137,16 @@ Current scope:
 
 Optional environment-dependent runners cover auth/TLS, version matrices, and
 etcd-backed control planes.
+
+Unified local and CI entry points are available from the repository root:
+
+```bash
+make test-static
+make test-unit
+make test-race
+make test-integration
+make test-e2e-smoke
+```
+
+The integration and E2E runners create isolated Redis instances on validated
+port blocks and write reproducibility evidence under `.artifacts/tests/`.

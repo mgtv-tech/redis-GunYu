@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat2"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat2:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-29300}"
@@ -116,7 +117,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2
@@ -464,7 +465,7 @@ wait_for_bisync_metadata() {
 
 assert_resume_offsets() {
   local log_file=$1
-  if ! rg -q 'reply\(\{[^ ]+ [1-9][0-9]*\}\)' "${log_file}"; then
+  if ! match_regex_quiet 'reply\(\{[^ ]+ [1-9][0-9]*\}\)' "${log_file}"; then
     echo "expected non-zero psync resume offset in ${log_file}" >&2
     exit 1
   fi

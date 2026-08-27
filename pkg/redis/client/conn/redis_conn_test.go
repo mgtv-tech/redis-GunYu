@@ -36,10 +36,19 @@ func testRedisAddr() string {
 	return defaultTestRedis
 }
 
-func TestNilErr(t *testing.T) {
-	if !isRedisAvailable(testRedisAddr()) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisAddr())
+func requireRedisAvailable(t *testing.T, address string) {
+	t.Helper()
+	if isRedisAvailable(address) {
+		return
 	}
+	if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+		t.Fatalf("Redis not available at %s", address)
+	}
+	t.Skipf("Redis not available at %s, skipping integration test", address)
+}
+
+func TestNilErr(t *testing.T) {
+	requireRedisAvailable(t, testRedisAddr())
 
 	conn, err := NewRedisConn(config.RedisConfig{
 		Addresses: []string{testRedisAddr()},
@@ -56,9 +65,7 @@ func TestNilErr(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
-	if !isRedisAvailable(testRedisAddr()) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisAddr())
-	}
+	requireRedisAvailable(t, testRedisAddr())
 
 	conn, err := NewRedisConn(config.RedisConfig{
 		Addresses: []string{testRedisAddr()},

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl python3
 
 BENCH_TMP_ROOT="${TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark-local}"
 CLUSTER_TMP_ROOT="${CLUSTER_TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark-local-cluster}"
@@ -45,7 +46,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 160); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.25
@@ -109,5 +110,7 @@ LEFT_ADDRS="$(printf '127.0.0.1:%s,127.0.0.1:%s,127.0.0.1:%s' "${LEFT_PORTS[0]}"
 RIGHT_ADDRS="$(printf '127.0.0.1:%s,127.0.0.1:%s,127.0.0.1:%s' "${RIGHT_PORTS[0]}" "${RIGHT_PORTS[1]}" "${RIGHT_PORTS[2]}")"
 
 TMP_ROOT="${BENCH_TMP_ROOT}"
-export LEFT_ADDRS RIGHT_ADDRS TMP_ROOT
+ALLOW_DESTRUCTIVE_REDIS_TESTS=1
+TEST_ENVIRONMENT_ID="local-benchmark-$$"
+export LEFT_ADDRS RIGHT_ADDRS TMP_ROOT ALLOW_DESTRUCTIVE_REDIS_TESTS TEST_ENVIRONMENT_ID
 "${ROOT}/tests/bisync/run_benchmark.sh"

@@ -3,16 +3,6 @@
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
 
-match_regex_quiet() {
-  local pattern=$1
-  shift || true
-  if command -v rg >/dev/null 2>&1; then
-    rg -q -- "${pattern}" "$@"
-    return $?
-  fi
-  grep -E -q -- "${pattern}" "$@"
-}
-
 stop_pid() {
   local pid=${1:-}
   if [[ -n "${pid}" ]]; then

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mgtv-tech/redis-GunYu/config"
+	"github.com/mgtv-tech/redis-GunYu/pkg/redis/client/common"
 	redisconn "github.com/mgtv-tech/redis-GunYu/pkg/redis/client/conn"
 )
 
@@ -19,10 +20,11 @@ const defaultCheckRepliesRedis = "127.0.0.1:6379"
 func TestCheckRepliesWithRealRedis(t *testing.T) {
 	addr := checkRepliesRedisAddr()
 	if !isCheckRepliesRedisAvailable(addr) {
+		if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+			t.Fatalf("Redis not available at %s", addr)
+		}
 		t.Skipf("Redis not available at %s, skipping integration test", addr)
 	}
-
-	ro := NewRedisOutput(RedisOutputConfig{})
 
 	t.Run("non_transaction_success", func(t *testing.T) {
 		conn := newCheckRepliesRedisConn(t, addr)
@@ -42,7 +44,7 @@ func TestCheckRepliesWithRealRedis(t *testing.T) {
 		if err != nil {
 			t.Fatalf("exec failed: %v", err)
 		}
-		if err := ro.checkReplies(replies, 0); err != nil {
+		if err := common.CheckRepliesError(replies); err != nil {
 			t.Fatalf("checkReplies returned error: %v, replies=%#v", err, replies)
 		}
 	})
@@ -57,11 +59,6 @@ func TestCheckRepliesWithRealRedis(t *testing.T) {
 		}
 
 		replies, err := batcher.Exec()
-		if err != nil {
-			t.Fatalf("exec failed: %v", err)
-		}
-
-		err = ro.checkReplies(replies, 0)
 		if err == nil {
 			t.Fatal("expected checkReplies error")
 		}
@@ -88,7 +85,7 @@ func TestCheckRepliesWithRealRedis(t *testing.T) {
 		if err != nil {
 			t.Fatalf("exec failed: %v", err)
 		}
-		if err := ro.checkTxnReplies(replies, 2); err != nil {
+		if err := common.CheckTxnRepliesError(replies, 2); err != nil {
 			t.Fatalf("checkReplies returned error: %v, replies=%#v", err, replies)
 		}
 	})
@@ -112,11 +109,6 @@ func TestCheckRepliesWithRealRedis(t *testing.T) {
 		}
 
 		replies, err := batcher.Exec()
-		if err != nil {
-			t.Fatalf("exec failed: %v", err)
-		}
-
-		err = ro.checkTxnReplies(replies, 2)
 		if err == nil {
 			t.Fatal("expected checkReplies error")
 		}

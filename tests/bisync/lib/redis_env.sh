@@ -1,5 +1,104 @@
 #!/usr/bin/env bash
 
+require_command() {
+  local tool=$1
+  local install_hint=${2:-}
+
+  if command -v "${tool}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "missing required tool: ${tool}" >&2
+  if [[ -n "${install_hint}" ]]; then
+    echo "hint: ${install_hint}" >&2
+  else
+    echo "hint: install ${tool} with the package manager for your operating system" >&2
+  fi
+  return 1
+}
+
+require_test_commands() {
+  local commands=("$@")
+  local tool
+  local missing=0
+
+  if [[ $# -eq 0 ]]; then
+    commands=(go redis-server redis-cli curl git)
+  fi
+
+  for tool in "${commands[@]}"; do
+    case "${tool}" in
+      go)
+        require_command "${tool}" "install Go from https://go.dev/doc/install or your operating system package manager" || missing=1
+        ;;
+      redis-server)
+        if [[ -n "${REDIS_SERVER_BIN:-}" && -x "${REDIS_SERVER_BIN}" ]]; then
+          continue
+        fi
+        if [[ -n "${REDIS_DEPLOY_ROOT:-}" ]] && \
+          [[ -x "${REDIS_DEPLOY_ROOT}/src/redis-server" || -x "${REDIS_DEPLOY_ROOT}/bin/redis-server" || -x "${REDIS_DEPLOY_ROOT}/redis-server" ]]; then
+          continue
+        fi
+        require_command "${tool}" "install Redis from https://redis.io/docs/latest/operate/oss_and_stack/install/, or set REDIS_SERVER_BIN/REDIS_DEPLOY_ROOT" || missing=1
+        ;;
+      redis-cli)
+        require_command "${tool}" "install Redis from https://redis.io/docs/latest/operate/oss_and_stack/install/ or your operating system package manager" || missing=1
+        ;;
+      docker)
+        require_command "${tool}" "install Docker for your operating system and start its daemon" || missing=1
+        ;;
+      python3)
+        require_command "${tool}" "install Python 3 from https://www.python.org/downloads/ or your operating system package manager" || missing=1
+        ;;
+      *)
+        require_command "${tool}" || missing=1
+        ;;
+    esac
+  done
+
+  return "${missing}"
+}
+
+match_regex_quiet() {
+  local pattern=$1
+  shift || true
+  if command -v rg >/dev/null 2>&1; then
+    rg -q -- "${pattern}" "$@"
+  else
+    grep -E -q -- "${pattern}" "$@"
+  fi
+}
+
+count_regex_matches() {
+  local pattern=$1
+  shift || true
+  if command -v rg >/dev/null 2>&1; then
+    rg -c -- "${pattern}" "$@"
+  else
+    grep -E -c -- "${pattern}" "$@"
+  fi
+}
+
+print_regex_matches() {
+  local pattern=$1
+  shift || true
+  if command -v rg >/dev/null 2>&1; then
+    rg -n -- "${pattern}" "$@"
+  else
+    grep -E -n -- "${pattern}" "$@"
+  fi
+}
+
+exclude_regex_matches() {
+  local pattern=$1
+  shift || true
+  if command -v rg >/dev/null 2>&1; then
+    rg -v -- "${pattern}" "$@"
+  else
+    grep -E -v -- "${pattern}" "$@"
+  fi
+}
+
 redis_server_candidates_from_root() {
   local root=$1
   printf '%s\n' \
@@ -128,6 +227,36 @@ normalize_replay_mode() {
       return 1
       ;;
   esac
+}
+
+require_destructive_redis_test_authorization() {
+  local addresses=$1
+  local addr host
+  local address_list=()
+
+  if [[ "${ALLOW_DESTRUCTIVE_REDIS_TESTS:-0}" != "1" || -z "${TEST_ENVIRONMENT_ID:-}" ]]; then
+    echo "this runner modifies or flushes Redis data; set ALLOW_DESTRUCTIVE_REDIS_TESTS=1 and TEST_ENVIRONMENT_ID=<test-environment>" >&2
+    return 1
+  fi
+
+  IFS=',' read -r -a address_list <<< "${addresses}"
+  for addr in "${address_list[@]}"; do
+    host=${addr%:*}
+    host=${host#[}
+    host=${host%]}
+    case "${host}" in
+      127.0.0.1|localhost|::1)
+        ;;
+      *)
+        if [[ "${ALLOW_NON_LOOPBACK_REDIS_TESTS:-0}" != "1" ]]; then
+          echo "refusing non-loopback Redis test target ${host}; set ALLOW_NON_LOOPBACK_REDIS_TESTS=1 after verifying it is disposable" >&2
+          return 1
+        fi
+        ;;
+    esac
+  done
+
+  echo "authorized destructive Redis test environment: ${TEST_ENVIRONMENT_ID}" >&2
 }
 
 replay_mode_uses_frontier() {

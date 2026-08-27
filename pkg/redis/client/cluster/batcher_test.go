@@ -5,6 +5,7 @@ package redis
 import (
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -21,10 +22,19 @@ func isRedisAvailable(address string) bool {
 	return true
 }
 
-func TestBatcherKeysCmd(t *testing.T) {
-	if !isRedisAvailable(testRedisClusterAddr()) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisClusterAddr())
+func requireRedisAvailable(t *testing.T, address string) {
+	t.Helper()
+	if isRedisAvailable(address) {
+		return
 	}
+	if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+		t.Fatalf("Redis not available at %s", address)
+	}
+	t.Skipf("Redis not available at %s, skipping integration test", address)
+}
+
+func TestBatcherKeysCmd(t *testing.T) {
+	requireRedisAvailable(t, testRedisClusterAddr())
 
 	cases := map[string]string{
 		"aa1": "1", "aa2": "2", "aa3": "3",
@@ -60,9 +70,7 @@ func TestBatcherKeysCmd(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
-	if !isRedisAvailable(testRedisClusterAddr()) {
-		t.Skipf("Redis not available at %s, skipping integration test", testRedisClusterAddr())
-	}
+	requireRedisAvailable(t, testRedisClusterAddr())
 
 	cluster := newRedisNodeCluster(t)
 

@@ -33,17 +33,17 @@ func (zl *Ziplist) Next() []byte {
 	* 2^16-2 entries, this value is set to 2^16-1 and we need to traverse the
 	* entire list to know how many items it holds.*/
 	if zl.length == 65535 {
-		firstByte := zl.buf.ReadByte()
+		firstByte := zl.buf.MustReadByte()
 		if firstByte != 0xFE {
 			return ReadZiplistEntry2(zl.buf, firstByte)
 		}
 	} else {
 		if zl.pos < zl.length {
-			firstByte := zl.buf.ReadByte()
+			firstByte := zl.buf.MustReadByte()
 			zl.pos++
 			return ReadZiplistEntry2(zl.buf, firstByte)
 		} else {
-			lastByte := zl.buf.ReadByte()
+			lastByte := zl.buf.MustReadByte()
 			if lastByte != 0xFF {
 				panic(fmt.Errorf("invalid zipList lastByte encoding: %x", lastByte))
 			}
@@ -74,11 +74,11 @@ const (
 func ReadZiplistEntry2(buf *util.SliceBuffer, firstByte byte) []byte {
 	// if prevLen < 254, it is represented by one byte, else 5 bytes
 	if firstByte == 0xFE {
-		buf.Seek(4, 1)
+		buf.MustSeek(4, 1)
 	}
 
 	// encoding
-	firstByte = buf.ReadByte()
+	firstByte = buf.MustReadByte()
 	first2bits := (firstByte & 0xc0) >> 6 // first 2 bits of encoding
 
 	switch first2bits {
@@ -86,7 +86,7 @@ func ReadZiplistEntry2(buf *util.SliceBuffer, firstByte byte) []byte {
 		length := int(firstByte & 0x3f) // 0x3f = 00111111
 		return buf.Slice(length)
 	case rdbZiplist14bitlenString:
-		second := buf.ReadByte()
+		second := buf.MustReadByte()
 		length := (int(firstByte&0x3f) << 8) | int(second)
 		return buf.Slice(length)
 	case rdbZiplist32bitlenString:
@@ -97,7 +97,7 @@ func ReadZiplistEntry2(buf *util.SliceBuffer, firstByte byte) []byte {
 
 	switch firstByte {
 	case rdbZiplistInt8:
-		v := int8(buf.ReadByte())
+		v := int8(buf.MustReadByte())
 		return []byte(strconv.FormatInt(int64(v), 10))
 	case rdbZiplistInt16:
 		v := int16(buf.ReadUint16())
@@ -127,7 +127,7 @@ func ReadZiplistEntry2(buf *util.SliceBuffer, firstByte byte) []byte {
 
 // <zlbytes><zltail><zllen><entry>...<entry><zlend>
 func ReadZiplistLength(buf *util.SliceBuffer) int64 {
-	buf.Seek(8, 0) // skip the zlbytes and zltail
+	buf.MustSeek(8, 0) // skip the zlbytes and zltail
 	lenBytes := buf.Slice(2)
 	return int64(binary.LittleEndian.Uint16(lenBytes))
 }

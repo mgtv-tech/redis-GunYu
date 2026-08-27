@@ -77,7 +77,15 @@
 
 Testing the compatibility between different versions of RDB and AOF; RDB testing includes both RESTORE and non-RESTORE command.
 
-Note: Redis 8 support has been added. The current codebase supports Redis 8 RDB version 13 and the Redis 8 cluster `SLOT_INFO` metadata opcode. The matrix below is the historical cross-version coverage table; Redis 8 matrix cases can be extended incrementally.
+The Bash test runners support Linux and macOS on amd64 and arm64. They report
+missing tools without assuming a specific package manager, use `grep -E` when
+`ripgrep` is unavailable, honor `TMPDIR`, and select platform-specific etcd
+release archives. Native Windows execution is not supported; use WSL or a Linux
+container. Pull requests run the static portability gate on both Ubuntu and
+macOS. etcd tests are disabled by default and only run through `make test-etcd`
+or the explicit Nightly workflow option.
+
+Note: the codebase supports Redis 8 RDB version 13 and the Redis 8 cluster `SLOT_INFO` metadata opcode. Redis 8.6.2 has passed standalone/cluster sync, restart/resume, and bidirectional smoke tests. The 2h/4h/6h durability gates are not complete, so Redis 8 is not yet a durability-qualified release version.
 
 | Source Version | Target Version | Test Result | Remarks |
 | :- | :- | :- | :- |
@@ -93,7 +101,7 @@ Note: Redis 8 support has been added. The current codebase supports Redis 8 RDB 
 | 6.0  | 5.0  | Passed  |   |
 | 6.0  | 4.0  | Passed  |   |
 | 5.0  | 4.0  | Passed  |   |
-| 8.x | 8.x | Passed | RDB v13 parsing is supported, including Redis 8 cluster `SLOT_INFO` metadata |
+| 8.x | 8.x | Smoke passed | RDB v13, `SLOT_INFO`, and core smoke are verified; release durability is pending |
 
 
 

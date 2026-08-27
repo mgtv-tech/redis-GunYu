@@ -4,6 +4,7 @@ set -eEuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat4"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+require_test_commands go redis-server redis-cli curl
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
 SYNC_SRC_BASE="${SYNC_SRC_BASE:-32300}"

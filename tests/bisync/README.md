@@ -82,11 +82,13 @@ WAN_LATENCY=40ms WAN_JITTER=10ms BENCH_DURATION=10m BENCH_TARGET_QPS_LIST=5000 S
 
 When a benchmark needs distinct local-vs-remote routing, set `FWD_INPUT_ADDRS`, `FWD_OUTPUT_ADDRS`, `REV_INPUT_ADDRS`, and `REV_OUTPUT_ADDRS`. `run_benchmark_cloud_local.sh` wires these automatically so each syncer reads from its colocated source cluster and writes to the remote cluster through the WAN-emulation proxy, while the workload and final compare still use the direct local cluster addresses.
 
-`run_category9.sh` validates the local `redis-server` major version before starting. Use Redis 7 for the normal durability gate by setting `REDIS_SERVER_BIN=/path/to/redis-server` when needed. Redis 8 currently exercises an unsupported RDB format path in this codebase; set `ALLOW_UNSUPPORTED_REDIS=1` only when the goal is compatibility investigation rather than release gating.
+`run_category9.sh` validates the local `redis-server` major version before starting. Use Redis 7 for the qualified durability gate by setting `REDIS_SERVER_BIN=/path/to/redis-server`. Redis 8 RDB parsing and core smoke are supported, but the 2h/4h/6h durability sequence has not yet been qualified; set `ALLOW_UNSUPPORTED_REDIS=1` only for that compatibility investigation.
+
+`run_category6.sh`, `run_category7.sh`, and `run_benchmark.sh` flush their target clusters. They now require `ALLOW_DESTRUCTIVE_REDIS_TESTS=1` and a non-empty `TEST_ENVIRONMENT_ID`. Non-loopback targets additionally require `ALLOW_NON_LOOPBACK_REDIS_TESTS=1`. Use only disposable Redis environments.
 
 Redis Modules regression example:
 
 ```bash
 bash ./tests/bisync/run_category10.sh
-MODULE_IMAGE=redis/redis-stack-server:latest bash ./tests/bisync/run_category10.sh
+MODULE_IMAGE=redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a bash ./tests/bisync/run_category10.sh
 ```

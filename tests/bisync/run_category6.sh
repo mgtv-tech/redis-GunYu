@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat6"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat6:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 LEFT_PORTS=("${LEFT_PORT_1:-7000}" "${LEFT_PORT_2:-7001}" "${LEFT_PORT_3:-7002}")
@@ -25,6 +26,7 @@ fi
 if [[ -z "${RIGHT_ADDRS}" ]]; then
   RIGHT_ADDRS="127.0.0.1:${RIGHT_PORTS[0]},127.0.0.1:${RIGHT_PORTS[1]},127.0.0.1:${RIGHT_PORTS[2]}"
 fi
+require_destructive_redis_test_authorization "${LEFT_ADDRS},${RIGHT_ADDRS}"
 LEFT_PORTS=()
 while IFS= read -r port; do
   LEFT_PORTS+=("${port}")

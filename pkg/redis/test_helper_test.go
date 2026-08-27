@@ -32,6 +32,9 @@ func requireTestRedis(t testing.TB) string {
 
 	addr := testRedisAddr()
 	if !isRedisAvailable(addr) {
+		if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+			t.Fatalf("Redis not available at %s", addr)
+		}
 		t.Skipf("Redis not available at %s, skipping integration-style test", addr)
 	}
 	return addr

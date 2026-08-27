@@ -12,9 +12,15 @@ KEYSPEC_REDIS_SERVER_ARGS="${KEYSPEC_REDIS_SERVER_ARGS:-}"
 KEYSPEC_FAIL_ON_UNSUPPORTED="${KEYSPEC_FAIL_ON_UNSUPPORTED:-0}"
 LOCAL_CLUSTER_PORTS=("${KEYSPEC_PORT_1:-30100}" "${KEYSPEC_PORT_2:-30101}" "${KEYSPEC_PORT_3:-30102}")
 STARTED_LOCAL_CLUSTER=0
-REDIS_SERVER_BIN="$(resolve_redis_server_bin KEYSPEC_REDIS_SERVER KEYSPEC_REDIS_DEPLOY_ROOT)"
 if [[ -z "${KEYSPEC_VERIFY_ADDRS}" && -n "${KEYSPEC_VERIFY_DEPLOY_ROOT:-}" ]]; then
   KEYSPEC_VERIFY_ADDRS="$(resolve_deploy_addrs KEYSPEC_VERIFY_DEPLOY_ROOT KEYSPEC_VERIFY_HOST)"
+fi
+require_test_commands go
+if [[ -z "${KEYSPEC_VERIFY_ADDRS}" ]]; then
+  require_test_commands redis-cli
+  REDIS_SERVER_BIN="$(resolve_redis_server_bin KEYSPEC_REDIS_SERVER KEYSPEC_REDIS_DEPLOY_ROOT)"
+else
+  REDIS_SERVER_BIN=""
 fi
 
 cleanup() {
@@ -98,7 +104,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2

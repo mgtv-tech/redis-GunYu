@@ -79,7 +79,9 @@
 
 测试RDB和AOF在不同版本之间兼容性；RDB回放测试RESTORE命令回放和非RESTORE命令回放两种。
 
-说明：当前已经增加对 Redis 8 的支持。代码层面已支持 Redis 8 的 RDB v13，以及 Redis 8 cluster RDB 中的 `SLOT_INFO` 元数据 opcode。下面这张表主要保留历史 cross-version 覆盖情况，Redis 8 的版本矩阵会继续补充。
+Bash 测试 runner 支持 Linux 和 macOS 的 amd64、arm64 环境。缺少工具时不再假设特定包管理器；未安装 `ripgrep` 时自动回退到 `grep -E`；临时目录遵循 `TMPDIR`；etcd 安装器会选择对应平台的发布包。etcd 测试默认禁用，只能通过 `make test-etcd` 或手工 Nightly 开关显式运行。PR 会在 Ubuntu 和 macOS 上执行静态兼容性门禁。暂不支持原生 Windows Shell，请使用 WSL 或 Linux 容器。
+
+说明：代码层面已支持 Redis 8 的 RDB v13，以及 Redis 8 cluster RDB 中的 `SLOT_INFO` 元数据 opcode。Redis 8.6.2 已通过 standalone/cluster 基础同步、重启续传和双向 smoke；2h/4h/6h durability 尚未完成，因此 Redis 8 当前不作为长稳发布门禁版本。
 
 | 源端版本 | 目标端版本 |  测试结果  | 备注 |
 | :- | :- | :- |  :- | 
@@ -95,7 +97,7 @@
 | 6.0  | 5.0  | 通过  |   |
 | 6.0  | 4.0  | 通过  |   |
 | 5.0  | 4.0  | 通过  |   |
-| 8.x  | 8.x  | 通过  | 已支持 RDB v13 解析，并兼容 Redis 8 cluster `SLOT_INFO` 元数据 |
+| 8.x  | 8.x  | 基础通过  | RDB v13、`SLOT_INFO` 和核心 smoke 已验证；发布长稳待完成 |
 
 
 

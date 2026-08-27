@@ -12,7 +12,8 @@ on:
       tags:
         description: 'test'
 
-permissions: write-all
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -20,19 +21,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
+          go-version-file: go.mod
+          cache: true
 
       - name: Build
         run: make allos
 
       - name: Get the version
         id: get_version
-        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="manual-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "VERSION=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Create Zip Archive
         run: |
@@ -41,46 +49,16 @@ jobs:
           zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip redisGunYu.win-amd64
           zip redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip redisGunYu.linux-amd64
 
-      - name: Upload MacOS amd64 Asset
-        id: upload_macOS_amd64_asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release assets
+        if: ${{ github.event_name == 'release' }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
-          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-amd64.zip
-          asset_content_type: application/zip
+          files: redisGunYu-${{ steps.get_version.outputs.VERSION }}.*.zip
 
-      - name: Upload MacOS arm64 Asset
-        id: upload_macOS_arm64_asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload manual-build artifacts
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-arm64.zip
-          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.darwin-arm64.zip
-          asset_content_type: application/zip
-
-      - name: Upload windows amd64 Asset
-        id: upload_win_amd64_asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip
-          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.win-amd64.zip
-          asset_content_type: application/zip
-
-      - name: Upload linux amd64 Asset
-        id: upload_linux_amd64_asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip
-          asset_name: redisGunYu-${{ steps.get_version.outputs.VERSION }}.linux-amd64.zip
-          asset_content_type: application/zip
+          name: redisGunYu-${{ steps.get_version.outputs.VERSION }}
+          path: redisGunYu-${{ steps.get_version.outputs.VERSION }}.*.zip
+          if-no-files-found: error

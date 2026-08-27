@@ -16,9 +16,15 @@ func TestGetRedisRoleOnlineRealCluster(t *testing.T) {
 	masterAddr := os.Getenv("TEST_REDIS_CLUSTER_MASTER_ADDR")
 	replicaAddr := os.Getenv("TEST_REDIS_CLUSTER_REPLICA_ADDR")
 	if masterAddr == "" || replicaAddr == "" {
+		if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+			t.Fatal("TEST_REDIS_CLUSTER_MASTER_ADDR and TEST_REDIS_CLUSTER_REPLICA_ADDR are required")
+		}
 		t.Skip("TEST_REDIS_CLUSTER_MASTER_ADDR and TEST_REDIS_CLUSTER_REPLICA_ADDR are required")
 	}
 	if !isRedisAvailable(masterAddr) || !isRedisAvailable(replicaAddr) {
+		if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+			t.Fatalf("Redis cluster nodes are not available: master=%s replica=%s", masterAddr, replicaAddr)
+		}
 		t.Skipf("Redis cluster nodes are not available: master=%s replica=%s", masterAddr, replicaAddr)
 	}
 
@@ -31,6 +37,9 @@ func TestGetRedisRoleOnlineRealCluster(t *testing.T) {
 		standaloneAddr = masterAddr
 	}
 	if !isRedisAvailable(standaloneAddr) {
+		if os.Getenv("REQUIRE_REDIS_INTEGRATION") == "1" {
+			t.Fatalf("Standalone Redis is not available: %s", standaloneAddr)
+		}
 		t.Skipf("Standalone Redis is not available: %s", standaloneAddr)
 	}
 

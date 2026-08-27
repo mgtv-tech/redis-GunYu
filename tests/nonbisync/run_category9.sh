@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat9"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+require_test_commands go redis-server redis-cli curl
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
 SOAK_DURATION_SECONDS="${SOAK_DURATION_SECONDS:-75}"
@@ -66,7 +67,7 @@ start_monitor() {
       local ts rss goroutines
       ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
       rss=$(ps -o rss= -p "${syncer_pid}" 2>/dev/null | awk '{print $1}' || true)
-      goroutines=$(curl -sf "http://127.0.0.1:${http_port}/debug/pprof/goroutine?debug=1" 2>/dev/null | rg -c '^goroutine ' || true)
+      goroutines=$(curl -sf "http://127.0.0.1:${http_port}/debug/pprof/goroutine?debug=1" 2>/dev/null | count_regex_matches '^goroutine ' || true)
       echo -e "${ts}\t${rss:-0}\t${goroutines:-0}"
       sleep "${MONITOR_INTERVAL_SECONDS}"
     done

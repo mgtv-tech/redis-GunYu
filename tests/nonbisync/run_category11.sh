@@ -4,13 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat11"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+require_test_commands go docker redis-cli curl
 
-MODULE_IMAGE="${MODULE_IMAGE:-redis/redis-stack-server:latest}"
+MODULE_IMAGE="${MODULE_IMAGE:-redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a}"
 SRC_PORT="${SRC_PORT:-32300}"
 DST_PORT="${DST_PORT:-32400}"
 HTTP_PORT="${HTTP_PORT:-32380}"
-SRC_CONTAINER="${SRC_CONTAINER:-redis-stack-gunyu-incr-src}"
-DST_CONTAINER="${DST_CONTAINER:-redis-stack-gunyu-incr-dst}"
+MODULE_RUN_ID="${TEST_RUN_ID:-$$}"
+SRC_CONTAINER="${SRC_CONTAINER:-redis-stack-gunyu-incr-src-${MODULE_RUN_ID}}"
+DST_CONTAINER="${DST_CONTAINER:-redis-stack-gunyu-incr-dst-${MODULE_RUN_ID}}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:cat11:$(date +%s)}"
 SYNCER_PID=""
 

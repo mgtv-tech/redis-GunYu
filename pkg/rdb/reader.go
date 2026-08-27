@@ -361,12 +361,12 @@ func (r *RdbReader) ReadZipmapItem(buf *util.SliceBuffer, readFree bool) []byte 
 		return nil
 	}
 	value := buf.Slice(length)
-	buf.Seek(int64(free), 1)
+	buf.MustSeek(int64(free), 1)
 	return value
 }
 
 func readZipmapItemLength(buf *util.SliceBuffer, readFree bool) (int, int) {
-	b := buf.ReadByte()
+	b := buf.MustReadByte()
 	switch b {
 	case 253:
 		s := buf.Slice(5)
@@ -378,7 +378,7 @@ func readZipmapItemLength(buf *util.SliceBuffer, readFree bool) (int, int) {
 	}
 	var free byte
 	if readFree {
-		free = buf.ReadByte()
+		free = buf.MustReadByte()
 	}
 	return int(b), int(free)
 }
@@ -395,10 +395,10 @@ func (r *RdbReader) CountZipmapItems(buf *util.SliceBuffer) int {
 		if strLen == -1 {
 			break
 		}
-		buf.Seek(int64(strLen)+int64(free), 1)
+		buf.MustSeek(int64(strLen)+int64(free), 1)
 		n++
 	}
-	buf.Seek(0, 0)
+	buf.MustSeek(0, 0)
 	return n
 }
 

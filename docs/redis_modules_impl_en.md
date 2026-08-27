@@ -278,7 +278,7 @@ Observed validation results:
 Start Redis Stack:
 
 ```bash
-docker run -d --name redis-stack-gunyu-test -p 6389:6379 redis/redis-stack-server:latest
+docker run -d --name redis-stack-gunyu-test -p 6389:6379 redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
 ```
 
 Run the verifier:

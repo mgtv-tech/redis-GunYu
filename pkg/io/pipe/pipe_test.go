@@ -11,9 +11,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func tempPipeFile(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "pipe.test")
+}
 
 func openPipe(t *testing.T, fileName string) (pr Reader, pw Writer, pf *os.File) {
 	buffSize := 8192
@@ -52,7 +58,7 @@ func testPipe1(t *testing.T, fileName string) {
 
 func TestPipe1(t *testing.T) {
 	testPipe1(t, "")
-	testPipe1(t, "/tmp/pipe.test")
+	testPipe1(t, tempPipeFile(t))
 }
 
 func testPipe2(t *testing.T, fileName string) {
@@ -90,7 +96,7 @@ func testPipe2(t *testing.T, fileName string) {
 
 func TestPipe2(t *testing.T) {
 	testPipe2(t, "")
-	testPipe2(t, "/tmp/pipe.test")
+	testPipe2(t, tempPipeFile(t))
 }
 
 func testPipe3(t *testing.T, fileName string) {
@@ -141,7 +147,7 @@ func testPipe3(t *testing.T, fileName string) {
 
 func TestPipe3(t *testing.T) {
 	testPipe3(t, "")
-	testPipe3(t, "/tmp/pipe.test")
+	testPipe3(t, tempPipeFile(t))
 }
 
 func testPipe4(t *testing.T, fileName string) {
@@ -191,7 +197,7 @@ func testPipe4(t *testing.T, fileName string) {
 
 func TestPipe4(t *testing.T) {
 	testPipe4(t, "")
-	testPipe4(t, "/tmp/pipe.test")
+	testPipe4(t, tempPipeFile(t))
 }
 
 type pipeTest struct {

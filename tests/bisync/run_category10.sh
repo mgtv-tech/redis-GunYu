@@ -3,13 +3,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat10"
-MODULE_IMAGE="${MODULE_IMAGE:-redis/redis-stack-server:latest}"
+source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go docker redis-cli
+
+MODULE_IMAGE="${MODULE_IMAGE:-redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a}"
 MODULE_VERIFY_PORT="${MODULE_VERIFY_PORT:-6389}"
 MODULE_SRC_PORT="${MODULE_SRC_PORT:-6390}"
 MODULE_DST_PORT="${MODULE_DST_PORT:-6391}"
-MODULE_VERIFY_CONTAINER="${MODULE_VERIFY_CONTAINER:-redis-stack-gunyu-test}"
-MODULE_SRC_CONTAINER="${MODULE_SRC_CONTAINER:-redis-stack-gunyu-src}"
-MODULE_DST_CONTAINER="${MODULE_DST_CONTAINER:-redis-stack-gunyu-dst}"
+MODULE_RUN_ID="${TEST_RUN_ID:-$$}"
+MODULE_VERIFY_CONTAINER="${MODULE_VERIFY_CONTAINER:-redis-stack-gunyu-test-${MODULE_RUN_ID}}"
+MODULE_SRC_CONTAINER="${MODULE_SRC_CONTAINER:-redis-stack-gunyu-src-${MODULE_RUN_ID}}"
+MODULE_DST_CONTAINER="${MODULE_DST_CONTAINER:-redis-stack-gunyu-dst-${MODULE_RUN_ID}}"
+MODULE_GUNYU_BIN="${TMP_ROOT}/redisGunYu"
+MODULE_RDB_FILE="${TMP_ROOT}/redis-stack-gunyu-module-keyspace.rdb"
+MODULE_FAIL_CONF="${TMP_ROOT}/redisgunyu_module_rdb_load_fail.yaml"
+MODULE_SKIP_CONF="${TMP_ROOT}/redisgunyu_module_rdb_load_skip.yaml"
 
 cleanup() {
   local code=$?
@@ -17,7 +25,6 @@ cleanup() {
   docker rm -f "${MODULE_VERIFY_CONTAINER}" "${MODULE_SRC_CONTAINER}" "${MODULE_DST_CONTAINER}" >/dev/null 2>&1 || true
   if [[ "${KEEP_TMP:-0}" != "1" ]]; then
     rm -rf "${TMP_ROOT}"
-    rm -f /private/tmp/redisgunyu_module_rdb_load_fail.yaml /private/tmp/redisgunyu_module_rdb_load_skip.yaml /private/tmp/redis-stack-gunyu-module-keyspace.rdb
   fi
   exit "${code}"
 }
@@ -70,7 +77,7 @@ write_rdb_load_conf() {
   local policy=$2
   cat >"${path}" <<EOF
 action: load
-rdbPath: /private/tmp/redis-stack-gunyu-module-keyspace.rdb
+rdbPath: "${MODULE_RDB_FILE}"
 load:
   redis:
     addresses: [127.0.0.1:${MODULE_DST_PORT}]
@@ -84,7 +91,7 @@ EOF
 }
 
 echo "[1/8] building binaries"
-(cd "${ROOT}" && GOCACHE="${TMP_ROOT}/gocache" go build -o /private/tmp/redisGunYu ./main.go)
+(cd "${ROOT}" && GOCACHE="${TMP_ROOT}/gocache" go build -o "${MODULE_GUNYU_BIN}" ./main.go)
 
 echo "[2/8] starting Redis Stack containers"
 docker_recreate "${MODULE_VERIFY_CONTAINER}" "${MODULE_VERIFY_PORT}"
@@ -110,15 +117,15 @@ assert_eq "$(docker exec "${MODULE_SRC_CONTAINER}" redis-cli FT._LIST)" 'idx' "s
 
 echo "[5/8] generating and inspecting source RDB"
 docker exec "${MODULE_SRC_CONTAINER}" redis-cli SAVE >/dev/null
-docker cp "${MODULE_SRC_CONTAINER}:/data/dump.rdb" /private/tmp/redis-stack-gunyu-module-keyspace.rdb
-(cd "${ROOT}" && GOCACHE="${TMP_ROOT}/gocache" /private/tmp/redisGunYu -cmd=rdb -rdb.action=print -rdb.rdbPath=/private/tmp/redis-stack-gunyu-module-keyspace.rdb -rdb.print.noLogValue=true -rdb.print.moduleAuxPolicy=skip) | tee "${TMP_ROOT}/rdb_print.log"
+docker cp "${MODULE_SRC_CONTAINER}:/data/dump.rdb" "${MODULE_RDB_FILE}"
+(cd "${ROOT}" && GOCACHE="${TMP_ROOT}/gocache" "${MODULE_GUNYU_BIN}" -cmd=rdb -rdb.action=print -rdb.rdbPath="${MODULE_RDB_FILE}" -rdb.print.noLogValue=true -rdb.print.moduleAuxPolicy=skip) | tee "${TMP_ROOT}/rdb_print.log"
 assert_contains "$(cat "${TMP_ROOT}/rdb_print.log")" '"key":"doc:2"' "RDB print doc:2"
 assert_contains "$(cat "${TMP_ROOT}/rdb_print.log")" '"key":"bf:2"' "RDB print bf:2"
 
 echo "[6/8] validating moduleAuxPolicy=fail boundary"
-write_rdb_load_conf /private/tmp/redisgunyu_module_rdb_load_fail.yaml fail
+write_rdb_load_conf "${MODULE_FAIL_CONF}" fail
 set +e
-/private/tmp/redisGunYu -cmd=rdb -conf=/private/tmp/redisgunyu_module_rdb_load_fail.yaml >"${TMP_ROOT}/rdb_load_fail.log" 2>&1
+"${MODULE_GUNYU_BIN}" -cmd=rdb -conf="${MODULE_FAIL_CONF}" >"${TMP_ROOT}/rdb_load_fail.log" 2>&1
 fail_status=$?
 set -e
 if [[ "${fail_status}" == "0" ]]; then
@@ -129,8 +136,8 @@ assert_contains "$(cat "${TMP_ROOT}/rdb_load_fail.log")" 'module aux data is uns
 
 echo "[7/8] validating moduleAuxPolicy=skip restore path"
 docker exec "${MODULE_DST_CONTAINER}" redis-cli FLUSHALL >/dev/null
-write_rdb_load_conf /private/tmp/redisgunyu_module_rdb_load_skip.yaml skip
-/private/tmp/redisGunYu -cmd=rdb -conf=/private/tmp/redisgunyu_module_rdb_load_skip.yaml | tee "${TMP_ROOT}/rdb_load_skip.log"
+write_rdb_load_conf "${MODULE_SKIP_CONF}" skip
+"${MODULE_GUNYU_BIN}" -cmd=rdb -conf="${MODULE_SKIP_CONF}" | tee "${TMP_ROOT}/rdb_load_skip.log"
 
 assert_eq "$(docker exec "${MODULE_DST_CONTAINER}" redis-cli DBSIZE)" '2' "destination dbsize"
 assert_eq "$(docker exec "${MODULE_DST_CONTAINER}" redis-cli TYPE doc:2)" 'ReJSON-RL' "destination JSON type"

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat8"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl
 SRC_PORTS=("${SRC_PORT_1:-30700}" "${SRC_PORT_2:-30701}" "${SRC_PORT_3:-30702}")
 DST_PORTS=("${DST_PORT_1:-30800}" "${DST_PORT_2:-30801}" "${DST_PORT_3:-30802}")
 HTTP_PORT="${HTTP_PORT:-30780}"
@@ -76,7 +77,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.2
@@ -239,7 +240,7 @@ assert_no_bisync_metadata() {
 }
 
 assert_log_is_non_bisync() {
-  if rg -q 'bisync startpoint|bisync checkpoint namespace|scheme1|frontier' "${TMP_ROOT}/forward.log"; then
+  if match_regex_quiet 'bisync startpoint|bisync checkpoint namespace|scheme1|frontier' "${TMP_ROOT}/forward.log"; then
     echo "expected non-bisync run to avoid bisync recovery path log markers" >&2
     exit 1
   fi

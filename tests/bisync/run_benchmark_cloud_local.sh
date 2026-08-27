@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl python3
 
 BENCH_TMP_ROOT="${TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark-cloud-local}"
 CLUSTER_TMP_ROOT="${CLUSTER_TMP_ROOT:-${TMPDIR:-/tmp}/redisgunyu-bisync-benchmark-cloud-local-cluster}"
@@ -58,7 +59,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 160); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.25
@@ -213,6 +214,9 @@ FWD_OUTPUT_ADDRS="${RIGHT_PROXY_ADDRS}"
 REV_INPUT_ADDRS="${RIGHT_ADDRS}"
 REV_OUTPUT_ADDRS="${LEFT_PROXY_ADDRS}"
 NETWORK_PROFILE="cross-cloud redis netem proxy latency=${WAN_LATENCY} jitter=${WAN_JITTER}; direct local workload path; cloud-a=${LEFT_ADDRS}; cloud-b=${RIGHT_ADDRS}"
+ALLOW_DESTRUCTIVE_REDIS_TESTS=1
+TEST_ENVIRONMENT_ID="cloud-local-benchmark-$$"
 
 export TMP_ROOT LEFT_ADDRS RIGHT_ADDRS FWD_INPUT_ADDRS FWD_OUTPUT_ADDRS REV_INPUT_ADDRS REV_OUTPUT_ADDRS NETWORK_PROFILE
+export ALLOW_DESTRUCTIVE_REDIS_TESTS TEST_ENVIRONMENT_ID
 "${ROOT}/tests/bisync/run_benchmark.sh"

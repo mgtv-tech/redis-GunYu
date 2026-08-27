@@ -112,7 +112,7 @@ func (r *AofRotateReader) pump() (err error) {
 }
 
 // offset is a logical offset
-func (r *AofRotateReader) Seek(offset int64) error {
+func (r *AofRotateReader) SeekOffset(offset int64) error {
 	dis := offset - r.left
 	if dis < 0 {
 		return fmt.Errorf("offset(%v) - left offset(%v) < 0", offset, r.left)

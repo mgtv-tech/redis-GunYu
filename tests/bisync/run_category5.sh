@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat5"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+require_test_commands go redis-server redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat5:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-30300}"
@@ -108,7 +109,7 @@ wait_for_ping() {
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 120); do
-    if redis-cli -p "${port}" cluster info 2>/dev/null | rg -q '^cluster_state:ok'; then
+    if redis-cli -p "${port}" cluster info 2>/dev/null | match_regex_quiet '^cluster_state:ok'; then
       return 0
     fi
     sleep 0.25
@@ -463,7 +464,7 @@ assert_expected_state() {
 
 assert_log_indicates_restart() {
   local log_file=$1
-  if ! rg -q 'restart|typology|redis typology is changed|run error' "${log_file}"; then
+  if ! match_regex_quiet 'restart|typology|redis typology is changed|run error' "${log_file}"; then
     echo "expected restart/topology activity in ${log_file}" >&2
     exit 1
   fi

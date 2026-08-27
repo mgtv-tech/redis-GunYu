@@ -335,7 +335,7 @@ func (d *DoubleSliceUint16) String() string {
 	return "doublesliceuint16"
 }
 
-//for flag ex: [0,1000],[1005,1006],[1995]
+// for flag ex: [0,1000],[1005,1006],[1995]
 func (d *DoubleSliceUint16) Set(value string) error {
 	value = strings.Trim(value, "[]")
 	slicesStr := strings.Split(value, "],[")

@@ -33,7 +33,7 @@ func (s *SliceBuffer) Slice(n int) []byte {
 	return b
 }
 
-func (s *SliceBuffer) ReadByte() byte {
+func (s *SliceBuffer) MustReadByte() byte {
 	b, e := s.ReadByte1()
 	if e != nil {
 		panic(e)
@@ -70,7 +70,7 @@ func (s *SliceBuffer) Read1(b []byte) (int, error) {
 	return n, nil
 }
 
-func (s *SliceBuffer) Seek(offset int64, whence int) int64 {
+func (s *SliceBuffer) MustSeek(offset int64, whence int) int64 {
 	n, err := s.seek(offset, whence)
 	if err != nil {
 		panic(err)
