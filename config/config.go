@@ -103,6 +103,7 @@ type ServerConfig struct {
 	ListenPort      int    `yaml:"-"`
 	ListenPeer      string `yaml:"listenPeer"` // Used to communicate with peers. if it's empty, use Listen field
 	MetricRoutePath string `yaml:"metricRoutePath"`
+	InitialPaused   bool   `yaml:"initialPaused"`
 
 	CheckRedisTypologyTicker time.Duration `yaml:"checkRedisTypologyTicker"` // seconds
 	GracefullStopTimeout     time.Duration `yaml:"gracefullStopTimeout"`

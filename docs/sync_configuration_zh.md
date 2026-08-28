@@ -223,8 +223,14 @@ cluster:
 - listen : 监听地址，默认"127.0.0.1:18001"
 - listenPeer: 和其他`redis-GunYu`进程通信用途，IP:Port，默认和listen一样。注意不要写成127.0.0.1
 - metricRoutePath : prometheus的http路径，默认是 "/prometheus"
+- initialPaused：新初始化的同步器是否以 `pause` 状态启动，默认 `false`。开启后，在通过 HTTP API 恢复同步前不会启动 Redis 复制输入输出；拓扑发现和 HA 选举仍会运行。首次暂停或恢复后，同一 input 重建的同步器会继承运行期状态。
 - checkRedisTypologyTicker ： 检查redis cluster拓扑的时间周期，默认30秒，可以用1s, 1h，1ms等字符串
 - gracefullStopTimeout ： 优雅退出超时时间，默认5秒
+
+Go API 升级说明：本功能为 `syncer.SyncerConfig` 增加了导出的
+`InitialPaused` 字段。下游 Go 代码若使用无字段名的复合字面量构造
+`SyncerConfig`，升级时必须改用具名字段字面量。具名字段字面量、YAML 配置和
+CLI 配置保持兼容。
 
 
 
@@ -251,6 +257,7 @@ output:
 server:
   listen: 0.0.0.0:18001 
   listenPeer: 10.220.14.15:18001  # 局域网地址
+  initialPaused: false
 input:
   redis:
     addresses: [127.0.0.1:6300]

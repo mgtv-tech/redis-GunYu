@@ -60,13 +60,14 @@ curl -XPOST 'http://server:port/syncer/pause?inputs=inputIP&flushdb=yes'
 URL, query parameters:
 - inputs: The source Redis IPs that need to be fully synchronized. If all source nodes need to be fully synchronized, write "inputs=all". If there are multiple source IPs, separate them with commas.
 
-
 ### Resume Sync
 ```
 curl -XPOST 'http://server:port/syncer/resume?inputs=inputIP&flushdb=yes'
 ```
 URL, query parameters:
 - inputs: The source Redis IPs that need to be fully synchronized. If all source nodes need to be fully synchronized, write "inputs=all". If there are multiple source IPs, separate them with commas.
+
+When `server.initialPaused` is enabled, wait until the expected syncers are visible with state `pause`, then use `inputs=all` to start all local pipelines. Resume is idempotent.
 
 
 

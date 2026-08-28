@@ -180,6 +180,7 @@ write_syncer_conf() {
   local output_type=$6
   local storer_dir=$7
   local replay_mode=$8
+  local initial_paused=${9:-false}
 
   mkdir -p "${storer_dir}"
   cat > "${file}" <<EOF
@@ -188,6 +189,7 @@ server:
   listenPeer: 127.0.0.1:${http_port}
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 2s
+  initialPaused: ${initial_paused}
 input:
   redis:
     addresses: [${input_addrs}]

@@ -5,11 +5,34 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"gopkg.in/yaml.v3"
 )
 
 func TestInitConfig(t *testing.T) {
 	err := InitSyncerConfig("./cluster.yaml")
 	assert.Nil(t, err)
+}
+
+func TestServerConfigInitialPausedYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "omitted", yaml: "server: {}\n", want: false},
+		{name: "false", yaml: "server:\n  initialPaused: false\n", want: false},
+		{name: "true", yaml: "server:\n  initialPaused: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg SyncConfig
+			if err := yaml.Unmarshal([]byte(tc.yaml), &cfg); err != nil {
+				t.Fatalf("unmarshal config: %v", err)
+			}
+			if cfg.Server.InitialPaused != tc.want {
+				t.Fatalf("initialPaused = %t, want %t", cfg.Server.InitialPaused, tc.want)
+			}
+		})
+	}
 }
 
 func TestSelNodes(t *testing.T) {

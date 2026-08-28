@@ -104,6 +104,11 @@ case ",${SMOKE_CASES}," in
       SYNC_SRC_BASE=$((BASE + 6)) SYNC_DST_BASE=$((BASE + 9)) SYNC_HTTP_PORT=$((BASE + 12)) \
       PIPE_SRC_BASE=$((BASE + 13)) PIPE_DST_BASE=$((BASE + 16)) PIPE_HTTP_PORT=$((BASE + 19)) \
       bash "${ROOT}/tests/nonbisync/run_category1.sh" || FAILURES=$((FAILURES + 1))
+
+    run_case nonbisync-initial-paused env \
+      INITIAL_PAUSED_SRC_PORT=$((BASE + 52)) INITIAL_PAUSED_DST_PORT=$((BASE + 53)) \
+      INITIAL_PAUSED_HTTP_PORT=$((BASE + 54)) \
+      bash "${ROOT}/tests/integration/run_initial_paused.sh" || FAILURES=$((FAILURES + 1))
     ;;
 esac
 

@@ -59,13 +59,14 @@ curl -XPOST 'http://server:port/syncer/pause?inputs=inputIP&flushdb=yes'
 URL，查询参数：
 - inputs : 需要全量同步的源端redis IPs，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP，则用逗号分隔
 
-
 ### 恢复同步
 ```
 curl -XPOST 'http://server:port/syncer/resume?inputs=inputIP&flushdb=yes'
 ```
 URL，查询参数：
 - inputs : 需要全量同步的源端redis IPs，如果所有源端都全量同步，则写成 inputs=all。如果多个源端IP，则用逗号分隔
+
+启用 `server.initialPaused` 后，应等待预期同步器均以 `pause` 状态可见，再使用 `inputs=all` 启动本进程的全部同步管线。重复恢复操作是幂等的。
 
 
 
@@ -160,5 +161,3 @@ curl http://http_server:port/storage/gc
 ### 普罗米修斯指标接口
 
 GET http://http_server:port/prometheus
-
-

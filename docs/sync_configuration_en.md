@@ -218,8 +218,14 @@ Server configuration:
 - listen: Listening address, default is "127.0.0.1:18001"
 - listenPeer: Used for communication with other `redis-GunYu` processes, IP:Port, default is the same as listen. Note: Do not use 127.0.0.1.
 - metricRoutePath: Prometheus HTTP path, default is "/prometheus"
+- initialPaused: Whether newly initialized syncers start in the `pause` state. The default is `false`. When enabled, Redis replication input/output does not start until the syncer is resumed through the HTTP API. Topology discovery and HA election still run. After the first pause or resume operation, syncers recreated for the same input inherit that runtime state.
 - checkRedisTypologyTicker: Time interval for checking Redis cluster topology, default is 30 seconds, can be specified as 1s, 1h, 1ms, etc.
 - gracefullStopTimeout: Graceful shutdown timeout, default is 5 seconds
+
+Go API upgrade note: this feature adds the exported `InitialPaused` field to
+`syncer.SyncerConfig`. Downstream Go code that constructs `SyncerConfig` with an
+unkeyed composite literal must switch to a keyed literal when upgrading. Keyed
+literals, YAML configuration, and CLI configuration remain compatible.
 
 
 ## Configuration File Examples
@@ -245,6 +251,7 @@ output:
 server:
   listen: 0.0.0.0:18001 
   listenPeer: 10.220.14.15:18001  # LAN address
+  initialPaused: false
 input:
   redis:
     addresses: [127.0.0.1:6300]

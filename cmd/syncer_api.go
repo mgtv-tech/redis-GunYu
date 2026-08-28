@@ -129,8 +129,6 @@ func (sc *SyncerCmd) Sync(req *pb.SyncRequest, stream pb.ApiService_SyncServer) 
 	if sy.sync == nil || sy.wait.IsClosed() {
 		return status.Error(codes.Unavailable, fmt.Sprintf("syncer(%s) is not running", addr))
 	}
-	sy.wait.WgAdd(1)
-	defer sy.wait.WgDone()
 
 	err := sy.sync.ServiceReplica(req, stream)
 	if err != nil {
@@ -220,9 +218,9 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 			return
 		}
 		for _, input := range inputs {
-			sync := sc.getSyncer(input)
-			if sync.sync != nil {
-				sync.sync.Pause()
+			sy := sc.setInputPaused(input, true)
+			if sy != nil {
+				sy.Pause()
 			}
 		}
 	})
@@ -234,9 +232,9 @@ func (sc *SyncerCmd) httpHandler(engine *gin.Engine) {
 			return
 		}
 		for _, input := range inputs {
-			sync := sc.getSyncer(input)
-			if sync.sync != nil {
-				sync.sync.Resume()
+			sy := sc.setInputPaused(input, false)
+			if sy != nil {
+				sy.Resume()
 			}
 		}
 	})
@@ -363,10 +361,10 @@ func (sc *SyncerCmd) fullSyncHandler(ginCtx *gin.Context) {
 
 	// pause all syncers, delete run IDs
 	for _, input := range inputs {
-		si := sc.getSyncer(input)
-		if si.sync != nil {
-			si.sync.Pause()
-			si.sync.DelRunId()
+		sy := sc.setInputPaused(input, true)
+		if sy != nil {
+			sy.Pause()
+			sy.DelRunId()
 		}
 	}
 
@@ -619,9 +617,9 @@ func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error 
 
 func (sc *SyncerCmd) resume(ctx context.Context, inputs []string) error {
 	for _, input := range inputs {
-		si := sc.getSyncer(input)
-		if si.sync != nil {
-			si.sync.Resume()
+		sy := sc.setInputPaused(input, false)
+		if sy != nil {
+			sy.Resume()
 		}
 	}
 	return nil

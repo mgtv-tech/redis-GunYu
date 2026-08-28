@@ -57,6 +57,7 @@ type SyncerConfig struct {
 	Output         config.RedisConfig
 	Channel        config.ChannelConfig
 	CanTransaction bool
+	InitialPaused  bool
 }
 
 type Syncer interface {
@@ -84,10 +85,16 @@ var (
 )
 
 func NewSyncer(cfg SyncerConfig) Syncer {
+	state := SyncerStateReadyRun
+	if cfg.InitialPaused {
+		state = SyncerStatePause
+	}
 	sy := &syncer{
 		cfg:    cfg,
 		logger: log.WithLogger(config.LogModuleName(fmt.Sprintf("[syncer(%s)] ", cfg.Input.Address()))),
+		state:  state,
 	}
+	sy.stateCond = sync.NewCond(&sy.guard)
 	sy.channel = NewChannel(cfg.Channel, cfg.Input.Address())
 	sy.wait = usync.NewWaitCloser(nil)
 	return sy
@@ -105,7 +112,13 @@ type syncer struct {
 	slaveOf   *cluster.RoleInfo
 	state     SyncerState
 	role      SyncerRole
-	pauseWait usync.WaitNotifier
+	stateCond *sync.Cond
+	pausing   bool
+	runWg     sync.WaitGroup
+
+	// Admission and draining share guard so cleanup cannot miss an accepted request.
+	replicaAccepting bool
+	activeReplicas   int
 }
 
 type SyncerState int
@@ -206,8 +219,14 @@ func ClientUnaryCallInterceptor(opts0 ...grpc.CallOption) grpc.UnaryClientInterc
 
 func (s *syncer) Stop() {
 	s.guard.Lock()
+	if s.state == SyncerStateStop {
+		s.guard.Unlock()
+		return
+	}
 	s.state = SyncerStateStop
+	s.replicaAccepting = false
 	wait := s.wait
+	s.stateCond.Broadcast()
 	s.guard.Unlock()
 
 	wait.Close(nil)
@@ -222,7 +241,10 @@ func (s *syncer) getRole() SyncerRole {
 func (s *syncer) RunLeader() error {
 	s.guard.Lock()
 	s.role = SyncerRoleLeader
-	s.state = SyncerStateReadyRun
+	s.replicaAccepting = false
+	if s.state != SyncerStatePause && s.state != SyncerStateStop {
+		s.state = SyncerStateReadyRun
+	}
 	s.guard.Unlock()
 	return s.run()
 }
@@ -231,27 +253,57 @@ func (s *syncer) RunFollower(leader *cluster.RoleInfo) error {
 	s.guard.Lock()
 	s.slaveOf = leader
 	s.role = SyncerRoleFollower
-	s.state = SyncerStateReadyRun
+	s.replicaAccepting = false
+	if s.state != SyncerStatePause && s.state != SyncerStateStop {
+		s.state = SyncerStateReadyRun
+	}
 	s.guard.Unlock()
 	return s.run()
 }
 
 func (s *syncer) Pause() {
 	s.guard.Lock()
+	if s.state == SyncerStateStop {
+		s.guard.Unlock()
+		return
+	}
+	if s.state == SyncerStatePause {
+		for s.state == SyncerStatePause && s.pausing {
+			s.stateCond.Wait()
+		}
+		s.guard.Unlock()
+		return
+	}
 	s.state = SyncerStatePause
-	s.pauseWait = usync.NewWaitNotifier()
+	s.pausing = true
+	s.replicaAccepting = false
 	wait := s.wait
+	s.stateCond.Broadcast()
 	s.guard.Unlock()
+
 	wait.Close(nil)
-	wait.WgWait()
+	s.runWg.Wait()
+
+	s.guard.Lock()
+	s.pausing = false
+	s.stateCond.Broadcast()
+	s.guard.Unlock()
 }
 
 func (s *syncer) Resume() {
 	s.guard.Lock()
+	for s.state == SyncerStatePause && s.pausing {
+		s.stateCond.Wait()
+	}
 	defer s.guard.Unlock()
+	if s.state != SyncerStatePause {
+		return
+	}
 	s.state = SyncerStateReadyRun
-	close(s.pauseWait)
-	s.pauseWait = nil
+	if s.wait.IsClosed() {
+		s.wait = usync.NewWaitCloser(nil)
+	}
+	s.stateCond.Broadcast()
 }
 
 func (s *syncer) DelRunId() {
@@ -259,7 +311,12 @@ func (s *syncer) DelRunId() {
 	input := s.input
 	channel := s.channel
 	s.guard.RUnlock()
-	runIds := input.RunIds()
+	var runIds []string
+	if input != nil {
+		runIds = input.RunIds()
+	} else if runID := channel.RunId(); runID != "" {
+		runIds = []string{runID}
+	}
 	if len(runIds) > 0 {
 		channel.DelRunId(runIds[0])
 	}
@@ -286,79 +343,104 @@ func (s *syncer) run() error {
 		}
 	}()
 	for {
-		state := s.getState()
+		s.guard.Lock()
+		state := s.state
+		role := s.role
+		wait := s.wait
+		if state == SyncerStateReadyRun || state == SyncerStateRun {
+			s.runWg.Add(1)
+		}
+		s.guard.Unlock()
 		s.updateStateMetric()
 		switch state {
 		case SyncerStateReadyRun, SyncerStateRun:
-			role := s.getRole()
-			var err error
-			if role == SyncerRoleLeader {
-				err = s.runLeader()
-			} else if role == SyncerRoleFollower {
-				err = s.runFollower()
+			err := func() error {
+				defer s.runWg.Done()
+				if role == SyncerRoleLeader {
+					return s.runLeader(wait)
+				}
+				return s.runFollower(wait)
+			}()
+
+			s.guard.Lock()
+			currentState := s.state
+			currentWait := s.wait
+			if (currentState == SyncerStatePause || currentState == SyncerStateReadyRun) &&
+				wait.IsClosed() && wait.Error() == nil {
+				if currentWait == wait {
+					s.wait = usync.NewWaitCloser(nil)
+				}
+				s.guard.Unlock()
+				continue
+			}
+			if currentState == SyncerStateStop {
+				s.guard.Unlock()
+				return currentWait.Error()
 			}
 			if err != nil {
 				s.logger.Errorf("run error : %v", err)
-				s.guard.Lock()
 				s.state = SyncerStateStop
-				wait := s.wait
+				s.replicaAccepting = false
+				s.stateCond.Broadcast()
 				s.guard.Unlock()
-				wait.Close(err)
-			} else {
-				s.guard.Lock()
-				wait := s.wait
-				s.guard.Unlock()
-				if s.getState() != SyncerStatePause && wait.IsClosed() {
-					return wait.Error()
-				}
+				currentWait.Close(err)
+				return err
+			}
+			s.guard.Unlock()
+			if wait.IsClosed() {
+				return wait.Error()
 			}
 			s.logger.Debugf("run state : %s", state.String())
 		case SyncerStatePause:
 			s.guard.Lock()
-			waitC := s.pauseWait
-			waitCloser := usync.NewWaitCloser(nil)
-			s.wait = waitCloser
-			s.guard.Unlock()
-			select {
-			case <-waitC:
-			case <-waitCloser.Done():
-				return waitCloser.Error()
+			if s.state != SyncerStatePause {
+				s.guard.Unlock()
+				continue
 			}
-		case SyncerStateStop:
-			s.guard.Lock()
-			wait := s.wait
+			if s.wait.IsClosed() {
+				s.wait = usync.NewWaitCloser(nil)
+			}
+			for s.state == SyncerStatePause {
+				s.stateCond.Wait()
+			}
 			s.guard.Unlock()
+		case SyncerStateStop:
 			return wait.Error()
 		}
 	}
 }
 
-func (s *syncer) runLeader() error {
+func (s *syncer) runLeader(wait usync.WaitCloser) error {
 	s.logger.Debugf("runLeader")
 
-	output, err := s.newOutput()
+	output, err := s.newOutput(wait)
 	if err != nil {
 		return err
 	}
 
-	s.guard.Lock()
 	input := NewRedisInput(s.cfg.Input)
 	input.SetOutput(output)
 	input.SetChannel(s.channel)
 	leader := NewReplicaLeader(input, s.channel)
+
+	s.guard.Lock()
+	if (s.state != SyncerStateReadyRun && s.state != SyncerStateRun) || s.wait != wait || wait.IsClosed() {
+		s.guard.Unlock()
+		output.Close()
+		return wait.Error()
+	}
 	s.input = input
 	s.leader = leader
+	leader.Start()
 	s.state = SyncerStateRun
-	wait := s.wait
+	s.replicaAccepting = true
+	wait.WgAdd(1)
 	s.guard.Unlock()
 
 	s.updateStateMetric()
 
-	leader.Start()
-
 	inputStateGauge.Set(0, s.cfg.Input.Address(), "leader")
 
-	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
 		err := input.Run()
@@ -369,23 +451,31 @@ func (s *syncer) runLeader() error {
 
 	<-wait.Done()
 
+	s.stopReplicaAdmission()
 	leader.Stop()
 	input.Stop()
-	output.Close()
-
 	wait.WgWait()
+	s.waitForReplicas()
+	output.Close()
 	return wait.Error()
 }
 
-func (s *syncer) runFollower() error {
+func (s *syncer) runFollower(wait usync.WaitCloser) error {
 	s.logger.Debugf("runFollower")
 
 	s.guard.RLock()
 	leader := s.slaveOf
-	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader)
-	s.state = SyncerStateRun
-	wait := s.wait
 	s.guard.RUnlock()
+	follower := NewReplicaFollower(s.cfg.Id, s.cfg.Input.Address(), s.channel, leader)
+
+	s.guard.Lock()
+	if (s.state != SyncerStateReadyRun && s.state != SyncerStateRun) || s.wait != wait || wait.IsClosed() {
+		s.guard.Unlock()
+		return wait.Error()
+	}
+	s.state = SyncerStateRun
+	wait.WgAdd(1)
+	s.guard.Unlock()
 
 	s.updateStateMetric()
 	syncDelayGauge.Set(0, s.cfg.Input.Address())
@@ -394,7 +484,6 @@ func (s *syncer) runFollower() error {
 
 	inputStateGauge.Set(0, s.cfg.Input.Address(), "follower")
 
-	wait.WgAdd(1)
 	usync.SafeGo(func() {
 		defer wait.WgDone()
 		err := follower.Run()
@@ -415,11 +504,7 @@ func (s *syncer) IsLeader() bool {
 	return s.leader != nil
 }
 
-func (s *syncer) newOutput() (*RedisOutput, error) {
-	s.guard.RLock()
-	wait := s.wait
-	s.guard.RUnlock()
-
+func (s *syncer) newOutput(wait usync.WaitCloser) (*RedisOutput, error) {
 	// get run ids
 	id1, id2, err := s.getInputRunIds(wait)
 	if err != nil {

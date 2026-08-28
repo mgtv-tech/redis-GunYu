@@ -18,18 +18,115 @@ PIPE_HTTP_B="${PIPE_HTTP_B:-35880}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:cat10:$(date +%s)}"
 SYNCER_PID_A=""
 SYNCER_PID_B=""
+REDIS_PID_RECORDS=()
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
+
+record_started_redis() {
+  local port=$1
+  local pid_file=$2
+  local pid started
+  for _ in $(seq 1 20); do
+    if [[ -s "${pid_file}" ]]; then
+      pid=$(tr -d '[:space:]' < "${pid_file}")
+      if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" >/dev/null 2>&1; then
+        started=$(ps -p "${pid}" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+        [[ -n "${started}" ]] || break
+        REDIS_PID_RECORDS+=("${port}|${pid_file}|${pid}|${started}")
+        return 0
+      fi
+    fi
+    sleep 0.1
+  done
+  echo "could not record Redis process created for port ${port}" >&2
+  return 1
+}
+
+stop_registered_redis() {
+  local record port pid_file pid started actual_pid current_pid current_started
+  for record in "${REDIS_PID_RECORDS[@]-}"; do
+    [[ -n "${record}" ]] || continue
+    IFS='|' read -r port pid_file pid started <<< "${record}"
+    [[ -f "${pid_file}" ]] || continue
+    current_pid=$(tr -d '[:space:]' < "${pid_file}")
+    [[ "${current_pid}" == "${pid}" ]] || continue
+    current_started=$(ps -p "${pid}" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+    [[ "${current_started}" == "${started}" ]] || continue
+    actual_pid=$(redis-cli -p "${port}" --raw info server 2>/dev/null | awk -F: '$1=="process_id" {gsub("\r", "", $2); print $2; exit}' || true)
+    if [[ "${actual_pid}" == "${pid}" ]]; then
+      redis-cli -p "${port}" shutdown nosave >/dev/null 2>&1 || true
+    elif [[ "$(ps -p "${pid}" -o comm= 2>/dev/null || true)" == *redis-server* ]]; then
+      kill "${pid}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+port_is_open() {
+  local port=$1
+  (echo >/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1
+}
+
+assert_ports_available() {
+  local port seen=" "
+  for port in "$@"; do
+    if [[ ! "${port}" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+      echo "invalid test port: ${port}" >&2
+      return 1
+    fi
+    if [[ "${seen}" == *" ${port} "* ]]; then
+      echo "duplicate test port: ${port}" >&2
+      return 1
+    fi
+    if port_is_open "${port}"; then
+      echo "test port is occupied: ${port}" >&2
+      return 1
+    fi
+    seen+="${port} "
+  done
+}
+
+start_tracked_cluster_with_replicas() {
+  local tmp_root=$1
+  local prefix=$2
+  shift 2
+  local ports=("$@")
+  local port dir
+
+  for port in "${ports[@]}"; do
+    dir="${tmp_root}/${prefix}-${port}"
+    write_cluster_conf "${dir}" "${port}"
+    "${REDIS_SERVER_BIN}" "${dir}/redis.conf"
+    record_started_redis "${port}" "${dir}/redis.pid"
+    wait_for_ping "${port}"
+  done
+
+  redis-cli --cluster create \
+    $(printf '127.0.0.1:%s ' "${ports[@]}") \
+    --cluster-replicas 1 \
+    --cluster-yes >/dev/null
+
+  for port in "${ports[@]}"; do
+    wait_for_cluster_ok "${port}"
+  done
+  sleep 1
+}
+
+start_tracked_standalone() {
+  local tmp_root=$1
+  local prefix=$2
+  local port=$3
+  local dir="${tmp_root}/${prefix}-${port}"
+  write_standalone_conf "${dir}" "${port}"
+  "${REDIS_SERVER_BIN}" "${dir}/redis.conf"
+  record_started_redis "${port}" "${dir}/redis.pid"
+  wait_for_ping "${port}"
+}
 
 cleanup() {
   local code=$?
   set +e
   stop_pid "${SYNCER_PID_A:-}"
   stop_pid "${SYNCER_PID_B:-}"
-  shutdown_ports \
-    "${SYNC_SRC_BASE}" "$((SYNC_SRC_BASE + 1))" "$((SYNC_SRC_BASE + 2))" "$((SYNC_SRC_BASE + 3))" "$((SYNC_SRC_BASE + 4))" "$((SYNC_SRC_BASE + 5))" \
-    "${SYNC_DST_PORT}" \
-    "${PIPE_SRC_BASE}" "$((PIPE_SRC_BASE + 1))" "$((PIPE_SRC_BASE + 2))" "$((PIPE_SRC_BASE + 3))" "$((PIPE_SRC_BASE + 4))" "$((PIPE_SRC_BASE + 5))" \
-    "${PIPE_DST_PORT}"
+  stop_registered_redis
   if [[ "${KEEP_TMP:-0}" != "1" ]]; then
     rm -rf "${TMP_ROOT}"
   fi
@@ -80,6 +177,7 @@ server:
   listenPeer: 127.0.0.1:${peer_port}
   gracefullStopTimeout: 1s
   checkRedisTypologyTicker: 2s
+  initialPaused: true
 input:
   redis:
     addresses: [${src_addrs}]
@@ -116,6 +214,41 @@ log:
   withCaller: false
   withFunc: false
 EOF
+}
+
+wait_for_pipeline_state() {
+  local http_port=$1
+  local expected_role=$2
+  local expected_state=$3
+  local expected_count=$4
+  local status total role_count state_count
+  for _ in $(seq 1 100); do
+    status=$(curl -sf "http://127.0.0.1:${http_port}/syncer/status" 2>/dev/null || true)
+    total=$(grep -o '"Input"' <<< "${status}" | wc -l | tr -d ' ' || true)
+    role_count=$(grep -o "\"Role\":\"${expected_role}\"" <<< "${status}" | wc -l | tr -d ' ' || true)
+    state_count=$(grep -o "\"State\":\"${expected_state}\"" <<< "${status}" | wc -l | tr -d ' ' || true)
+    if [[ "${total}" == "${expected_count}" && "${role_count}" == "${expected_count}" && "${state_count}" == "${expected_count}" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "syncer on port ${http_port} did not expose ${expected_count} ${expected_role}/${expected_state} pipelines" >&2
+  curl -s "http://127.0.0.1:${http_port}/syncer/status" >&2 || true
+  return 1
+}
+
+assert_source_replica_baseline() {
+  local expected=$1
+  shift
+  local port role connected masters=0
+  for port in "$@"; do
+    role=$(redis-cli -p "${port}" --raw role 2>/dev/null | head -n 1 || true)
+    [[ "${role}" == "master" ]] || continue
+    masters=$((masters + 1))
+    connected=$(redis-cli -p "${port}" --raw info replication 2>/dev/null | awk -F: '$1=="connected_slaves" {gsub("\r", "", $2); print $2; exit}')
+    expect_eq "${connected}" "${expected}" "source master ${port} replica clients while initially paused"
+  done
+  expect_eq "${masters}" "3" "source master count while initially paused"
 }
 
 assert_expected_state() {
@@ -179,8 +312,9 @@ run_scenario() {
   group_name="nonbisync-cat10-${name}"
 
   echo "[category10] scenario=${name} mode=${mode}"
-  start_cluster_with_replicas "${REDIS_SERVER_BIN}" "${TMP_ROOT}" "${name}-src" "${src_ports[@]}"
-  start_standalone "${REDIS_SERVER_BIN}" "${TMP_ROOT}" "${name}-dst" "${dst_port}"
+  assert_ports_available "${src_ports[@]}" "${dst_port}" "${http_a}" "${http_b}"
+  start_tracked_cluster_with_replicas "${TMP_ROOT}" "${name}-src" "${src_ports[@]}"
+  start_tracked_standalone "${TMP_ROOT}" "${name}-dst" "${dst_port}"
 
   conf_a="${TMP_ROOT}/${name}-a.yaml"
   conf_b="${TMP_ROOT}/${name}-b.yaml"
@@ -190,18 +324,29 @@ run_scenario() {
   SYNCER_PID_A=$(start_syncer_process "${TMP_ROOT}" "${conf_a}" "${TMP_ROOT}/${name}-a.log")
   wait_for_syncer "${http_a}"
   wait_for_log_pattern "${TMP_ROOT}/${name}-a.log" 'new_role\(leader\)|RunLeader' 20
+  wait_for_pipeline_state "${http_a}" leader pause 3
 
   SYNCER_PID_B=$(start_syncer_process "${TMP_ROOT}" "${conf_b}" "${TMP_ROOT}/${name}-b.log")
   wait_for_syncer "${http_b}"
   wait_for_log_pattern "${TMP_ROOT}/${name}-b.log" 'new_role\(follower\)|RunFollower' 20
+  wait_for_pipeline_state "${http_b}" follower pause 3
 
   source_master=$(find_first_master_port "${src_ports[@]}")
   write_phase "${source_master}" "${prefix}" 1
+  sleep 1
+  expect_eq "$(scan_count_standalone "${dst_port}" "${prefix}:*")" "0" "business data before HA resume"
+  assert_source_replica_baseline 1 "${src_ports[@]}"
+
+  curl -sf -XPOST "http://127.0.0.1:${http_a}/syncer/resume?inputs=all" >/dev/null
+  curl -sf -XPOST "http://127.0.0.1:${http_b}/syncer/resume?inputs=all" >/dev/null
+  wait_for_pipeline_state "${http_a}" leader run 3
+  wait_for_pipeline_state "${http_b}" follower run 3
   wait_for_phase1_state "${dst_port}" "${prefix}"
 
   stop_pid "${SYNCER_PID_A}"
   SYNCER_PID_A=""
   wait_for_log_pattern "${TMP_ROOT}/${name}-b.log" 'new_role\(leader\)|RunLeader' 20
+  wait_for_pipeline_state "${http_b}" leader run 3
 
   source_master=$(find_first_master_port "${src_ports[@]}")
   write_phase "${source_master}" "${prefix}" 2
@@ -222,7 +367,8 @@ run_scenario() {
   stop_pid "${SYNCER_PID_B:-}"
   SYNCER_PID_A=""
   SYNCER_PID_B=""
-  shutdown_ports "${src_ports[@]}" "${dst_port}"
+  stop_registered_redis
+  REDIS_PID_RECORDS=()
 }
 
 echo "[1/1] building binaries"

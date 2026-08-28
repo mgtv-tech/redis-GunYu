@@ -64,9 +64,11 @@ Current scripts:
 
 - `run_category10.sh`
   Runs multi-syncer control-plane HA checks with a cluster source and
-  standalone target. Two non-bisync syncers share one Redis-based control
-  plane, one leader process is terminated, and the follower process must take
-  over and continue single-direction replication.
+  standalone target. Two non-bisync syncers start with all leader and follower
+  pipelines paused, prove that no data path starts before an explicit resume,
+  then share one Redis-based control plane. One leader process is terminated,
+  and the resumed follower process must take over and continue
+  single-direction replication.
 
 - `run_category11.sh`
   Runs Redis Modules incremental replay checks against temporary Redis Stack

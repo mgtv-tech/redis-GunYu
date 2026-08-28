@@ -43,6 +43,7 @@ type syncerInfo struct {
 
 type SyncerCmd struct {
 	syncers       map[string]syncerInfo
+	pausedInputs  map[string]bool
 	mutex         sync.RWMutex
 	logger        log.Logger
 	grpcSvr       *grpc.Server
@@ -56,9 +57,10 @@ type SyncerCmd struct {
 
 func NewSyncerCmd() *SyncerCmd {
 	cmd := &SyncerCmd{
-		waitCloser: usync.NewWaitCloser(nil),
-		logger:     log.WithLogger(config.LogModuleName("[SyncerCommand] ")),
-		syncers:    make(map[string]syncerInfo),
+		waitCloser:   usync.NewWaitCloser(nil),
+		logger:       log.WithLogger(config.LogModuleName("[SyncerCommand] ")),
+		syncers:      make(map[string]syncerInfo),
+		pausedInputs: make(map[string]bool),
 	}
 	if config.GetSyncerConfig().Cluster != nil {
 		cmd.registerKey = fmt.Sprintf("%s/%s/registry/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName)
@@ -404,12 +406,6 @@ func checkMigrating(ctx context.Context, redisCfg config.RedisConfig) (bool, err
 	return migrating, err
 }
 
-func (sc *SyncerCmd) setSyncer(key string, sy syncer.Syncer, wait usync.WaitCloser) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	sc.syncers[key] = syncerInfo{sync: sy, wait: wait}
-}
-
 func (sc *SyncerCmd) delSyncer(key string) {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
@@ -421,6 +417,34 @@ func (sc *SyncerCmd) getSyncer(key string) syncerInfo {
 	defer sc.mutex.RUnlock()
 	d := sc.syncers[key]
 	return d
+}
+
+func (sc *SyncerCmd) setInputPaused(key string, paused bool) syncer.Syncer {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	if sc.pausedInputs == nil {
+		sc.pausedInputs = make(map[string]bool)
+	}
+	sc.pausedInputs[key] = paused
+	return sc.syncers[key].sync
+}
+
+func (sc *SyncerCmd) newSyncer(cfg syncer.SyncerConfig, wait usync.WaitCloser) syncer.Syncer {
+	key := cfg.Input.Address()
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	if sc.pausedInputs == nil {
+		sc.pausedInputs = make(map[string]bool)
+	}
+	paused, ok := sc.pausedInputs[key]
+	if !ok {
+		paused = config.GetSyncerConfig().Server.InitialPaused
+		sc.pausedInputs[key] = paused
+	}
+	cfg.InitialPaused = paused
+	sy := syncer.NewSyncer(cfg)
+	sc.syncers[key] = syncerInfo{sync: sy, wait: wait}
+	return sy
 }
 
 func (sc *SyncerCmd) getRunWait() usync.WaitCloser {
@@ -497,8 +521,7 @@ func (sc *SyncerCmd) runSingle(runWait usync.WaitCloser, cfgs []syncer.SyncerCon
 	for _, tmp := range cfgs {
 		cfg := tmp
 		runWait.WgAdd(1)
-		sy := syncer.NewSyncer(cfg)
-		sc.setSyncer(cfg.Input.Address(), sy, runWait)
+		sy := sc.newSyncer(cfg, runWait)
 		usync.SafeGo(func() {
 			defer runWait.WgDone()
 			sc.logger.Infof("start syncer : %v", cfg)
@@ -569,9 +592,8 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 					continue
 				}
 
-				sy := syncer.NewSyncer(cfg)
 				syncerWait := usync.NewWaitCloserFromParent(runWait, nil)
-				sc.setSyncer(cfg.Input.Address(), sy, syncerWait)
+				sy := sc.newSyncer(cfg, syncerWait)
 
 				syncerWait.WgAdd(1)
 				usync.SafeGo(func() { // run leader or follower

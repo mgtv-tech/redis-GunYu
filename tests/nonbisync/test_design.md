@@ -45,7 +45,7 @@ themselves:
 | category7 | standalone + cluster matrix | `sync`, `pipeline` | RDB `keyExists`, `targetDbMap`, `dbBlacklist`, prefix filters, slot filters |
 | category8 | cluster -> cluster | `sync`, `pipeline` | rich workload: binary strings, long keys, large payloads, streams, TTL edges, scripts, same-slot transactions |
 | category9 | cluster(replica) -> cluster(replica) | `sync`, `pipeline` | segmented soak, source/target failover, syncer restart, offline catch-up, resource sampling |
-| category10 | cluster(replica) -> standalone (HA control plane) | `sync`, `pipeline` | two syncers share one Redis control plane, leader termination, follower takeover, no duplicate replay |
+| category10 | cluster(replica) -> standalone (HA control plane) | `sync`, `pipeline` | leader/follower pipelines initially paused, explicit resume, leader termination, follower takeover, no duplicate replay |
 
 ## 4. Assertions
 
@@ -69,6 +69,8 @@ Positive:
   still converge exactly once to the target.
 - HA control-plane scenarios continue after leader termination without creating
   duplicate leaders.
+- HA leader and follower pipelines remain inactive while initially paused and
+  retain their resumed state across leader takeover.
 
 Negative:
 
