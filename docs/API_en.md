@@ -10,6 +10,7 @@ If command is sync, `redisGunYu` supports below APIs.
   - [Process](#process)
     - [Stop Process](#stop-process)
   - [Synchronization](#synchronization)
+    - [Paused Startup and Runtime Control](#paused-startup-and-runtime-control)
     - [Restart Sync Progress](#restart-sync-progress)
     - [Pause Sync](#pause-sync)
     - [Resume Sync](#resume-sync)
@@ -44,6 +45,64 @@ By default, the service will stop the process gracefully, so it will wait for al
 
 
 ## Synchronization
+
+### Paused Startup and Runtime Control
+
+Use `server.initialPaused: true` when a GunYu process must join topology
+discovery and HA election before it begins to read from the source Redis or
+write to the target Redis. This is useful when an operator needs to inspect
+the resolved inputs, confirm the elected roles, or coordinate a controlled
+cutover before replication starts.
+
+```yaml
+server:
+  listen: 127.0.0.1:18001
+  initialPaused: true
+```
+
+Start GunYu normally, then wait for every expected input to appear in
+`/syncer/status` with `State: "pause"`:
+
+```bash
+curl http://127.0.0.1:18001/syncer/status
+```
+
+At this point, Redis replication input and output pipelines have not started.
+Topology discovery and, in HA mode, leader election continue to run. To start
+all pipelines managed by this GunYu process, resume every input:
+
+```bash
+curl -XPOST 'http://127.0.0.1:18001/syncer/resume?inputs=all'
+```
+
+For a selected input, obtain its exact `Input` value from `/syncer/status` and
+pass it to `inputs` instead:
+
+```bash
+curl -XPOST 'http://127.0.0.1:18001/syncer/resume?inputs=127.0.0.1:16379'
+```
+
+Verify that the affected pipelines report `State: "run"` before treating the
+cutover as active. `resume` is idempotent, so it is safe for automation to
+retry it.
+
+To temporarily stop selected pipelines after they have started, use `pause`:
+
+```bash
+curl -XPOST 'http://127.0.0.1:18001/syncer/pause?inputs=all'
+```
+
+The selected runtime state is retained when a syncer is recreated by
+`/syncer/restart`: a paused input remains paused and a running input resumes
+running. In HA mode, resume the inputs on each GunYu process that should be
+allowed to replicate; a follower can be paused or running while it waits for
+leadership. A later leader handover preserves that process-local state.
+
+`initialPaused` affects only newly initialized inputs. If it is omitted or
+`false`, GunYu retains the default behavior and starts synchronization
+automatically. Stopping the process uses the normal `DELETE /` API and does
+not imply a later resume; start a new process and use `/syncer/status` to
+determine its current state.
 
 ### Restart Sync Progress
 
