@@ -150,12 +150,25 @@ Note: the codebase supports Redis 8 RDB version 13 and the Redis 8 cluster `SLOT
 | Source Redis | SLOT in Migration State | | Passed | |
 | Source Redis | Failure | Master Failure | Passed | Continue sync after cluster elects new master |
 | Source Redis | Failure | Slave Failure | Passed | Wait for cluster to mark node as fail |
+| Sentinel | Resolver | Three Sentinels, separate Sentinel/data authentication, fallback, IPv4/IPv6/hostname parsing | Passed |
+| Sentinel | Source and Target Failover | Continuous one-way writes, source/target failover, checkpoint, and no bisync metadata | Passed on Redis 7.4.1 and 8.0.0 |
+| Sentinel | Two-GunYu HA | Stable election identity, leader/follower competition, leader termination, follower takeover, exact business values | Passed in `sync` and `pipeline` on Redis 7.4.1 and 8.0.0 |
+| Sentinel | Security Matrix | Separate Sentinel/data ACL users, Sentinel-only TLS, data-only TLS, and combined TLS with real failovers | Passed on Redis 7.4.1 |
+| Sentinel | Upgrade and Rollback | Previous direct-address binary -> current Sentinel mode -> previous direct-address binary | Passed on Redis 7.4.1 |
 | Resource | CPU | CPU usage | Passed | |
 | Resource | Memory | No memory leaks | Passed | |
 | Resource | Concurrency Safety | Check data concurrency safety | Passed | |
 | Observability | Prometheus Metrics |  | Passed | |
 | Observability | Logs | Validity of log configurations | Passed | |
 | Observability | Logs | No missing logs | Passed | |
+
+The Sentinel resolver integration test is part of `make test-integration` and
+creates its own `3 Sentinel + 1 master + 2 replicas` topology. Sentinel
+source/target failover and two-GunYu handover are part of
+`make test-e2e-smoke`. The dedicated release gates are
+`make test-sentinel-ha`, `make test-sentinel-security`, and
+`make test-sentinel-upgrade-rollback PREVIOUS_GUNYU_BIN=/path/to/redisGunYu`.
+All runners retain logs and structured results below `.artifacts/tests/`.
 
 
 

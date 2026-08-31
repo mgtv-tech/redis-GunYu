@@ -5,6 +5,7 @@
     - [源端和目的端](#源端和目的端)
   - [命令兼容性](#命令兼容性)
   - [全量同步](#全量同步)
+  - [Sentinel切换一致性](#sentinel切换一致性)
   - [源端redis集群扩容与缩容导致数据不一致](#源端redis集群扩容与缩容导致数据不一致)
 
 
@@ -51,6 +52,16 @@ redis兼容性，请见[测试文档](test_zh.md#版本兼容测试)
 - 如果源和目标redis的slots可能不是对应的(cross slots)，如果只对其中一个节点进行全量同步，则无法对目标端redis执行flushdb命令
 - 如果执行flushdb，将RDB数据同步到目标端期间，目标端redis数据的某些keys可能不存在，造成不一致
 - RDB回放可能失败，导致目标端缺少数据
+
+## Sentinel切换一致性
+
+Redis GunYu 会定期重新解析 Sentinel 拓扑。当选中的源节点或目标 master 改变时，
+受影响的 syncer 会被重建，并继续使用现有复制 ID、本地 channel 和 checkpoint
+恢复流程；无法增量恢复时会退化为全量同步。
+
+Sentinel failover 建立在 Redis 异步复制之上。旧 master 已接受但尚未复制到新
+master 的写入可能丢失。系统仍是最终一致/弱一致，不提供零 RPO、exactly-once
+或强一致切换。对非幂等命令，应在切换后同时校验业务值和 checkpoint 状态。
 
 
 

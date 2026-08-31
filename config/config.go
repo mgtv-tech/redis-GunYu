@@ -67,6 +67,10 @@ func (c *SyncConfig) fix() error {
 			return err
 		}
 	}
+	if (c.Input.Redis.IsSentinel() || c.Output.Redis.IsSentinel()) &&
+		c.Output.Replay.BisyncEnabled != nil && *c.Output.Replay.BisyncEnabled {
+		return newConfigError("sentinel topology with bisyncEnabled is not supported")
+	}
 
 	if c.Output.Redis.Type == RedisTypeCluster {
 		if c.Output.Replay.TargetDb == -1 || c.Output.Replay.TargetDb == 0 {
@@ -649,45 +653,52 @@ func GetAddressesFromRedisConfigSlice(rcfg []RedisConfig) []string {
 }
 
 type RedisConfig struct {
-	Addresses      SliceString
-	shards         []*RedisClusterShard
-	UserName       string    `yaml:"userName"`
-	Password       string    `yaml:"password"`
-	TlsEnable      bool      `yaml:"tlsEnable"`
-	Type           RedisType // for new redis client
-	Otype          RedisType // original type
-	Version        string
-	slotLeft       int // @TODO remove it
-	slotRight      int
-	slotsMap       map[string]*RedisSlots
-	slots          RedisSlots
-	ClusterOptions *RedisClusterOptions `yaml:"clusterOptions"`
-	isMigrating    bool
-	KeepAlive      int           `yaml:"keepAlive"` // Maximum keep alive connecion in each node
-	AliveTime      time.Duration `yaml:"aliveTime"` // Keep alive timeout
+	Addresses       SliceString
+	shards          []*RedisClusterShard
+	discoveryAddrs  SliceString
+	selectedRole    RedisRole
+	UserName        string    `yaml:"userName"`
+	Password        string    `yaml:"password"`
+	TlsEnable       bool      `yaml:"tlsEnable"`
+	Type            RedisType // for new redis client
+	Otype           RedisType // original type
+	Version         string
+	slotLeft        int // @TODO remove it
+	slotRight       int
+	slotsMap        map[string]*RedisSlots
+	slots           RedisSlots
+	ClusterOptions  *RedisClusterOptions  `yaml:"clusterOptions"`
+	SentinelOptions *RedisSentinelOptions `yaml:"sentinelOptions"`
+	isMigrating     bool
+	KeepAlive       int           `yaml:"keepAlive"` // Maximum keep alive connecion in each node
+	AliveTime       time.Duration `yaml:"aliveTime"` // Keep alive timeout
 }
 
 func (rc *RedisConfig) Clone() *RedisConfig {
 	cloned := &RedisConfig{
-		Addresses:      make([]string, len(rc.Addresses)),
-		shards:         make([]*RedisClusterShard, 0, len(rc.shards)),
-		UserName:       rc.UserName,
-		Password:       rc.Password,
-		TlsEnable:      rc.TlsEnable,
-		Type:           rc.Type,
-		Otype:          rc.Otype,
-		Version:        rc.Version,
-		slotLeft:       rc.slotLeft,
-		slotRight:      rc.slotRight,
-		slotsMap:       make(map[string]*RedisSlots),
-		slots:          *rc.slots.Clone(),
-		ClusterOptions: rc.ClusterOptions.Clone(),
-		isMigrating:    rc.isMigrating,
-		KeepAlive:      rc.KeepAlive,
-		AliveTime:      rc.AliveTime,
+		Addresses:       make([]string, len(rc.Addresses)),
+		shards:          make([]*RedisClusterShard, 0, len(rc.shards)),
+		discoveryAddrs:  make([]string, len(rc.discoveryAddrs)),
+		selectedRole:    rc.selectedRole,
+		UserName:        rc.UserName,
+		Password:        rc.Password,
+		TlsEnable:       rc.TlsEnable,
+		Type:            rc.Type,
+		Otype:           rc.Otype,
+		Version:         rc.Version,
+		slotLeft:        rc.slotLeft,
+		slotRight:       rc.slotRight,
+		slotsMap:        make(map[string]*RedisSlots),
+		slots:           *rc.slots.Clone(),
+		ClusterOptions:  rc.ClusterOptions.Clone(),
+		SentinelOptions: rc.SentinelOptions.Clone(),
+		isMigrating:     rc.isMigrating,
+		KeepAlive:       rc.KeepAlive,
+		AliveTime:       rc.AliveTime,
 	}
 
 	copy(cloned.Addresses, rc.Addresses)
+	copy(cloned.discoveryAddrs, rc.discoveryAddrs)
 	for _, shard := range rc.shards {
 		cloned.shards = append(cloned.shards, shard.Clone())
 	}
@@ -710,7 +721,32 @@ type RedisClusterOptions struct {
 	HandleAskErr  bool `yaml:"handleAskErr" default:"true"`
 }
 
+type RedisSentinelOptions struct {
+	MasterName string `yaml:"masterName"`
+	UserName   string `yaml:"userName"`
+	Password   string `yaml:"password"`
+	TlsEnable  bool   `yaml:"tlsEnable"`
+}
+
+func (rso *RedisSentinelOptions) Clone() *RedisSentinelOptions {
+	if rso == nil {
+		return nil
+	}
+	cloned := *rso
+	return &cloned
+}
+
+func (rso *RedisSentinelOptions) fix() error {
+	if strings.TrimSpace(rso.MasterName) == "" {
+		return newConfigError("sentinelOptions.masterName is empty")
+	}
+	return nil
+}
+
 func (rco *RedisClusterOptions) Clone() *RedisClusterOptions {
+	if rco == nil {
+		return nil
+	}
 	t := &RedisClusterOptions{
 		HandleMoveErr: rco.HandleMoveErr,
 		HandleAskErr:  rco.HandleAskErr,
@@ -929,6 +965,15 @@ func (rc *RedisConfig) fix() error {
 	if rc.Type == RedisTypeUnknown {
 		rc.Type = RedisTypeStandalone
 	}
+	if rc.Type == RedisTypeSentinel {
+		if rc.SentinelOptions == nil {
+			return newConfigError("sentinelOptions is nil")
+		}
+		if err := rc.SentinelOptions.fix(); err != nil {
+			return err
+		}
+		rc.discoveryAddrs = append(SliceString(nil), rc.Addresses...)
+	}
 	if rc.ClusterOptions == nil {
 		rc.ClusterOptions = &RedisClusterOptions{}
 		rc.ClusterOptions.fix()
@@ -955,20 +1000,55 @@ func (rc *RedisConfig) IsStanalone() bool {
 	return rc.Type == RedisTypeStandalone
 }
 
+func (rc *RedisConfig) IsSentinel() bool {
+	return rc.Type == RedisTypeSentinel || rc.Otype == RedisTypeSentinel
+}
+
+func (rc *RedisConfig) IsStandaloneData() bool {
+	return rc.Type == RedisTypeStandalone || rc.Type == RedisTypeSentinel
+}
+
+func (rc *RedisConfig) SelectedRole() RedisRole {
+	return rc.selectedRole
+}
+
+func (rc *RedisConfig) SentinelDiscoveryConfig() RedisConfig {
+	cloned := rc.Clone()
+	if len(cloned.discoveryAddrs) > 0 {
+		cloned.Addresses = append(SliceString(nil), cloned.discoveryAddrs...)
+	}
+	cloned.Type = RedisTypeSentinel
+	cloned.Otype = RedisTypeSentinel
+	cloned.selectedRole = RedisRoleAll
+	return *cloned
+}
+
+func (rc *RedisConfig) SetSentinelDiscoveryAddresses(addresses []string) {
+	rc.discoveryAddrs = append(SliceString(nil), addresses...)
+}
+
+func (rc *RedisConfig) SentinelDiscoveryAddresses() []string {
+	if len(rc.discoveryAddrs) > 0 {
+		return append([]string(nil), rc.discoveryAddrs...)
+	}
+	return append([]string(nil), rc.Addresses...)
+}
+
 func (rc *RedisConfig) Index(i int) RedisConfig {
 	addr := rc.Addresses[i]
 	slots := rc.GetSlots(addr)
 	sre := RedisConfig{
-		Addresses:   []string{rc.Addresses[i]},
-		UserName:    rc.UserName,
-		Password:    rc.Password,
-		TlsEnable:   rc.TlsEnable,
-		Type:        rc.Type,
-		Otype:       rc.Type,
-		Version:     rc.Version,
-		isMigrating: rc.isMigrating,
-		KeepAlive:   rc.KeepAlive,
-		AliveTime:   rc.AliveTime,
+		Addresses:       []string{rc.Addresses[i]},
+		UserName:        rc.UserName,
+		Password:        rc.Password,
+		TlsEnable:       rc.TlsEnable,
+		Type:            rc.Type,
+		Otype:           rc.Type,
+		SentinelOptions: rc.SentinelOptions.Clone(),
+		Version:         rc.Version,
+		isMigrating:     rc.isMigrating,
+		KeepAlive:       rc.KeepAlive,
+		AliveTime:       rc.AliveTime,
 	}
 	if slots != nil {
 		sre.slots = *slots
@@ -1014,16 +1094,18 @@ func (rc *RedisConfig) SelNodeByAddress(addr string) *RedisConfig {
 	}
 
 	sre := RedisConfig{
-		Addresses:      []string{addr},
-		UserName:       rc.UserName,
-		Password:       rc.Password,
-		TlsEnable:      rc.TlsEnable,
-		Type:           rc.Type,
-		Otype:          rc.Type,
-		ClusterOptions: rc.ClusterOptions.Clone(),
-		isMigrating:    rc.isMigrating,
-		Version:        rc.Version,
-		KeepAlive:      rc.KeepAlive,
+		Addresses:       []string{addr},
+		UserName:        rc.UserName,
+		Password:        rc.Password,
+		TlsEnable:       rc.TlsEnable,
+		Type:            rc.Type,
+		Otype:           rc.Otype,
+		discoveryAddrs:  append(SliceString(nil), rc.discoveryAddrs...),
+		SentinelOptions: rc.SentinelOptions.Clone(),
+		ClusterOptions:  rc.ClusterOptions.Clone(),
+		isMigrating:     rc.isMigrating,
+		Version:         rc.Version,
+		KeepAlive:       rc.KeepAlive,
 	}
 	sre.SetClusterShards([]*RedisClusterShard{selShard})
 
@@ -1038,6 +1120,13 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 		addrs = rc.Addresses
 		for _, sd := range rc.shards {
 			allShards = append(allShards, sd.Clone())
+		}
+	} else if rc.Type == RedisTypeSentinel {
+		for _, shard := range rc.shards {
+			if node := shard.Get(sel); node != nil {
+				addrs = append(addrs, node.Address)
+				allShards = append(allShards, shard.Clone())
+			}
 		}
 	} else {
 		if selAllShards {
@@ -1085,18 +1174,35 @@ func (rc *RedisConfig) SelNodes(selAllShards bool, sel SelNodeStrategy) []RedisC
 	}
 
 	for i, r := range addrs { // @TODO sync from slaves
+		originalType := rc.Otype
+		if originalType == RedisTypeUnknown {
+			originalType = rc.Type
+		}
+		selectedType := rc.Type
+		if rc.Type == RedisTypeSentinel {
+			selectedType = RedisTypeStandalone
+		}
+		selectedRole := RedisRoleAll
+		if i < len(allShards) {
+			if node := allShards[i].Get(sel); node != nil {
+				selectedRole = node.Role
+			}
+		}
 		sre := RedisConfig{
-			Addresses:      []string{r},
-			UserName:       rc.UserName,
-			Password:       rc.Password,
-			TlsEnable:      rc.TlsEnable,
-			Type:           rc.Type,
-			Otype:          rc.Type,
-			ClusterOptions: rc.ClusterOptions.Clone(),
-			isMigrating:    rc.isMigrating,
-			Version:        rc.Version,
-			KeepAlive:      rc.KeepAlive,
-			AliveTime:      rc.AliveTime,
+			Addresses:       []string{r},
+			discoveryAddrs:  append(SliceString(nil), rc.discoveryAddrs...),
+			selectedRole:    selectedRole,
+			UserName:        rc.UserName,
+			Password:        rc.Password,
+			TlsEnable:       rc.TlsEnable,
+			Type:            selectedType,
+			Otype:           originalType,
+			ClusterOptions:  rc.ClusterOptions.Clone(),
+			SentinelOptions: rc.SentinelOptions.Clone(),
+			isMigrating:     rc.isMigrating,
+			Version:         rc.Version,
+			KeepAlive:       rc.KeepAlive,
+			AliveTime:       rc.AliveTime,
 		}
 		sre.SetClusterShards([]*RedisClusterShard{allShards[i]})
 		ret = append(ret, sre)

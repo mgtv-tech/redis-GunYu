@@ -1,10 +1,13 @@
 package config
 
 import (
+	"flag"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -270,4 +273,164 @@ func TestReplayConfigFixRejectsInvalidModuleAuxPolicy(t *testing.T) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestRedisSentinelConfigYAMLValidationAndClone(t *testing.T) {
+	raw := []byte(`
+addresses: [127.0.0.1:26379, 127.0.0.1:26380]
+type: sentinel
+userName: data-user
+password: data-password
+tlsEnable: true
+sentinelOptions:
+  masterName: order/redis
+  userName: sentinel-user
+  password: sentinel-password
+  tlsEnable: false
+`)
+	var cfg RedisConfig
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	require.NoError(t, cfg.fix())
+	assert.Equal(t, RedisTypeSentinel, cfg.Type)
+	assert.Equal(t, RedisTypeSentinel, cfg.Otype)
+	require.NotNil(t, cfg.SentinelOptions)
+	assert.Equal(t, "order/redis", cfg.SentinelOptions.MasterName)
+	assert.Equal(t, []string{"127.0.0.1:26379", "127.0.0.1:26380"}, cfg.SentinelDiscoveryAddresses())
+
+	clone := cfg.Clone()
+	clone.Addresses[0] = "changed"
+	clone.SentinelOptions.MasterName = "changed"
+	assert.Equal(t, "127.0.0.1:26379", cfg.Addresses[0])
+	assert.Equal(t, "order/redis", cfg.SentinelOptions.MasterName)
+}
+
+func TestRedisSentinelConfigRequiresMasterName(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options *RedisSentinelOptions
+	}{
+		{name: "missing options"},
+		{name: "missing master name", options: &RedisSentinelOptions{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := RedisConfig{
+				Addresses:       SliceString{"127.0.0.1:26379"},
+				Type:            RedisTypeSentinel,
+				SentinelOptions: tc.options,
+			}
+			require.Error(t, cfg.fix())
+		})
+	}
+}
+
+func TestRedisSentinelSelNodes(t *testing.T) {
+	cfg := RedisConfig{
+		Addresses:       SliceString{"127.0.0.1:26379"},
+		Type:            RedisTypeSentinel,
+		Otype:           RedisTypeSentinel,
+		ClusterOptions:  &RedisClusterOptions{},
+		SentinelOptions: &RedisSentinelOptions{MasterName: "orders"},
+	}
+	cfg.SetSentinelDiscoveryAddresses(cfg.Addresses)
+	cfg.SetClusterShards([]*RedisClusterShard{{
+		Slots:  RedisSlots{Ranges: []RedisSlotRange{{Left: 0, Right: 16383}}},
+		Master: RedisNode{Address: "127.0.0.1:6379", Role: RedisRoleMaster, Health: healthOnline},
+		Slaves: []RedisNode{{Address: "127.0.0.1:6380", Role: RedisRoleSlave, Health: healthOnline}},
+	}})
+
+	for _, tc := range []struct {
+		strategy SelNodeStrategy
+		address  string
+		role     RedisRole
+	}{
+		{strategy: SelNodeStrategyMaster, address: "127.0.0.1:6379", role: RedisRoleMaster},
+		{strategy: SelNodeStrategySlave, address: "127.0.0.1:6380", role: RedisRoleSlave},
+		{strategy: SelNodeStrategyPreferSlave, address: "127.0.0.1:6380", role: RedisRoleSlave},
+	} {
+		nodes := cfg.SelNodes(false, tc.strategy)
+		require.Len(t, nodes, 1)
+		assert.Equal(t, tc.address, nodes[0].Address())
+		assert.Equal(t, tc.role, nodes[0].SelectedRole())
+		assert.Equal(t, RedisTypeStandalone, nodes[0].Type)
+		assert.Equal(t, RedisTypeSentinel, nodes[0].Otype)
+		assert.Equal(t, []string{"127.0.0.1:26379"}, nodes[0].SentinelDiscoveryAddresses())
+	}
+
+	cfg.GetClusterShards()[0].Slaves = nil
+	nodes := cfg.SelNodes(false, SelNodeStrategyPreferSlave)
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "127.0.0.1:6379", nodes[0].Address())
+	assert.Equal(t, RedisRoleMaster, nodes[0].SelectedRole())
+	assert.Empty(t, cfg.SelNodes(false, SelNodeStrategySlave))
+}
+
+func TestSyncConfigRejectsSentinelBisync(t *testing.T) {
+	enabled := true
+	replayTransaction := true
+	resume := true
+	restore := true
+	cfg := SyncConfig{
+		Input: &InputConfig{Redis: &RedisConfig{
+			Addresses:       SliceString{"127.0.0.1:26379"},
+			Type:            RedisTypeSentinel,
+			SentinelOptions: &RedisSentinelOptions{MasterName: "source"},
+		}},
+		Output: &OutputConfig{
+			Redis: &RedisConfig{Addresses: SliceString{"127.0.0.1:6379"}, Type: RedisTypeStandalone},
+			Replay: ReplayConfig{
+				BisyncEnabled:          &enabled,
+				ReplayTransaction:      &replayTransaction,
+				ResumeFromBreakPoint:   &resume,
+				ReplayRdbEnableRestore: &restore,
+			},
+		},
+		Channel: &ChannelConfig{Type: ChannelTypeMemory, Memory: &MemoryConfig{MaxSize: 1024}},
+		Log:     &LogConfig{},
+	}
+	err := cfg.fix()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sentinel topology with bisyncEnabled is not supported")
+}
+
+func TestRedisSentinelCLIConfigDecoding(t *testing.T) {
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	oldFlagVar := flagVar
+	oldSyncCfg := syncCfg
+	oldLogCfg := logCfg
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+		flagVar = oldFlagVar
+		syncCfg = oldSyncCfg
+		logCfg = oldLogCfg
+	}()
+
+	flag.CommandLine = flag.NewFlagSet("sentinel-cli-test", flag.ContinueOnError)
+	flagVar = &Flags{}
+	syncCfg = &SyncConfig{}
+	logCfg = nil
+	os.Args = []string{
+		"redisGunYu",
+		"-cmd", "sync",
+		"-sync.input.redis.addresses", "127.0.0.1:26379,127.0.0.1:26380",
+		"-sync.input.redis.type", "sentinel",
+		"-sync.input.redis.userName", "data-user",
+		"-sync.input.redis.password", "data-password",
+		"-sync.input.redis.sentinelOptions.masterName", "orders",
+		"-sync.input.redis.sentinelOptions.userName", "sentinel-user",
+		"-sync.input.redis.sentinelOptions.password", "sentinel-password",
+		"-sync.output.redis.addresses", "127.0.0.1:6479",
+		"-sync.output.redis.type", "standalone",
+		"-sync.channel.type", "memory",
+	}
+
+	require.NoError(t, LoadFlags())
+	cfg := GetSyncerConfig().Input.Redis
+	assert.Equal(t, RedisTypeSentinel, cfg.Type)
+	assert.Equal(t, []string{"127.0.0.1:26379", "127.0.0.1:26380"}, []string(cfg.Addresses))
+	require.NotNil(t, cfg.SentinelOptions)
+	assert.Equal(t, "orders", cfg.SentinelOptions.MasterName)
+	assert.Equal(t, "sentinel-user", cfg.SentinelOptions.UserName)
+	assert.Equal(t, "sentinel-password", cfg.SentinelOptions.Password)
 }

@@ -10,6 +10,8 @@ import (
 	"github.com/mgtv-tech/redis-GunYu/config"
 	"github.com/mgtv-tech/redis-GunYu/pkg/log"
 	"github.com/mgtv-tech/redis-GunYu/pkg/redis"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -353,4 +355,123 @@ func (ts *typologyTestSuite) TestDiffTypologyMigrating() {
 		ts.True(ts.cmd.diffTypology(context.Background(), true, true, &ts.inRedis, &ts.outRedis,
 			txnMode, true, config.SelNodeStrategySlave, true))
 	})
+}
+
+func TestRedisElectionIdentitySentinelIsStable(t *testing.T) {
+	cfg := sentinelTestRedis("orders/us", "127.0.0.1:6379", "127.0.0.1:6380")
+	first := redisElectionIdentity(cfg, "127.0.0.1:6379")
+	second := redisElectionIdentity(cfg, "127.0.0.1:6380")
+	assert.Equal(t, "sentinel/orders%2Fus", first)
+	assert.Equal(t, first, second)
+
+	standalone := config.RedisConfig{Type: config.RedisTypeStandalone}
+	assert.Equal(t, "127.0.0.1:6379", redisElectionIdentity(standalone, "127.0.0.1:6379"))
+}
+
+func TestSyncerConfigsSentinelTopologyCombinations(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		input        config.RedisConfig
+		output       config.RedisConfig
+		watchInput   bool
+		watchOutput  bool
+		inputAddress string
+		outputAddr   string
+	}{
+		{
+			name: "sentinel to standalone", input: sentinelTestRedis("source", "127.0.0.1:6379", "127.0.0.1:6380"),
+			output: standaloneTestRedis("127.0.0.1:6479"), watchInput: true,
+			inputAddress: "127.0.0.1:6380", outputAddr: "127.0.0.1:6479",
+		},
+		{
+			name: "standalone to sentinel", input: standaloneTestRedis("127.0.0.1:6379"),
+			output: sentinelTestRedis("target", "127.0.0.1:6479"), watchOutput: true,
+			inputAddress: "127.0.0.1:6379", outputAddr: "127.0.0.1:6479",
+		},
+		{
+			name: "sentinel to sentinel", input: sentinelTestRedis("source", "127.0.0.1:6379", "127.0.0.1:6380"),
+			output: sentinelTestRedis("target", "127.0.0.1:6479"), watchInput: true, watchOutput: true,
+			inputAddress: "127.0.0.1:6380", outputAddr: "127.0.0.1:6479",
+		},
+		{
+			name: "cluster to sentinel", input: clusterTestRedis("127.0.0.1:6379"),
+			output: sentinelTestRedis("target", "127.0.0.1:6479"), watchInput: true, watchOutput: true,
+			inputAddress: "127.0.0.1:6379", outputAddr: "127.0.0.1:6479",
+		},
+		{
+			name: "sentinel to cluster", input: sentinelTestRedis("source", "127.0.0.1:6379", "127.0.0.1:6380"),
+			output: clusterTestRedis("127.0.0.1:6479"), watchInput: true, watchOutput: true,
+			inputAddress: "127.0.0.1:6380", outputAddr: "127.0.0.1:6479",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			global := config.GetSyncerConfig()
+			previous := *global
+			defer func() { *global = previous }()
+			replayTransaction := false
+			global.Input = &config.InputConfig{
+				Redis:    &tc.input,
+				Mode:     config.InputModeDynamic,
+				SyncFrom: config.SelNodeStrategyPreferSlave,
+			}
+			global.Output = &config.OutputConfig{
+				Redis:  &tc.output,
+				Replay: config.ReplayConfig{ReplayTransaction: &replayTransaction},
+			}
+			global.Channel = &config.ChannelConfig{
+				Type:   config.ChannelTypeMemory,
+				Memory: &config.MemoryConfig{MaxSize: 1024},
+			}
+
+			cmd := &SyncerCmd{logger: log.WithLogger("")}
+			cfgs, watchInput, watchOutput, _, err := cmd.syncerConfigs()
+			require.NoError(t, err)
+			require.Len(t, cfgs, 1)
+			assert.Equal(t, tc.watchInput, watchInput)
+			assert.Equal(t, tc.watchOutput, watchOutput)
+			assert.Equal(t, tc.inputAddress, cfgs[0].Input.Address())
+			assert.Equal(t, tc.outputAddr, cfgs[0].Output.Address())
+		})
+	}
+}
+
+func sentinelTestRedis(masterName, master string, replicas ...string) config.RedisConfig {
+	cfg := config.RedisConfig{
+		Addresses:       config.SliceString{"127.0.0.1:26379", "127.0.0.1:26380"},
+		Type:            config.RedisTypeSentinel,
+		Otype:           config.RedisTypeSentinel,
+		ClusterOptions:  &config.RedisClusterOptions{},
+		SentinelOptions: &config.RedisSentinelOptions{MasterName: masterName},
+	}
+	cfg.SetSentinelDiscoveryAddresses(cfg.Addresses)
+	shard := &config.RedisClusterShard{
+		Slots:  config.RedisSlots{Ranges: []config.RedisSlotRange{{Left: 0, Right: 16383}}},
+		Master: config.RedisNode{Address: master, Role: config.RedisRoleMaster, Health: "online"},
+	}
+	for _, replica := range replicas {
+		shard.Slaves = append(shard.Slaves, config.RedisNode{Address: replica, Role: config.RedisRoleSlave, Health: "online"})
+	}
+	cfg.SetClusterShards([]*config.RedisClusterShard{shard})
+	return cfg
+}
+
+func standaloneTestRedis(address string) config.RedisConfig {
+	cfg := config.RedisConfig{
+		Addresses:      config.SliceString{address},
+		Type:           config.RedisTypeStandalone,
+		Otype:          config.RedisTypeStandalone,
+		ClusterOptions: &config.RedisClusterOptions{},
+	}
+	cfg.SetClusterShards([]*config.RedisClusterShard{{
+		Slots:  config.RedisSlots{Ranges: []config.RedisSlotRange{{Left: 0, Right: 16383}}},
+		Master: config.RedisNode{Address: address, Role: config.RedisRoleMaster, Health: "online"},
+	}})
+	return cfg
+}
+
+func clusterTestRedis(address string) config.RedisConfig {
+	cfg := standaloneTestRedis(address)
+	cfg.Type = config.RedisTypeCluster
+	cfg.Otype = config.RedisTypeCluster
+	return cfg
 }

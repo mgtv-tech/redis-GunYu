@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -150,22 +151,23 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 	inputMode := config.GetSyncerConfig().Input.Mode
 	enableTransaction := *config.GetSyncerConfig().Output.Replay.ReplayTransaction
 
-	if outputRedis.IsStanalone() {
+	if outputRedis.IsStandaloneData() {
+		outputs := outputRedis.SelNodes(false, config.SelNodeStrategyMaster)
 		// standalone <-> standalone  ==> multi/exec
-		if inputRedis.IsStanalone() {
+		if inputRedis.IsStandaloneData() {
 			// @TODO auto sharding
-			if len(inputRedis.Addresses) != len(outputRedis.Addresses) {
+			inputs := inputRedis.SelNodes(false, syncFrom)
+			if len(inputs) != len(outputs) {
 				err = errors.Join(syncer.ErrQuit, fmt.Errorf("the amount of input redis does not equal output redis : %d != %d",
-					len(inputRedis.Addresses), len(outputRedis.Addresses)))
+					len(inputs), len(outputs)))
 				sc.logger.Errorf("%v", err)
 				return
 			}
-			inputs := inputRedis.SelNodes(false, syncFrom)
 			for i, source := range inputs {
 				scg := syncer.SyncerConfig{
 					Id:             i,
 					CanTransaction: true,
-					Output:         outputRedis.Index(i),
+					Output:         outputs[i],
 					Input:          source,
 					Channel:        *config.GetSyncerConfig().Channel.Clone(),
 				}
@@ -175,7 +177,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 				cfgs = append(cfgs, scg)
 			}
 		} else if inputRedis.IsCluster() {
-			if len(outputRedis.Addresses) != 1 { // @TODO
+			if len(outputs) != 1 { // @TODO
 				err = errors.Join(syncer.ErrQuit, fmt.Errorf("input redis is cluster typology, but output redis is not standalone : %v", outputRedis.Addresses))
 				sc.logger.Errorf("%v", err)
 				return
@@ -191,7 +193,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 				scg := syncer.SyncerConfig{
 					Id:             i,
 					CanTransaction: true,
-					Output:         *outputRedis,
+					Output:         outputs[0],
 					Input:          source,
 					Channel:        *config.GetSyncerConfig().Channel.Clone(),
 				}
@@ -208,7 +210,7 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			return
 		}
 	} else if outputRedis.IsCluster() {
-		if inputRedis.IsStanalone() { // standalone <-> cluster     ==> multi/exec or update periodically
+		if inputRedis.IsStandaloneData() { // standalone <-> cluster     ==> multi/exec or update periodically
 			inputs := inputRedis.SelNodes(false, syncFrom)
 			for i, source := range inputs {
 				cfgs = append(cfgs, syncer.SyncerConfig{
@@ -297,6 +299,13 @@ func (sc *SyncerCmd) syncerConfigs() (cfgs []syncer.SyncerConfig, watchInput boo
 			sc.logger.Errorf("%v", err)
 			return
 		}
+		watchOutput = true
+	}
+
+	if inputRedis.IsSentinel() {
+		watchInput = true
+	}
+	if outputRedis.IsSentinel() {
 		watchOutput = true
 	}
 
@@ -554,23 +563,31 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 				runWait.Close(syncer.ErrRestart)
 				return
 			}
-			shardKey := shard.Master.Address
+			selectedAddress := cfg.Input.Address()
+			currentMasterAddress := shard.Master.Address
+			electionIdentity := redisElectionIdentity(cfg.Input, currentMasterAddress)
 
-			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName, shardKey)
+			key := fmt.Sprintf("%s/%s/input-election/%s/", config.NamespacePrefixKey, config.GetSyncerConfig().Cluster.GroupName, electionIdentity)
 			elect := cli.NewElection(runWait.Context(), key, config.GetSyncerConfig().Server.ListenPeer)
 			role := cluster.RoleCandidate
+			roleCfg := cfg.Input
+			if cfg.Input.IsSentinel() {
+				roleCfg = cfg.Input.SentinelDiscoveryConfig()
+				sc.logger.Infof("sentinel election : masterName(%s), sentinels(%v), selectedAddress(%s), currentMasterAddress(%s), identity(%s)",
+					cfg.Input.SentinelOptions.MasterName, roleCfg.Addresses, selectedAddress, currentMasterAddress, electionIdentity)
+			}
 
 			for !runWait.IsClosed() {
 
 				// check master address
-				shardKeyRole, err := redis.GetRedisRoleOnline(&cfg.Input, shardKey)
+				shardKeyRole, err := redis.GetRedisRoleOnline(&roleCfg, currentMasterAddress)
 				if err != nil {
-					sc.logger.Errorf("get redis role error : key(%s), error(%v)", shardKey, err)
+					sc.logger.Errorf("get redis role error : master(%s), error(%v)", currentMasterAddress, err)
 					runWait.Close(syncer.ErrRestart)
 					return
 				}
 				if shardKeyRole != config.RedisRoleMaster {
-					sc.logger.Errorf("role is not master : key(%s), role(%v)", shardKey, shardKeyRole)
+					sc.logger.Errorf("role is not master : master(%s), role(%v)", currentMasterAddress, shardKeyRole)
 					runWait.Close(syncer.ErrRedisTypologyChanged)
 					return
 				}
@@ -659,6 +676,13 @@ func (sc *SyncerCmd) runCluster(runWait usync.WaitCloser, cli cluster.Cluster, c
 			}
 		}, nil)
 	}
+}
+
+func redisElectionIdentity(redisCfg config.RedisConfig, currentMasterAddress string) string {
+	if redisCfg.IsSentinel() && redisCfg.SentinelOptions != nil {
+		return "sentinel/" + url.PathEscape(redisCfg.SentinelOptions.MasterName)
+	}
+	return currentMasterAddress
 }
 
 func (sc *SyncerCmd) clusterCampaign(ctx context.Context, elect cluster.Election) (cluster.ClusterRole, error) {
@@ -830,7 +854,7 @@ func (sc *SyncerCmd) gcStaleCheckpoint(ctx context.Context) {
 		}
 		gcStaleCp(cli)
 		cli.Close()
-	} else if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeStandalone {
+	} else if config.GetSyncerConfig().Output.Redis.IsStandaloneData() {
 		outputs := config.GetSyncerConfig().Output.Redis.SelNodes(true, config.SelNodeStrategyMaster)
 		for _, out := range outputs {
 			cli, err := client.NewRedis(out)

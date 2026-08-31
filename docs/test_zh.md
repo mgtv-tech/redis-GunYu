@@ -148,12 +148,24 @@ Bash 测试 runner 支持 Linux 和 macOS 的 amd64、arm64 环境。缺少工�
 | 源端redis | SLOT处于迁移状态 |  |   通过  |   |
 | 源端redis | 故障 | 主库故障 |   通过  | 等待cluster选举出主库继续同步  |
 | 源端redis | 故障 | 从库故障 |   通过  | 等待cluster将节点标记为fail  |
+| Sentinel | 解析 | 3 Sentinel、Sentinel/数据节点独立认证、fallback、IPv4/IPv6/hostname 解析 | 通过 |
+| Sentinel | 源端和目标端切换 | 持续单向写入、源端/目标端切换、checkpoint、无 bisync metadata | Redis 7.4.1 和 8.0.0 通过 |
+| Sentinel | 双 GunYu HA | 稳定选举标识、主备竞争、终止 leader、follower 接管、业务值精确一致 | Redis 7.4.1 和 8.0.0 的 `sync`、`pipeline` 均通过 |
+| Sentinel | 安全矩阵 | Sentinel/数据节点独立 ACL 用户、仅 Sentinel TLS、仅数据节点 TLS、两端 TLS，并执行真实切换 | Redis 7.4.1 通过 |
+| Sentinel | 升级回滚 | 旧版直连地址 -> 当前版 Sentinel 模式 -> 旧版直连地址 | Redis 7.4.1 通过 |
 | 资源 | CPU | CPU占比稳定 |   通过  |   |
 | 资源 | 内存 | 没有内存泄漏 |   通过  |   |
 | 资源 | 并发安全 | 检测数据并发安全 |   通过  |   |
 | 可观测性 | prometheus指标 | 各个指标正确性 |   通过  |   |
 | 可观测性 | 日志 | 日志各配置有效性 |   通过  |   |
 | 可观测性 | 日志 | 关键日志是否有打印 |   通过  |   |
+
+Sentinel resolver 集成测试已加入 `make test-integration`，并由测试自身创建
+`3 Sentinel + 1 master + 2 replicas` 拓扑。Sentinel 源端/目标端 failover 和
+双 GunYu 接管用例已加入 `make test-e2e-smoke`。专用发布门禁为
+`make test-sentinel-ha`、`make test-sentinel-security` 和
+`make test-sentinel-upgrade-rollback PREVIOUS_GUNYU_BIN=/path/to/redisGunYu`。
+所有 runner 的日志和结构化结果均保存在 `.artifacts/tests/`。
 
 
 ## 一致性测试

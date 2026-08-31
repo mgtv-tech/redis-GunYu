@@ -477,14 +477,16 @@ func (sc *SyncerCmd) filterOutput(ctx context.Context, inputs []string) ([]confi
 	} else { // partial : select related outputs
 		outputRedis := config.GetSyncerConfig().Output.Redis
 		inputRedis := config.GetSyncerConfig().Input.Redis
-		if (inputRedis.IsStanalone() && outputRedis.IsCluster()) ||
-			inputRedis.IsCluster() && outputRedis.IsStanalone() { // can't select related outputs
+		if (inputRedis.IsStandaloneData() && outputRedis.IsCluster()) ||
+			inputRedis.IsCluster() && outputRedis.IsStandaloneData() { // can't select related outputs
 			return nil, errors.New("redis type of input and output are different")
-		} else if inputRedis.IsStanalone() && outputRedis.IsStanalone() {
+		} else if inputRedis.IsStandaloneData() && outputRedis.IsStandaloneData() {
+			inputNodes := inputRedis.SelNodes(false, config.GetSyncerConfig().Input.SyncFrom)
+			outputNodes := outputRedis.SelNodes(false, config.SelNodeStrategyMaster)
 			for _, input := range inputs {
-				for i := 0; i < len(inputRedis.Addresses); i++ {
-					if inputRedis.Addresses[i] == input {
-						outputCfgs = append(outputCfgs, outputRedis.Index(i))
+				for i := 0; i < len(inputNodes) && i < len(outputNodes); i++ {
+					if inputNodes[i].Address() == input {
+						outputCfgs = append(outputCfgs, outputNodes[i])
 					}
 				}
 			}
@@ -597,7 +599,7 @@ func (sc *SyncerCmd) delCheckpoints(ctx context.Context, inputs []string) error 
 		if err != nil {
 			return err
 		}
-	} else if config.GetSyncerConfig().Output.Redis.Type == config.RedisTypeStandalone {
+	} else if config.GetSyncerConfig().Output.Redis.IsStandaloneData() {
 		outputs := config.GetSyncerConfig().Output.Redis.SelNodes(config.GetSyncerConfig().Input.Mode != config.InputModeStatic, config.SelNodeStrategyMaster)
 		for _, out := range outputs {
 			cli, err := client.NewRedis(out)

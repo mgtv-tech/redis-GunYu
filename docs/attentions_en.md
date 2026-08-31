@@ -6,6 +6,7 @@
     - [Source and Target](#source-and-target)
   - [Command Compatibility](#command-compatibility)
   - [Full Synchronization](#full-synchronization)
+  - [Sentinel Failover Consistency](#sentinel-failover-consistency)
   - [Data is inconsistent after migrated slots](#data-is-inconsistent-after-migrated-slots)
 
 ## Redis Version
@@ -49,6 +50,19 @@ Reason:
 - If the slots of the source and target Redis do not correspond (cross slots), you only perform a full synchronization on one of the nodes, then `redis-GunYu` cannot execute the flushdb command on the target Redis.
 - If you execute flushdb, during the process of synchronizing the RDB data to the target Redis, some keys in the target Redis data may not exist, causing inconsistency.
 - RDB replay may fail, causing the target node to lack data.
+
+## Sentinel Failover Consistency
+
+Redis GunYu periodically resolves Sentinel topology and rebuilds the affected
+syncer when the selected source node or target master changes. It reuses the
+existing replication ID, local channel, and checkpoint recovery flow and falls
+back to a full sync when partial resynchronization is not possible.
+
+Sentinel failover is based on asynchronous Redis replication. A write accepted
+by the old master but not replicated to the promoted replica may be lost. The
+system remains eventually/weakly consistent; Sentinel support does not provide
+zero RPO, exactly-once replay, or strong consistency. Validate non-idempotent
+workloads using business values and checkpoint state after failover.
 
 
 ## Data is inconsistent after migrated slots

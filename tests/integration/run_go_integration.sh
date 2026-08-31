@@ -128,6 +128,7 @@ PACKAGES=(
   ./cmd
   ./pkg/cluster
   ./pkg/redis
+	./pkg/redis/client
   ./pkg/redis/client/cluster
   ./pkg/redis/client/conn
   ./syncer
@@ -137,6 +138,7 @@ set +e
 (
   cd "${ROOT}"
   REQUIRE_REDIS_INTEGRATION=1 \
+	REDIS_SERVER_BIN="${REDIS_SERVER_BIN}" \
   TEST_REDIS_ADDR="127.0.0.1:${STANDALONE_PORT}" \
   TEST_REDIS_CLUSTER_ADDR="127.0.0.1:${CLUSTER_PORTS[0]}" \
   TEST_REDIS_CLUSTER_MASTER_ADDR="${MASTER_ADDR}" \
@@ -156,6 +158,7 @@ GATE_ARGS=(
   -require-test TestRegistry
   -require-test TestCampaign
   -require-test TestGetRedisRoleOnlineRealCluster
+	-require-test TestSentinelDiscoveryFallbackAuthenticationAndFailover
   -require-test TestCheckRepliesWithRealRedis
 )
 for package in "${PACKAGES[@]}"; do

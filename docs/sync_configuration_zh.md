@@ -44,9 +44,44 @@ redis配置
 - password ： redis密码
 - type ： redis类型
   - standalone ： 根据addresses里的地址来同步
+  - sentinel ： 通过 Sentinel 发现一个 standalone 主从组。此时 `addresses`
+    填 Sentinel 地址，而不是数据节点地址
   - cluster ： 
+- tlsEnable ： Redis 数据节点连接是否启用 TLS
+- sentinelOptions ： `type` 为 `sentinel` 时必填
+  - masterName ： Sentinel monitor name，必填
+  - userName ： 仅用于 Sentinel 认证的用户名
+  - password ： 仅用于 Sentinel 认证的密码
+  - tlsEnable ： Sentinel 连接是否启用 TLS；数据节点仍使用 redis 顶层的认证和 TLS 字段
 - keepAlive : 每个redis节点的最大连接数
 - aliveTime : 保持连接超时时间
+
+Sentinel 只负责发现。Redis GunYu 会解析并校验当前 master 和健康 replica，数据面
+继续使用 standalone 链路。源端 `syncFrom` 支持 `master`、`slave`、
+`prefer_slave`，Sentinel 目标端始终写当前 master。源端和目标端可以混合使用
+standalone、Cluster 和 Sentinel。
+
+Sentinel 拓扑当前支持单向 `sync` 和 `pipeline` 回放。由于 Sentinel 与双向同步的
+故障恢复组合尚未完成资格验证，配置 Sentinel 源端或目标端时会明确拒绝
+`bisyncEnabled: true`。
+
+示例：
+
+```yaml
+input:
+  redis:
+    type: sentinel
+    addresses: [10.0.0.11:26379, 10.0.0.12:26379, 10.0.0.13:26379]
+    userName: data-user
+    password: data-password
+    tlsEnable: false
+    sentinelOptions:
+      masterName: order-redis
+      userName: sentinel-user
+      password: sentinel-password
+      tlsEnable: false
+  syncFrom: prefer_slave
+```
 
 
 ### 输入端
@@ -298,7 +333,7 @@ cluster:
 redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
 
-参数名都以`--sync.`作为前缀名，后面则以配置的字段名，用`.`连接起来；数组以`,`进行分隔符。     
+参数名都以`--sync.`作为前缀名，后面则以配置的字段名，用`.`连接起来；数组以`,`进行分隔符。Sentinel 字段遵循同一规则，例如 `--sync.input.redis.sentinelOptions.masterName=order-redis`。
 
 如源端redis地址，配置文件如下，
 ```

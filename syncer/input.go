@@ -485,7 +485,11 @@ func (ri *RedisInput) checkSyncDelay(wait usync.WaitCloser, cfg config.RedisConf
 	if testKey == "" {
 		return
 	}
-	cfg.Type = cfg.Otype
+	if cfg.IsSentinel() {
+		cfg = cfg.SentinelDiscoveryConfig()
+	} else {
+		cfg.Type = cfg.Otype
+	}
 
 	var cli client.Redis
 	var err error

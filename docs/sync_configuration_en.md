@@ -41,9 +41,46 @@ Redis configuration:
 - password: Redis password.
 - type: Redis type.
   - standalone: Synchronize based on the addresses in the `addresses` field.
+  - sentinel: Resolve a standalone Redis replication group through Sentinel. In
+    this mode, `addresses` contains Sentinel endpoints rather than data nodes.
   - cluster: Redis cluster
+- tlsEnable: Whether TLS is enabled for Redis data-node connections.
+- sentinelOptions: Required when `type` is `sentinel`.
+  - masterName: Sentinel monitor name. This field is required.
+  - userName: Username used only for Sentinel authentication.
+  - password: Password used only for Sentinel authentication.
+  - tlsEnable: Whether TLS is enabled for Sentinel connections. Data-node
+    authentication and TLS still use the top-level Redis fields.
 - keepAlive: Maximum number of connections per Redis node.
 - aliveTime: Connection keep-alive timeout.
+
+Sentinel is used only for discovery. Redis GunYu resolves and validates the
+current master and healthy replicas, then uses the existing standalone data
+path. Source `syncFrom` supports `master`, `slave`, and `prefer_slave`; a
+Sentinel target always writes to the current master. Standalone, Cluster, and
+Sentinel endpoints may be mixed on the source and target sides.
+
+Sentinel topology currently supports one-way `sync` and `pipeline` replay.
+`bisyncEnabled: true` with a Sentinel source or target is rejected because that
+failure-recovery combination has not been qualified.
+
+Example:
+
+```yaml
+input:
+  redis:
+    type: sentinel
+    addresses: [10.0.0.11:26379, 10.0.0.12:26379, 10.0.0.13:26379]
+    userName: data-user
+    password: data-password
+    tlsEnable: false
+    sentinelOptions:
+      masterName: order-redis
+      userName: sentinel-user
+      password: sentinel-password
+      tlsEnable: false
+  syncFrom: prefer_slave
+```
 
 
 ### Input Redis(Source Redis)
@@ -291,7 +328,7 @@ We can start redisGunYu with command line arguments as follows:
 redisGunYu --sync.input.redis.addresses=127.0.0.1:6379 --sync.output.redis.addresses=127.0.0.1:16379
 ```
 
-The argument names are prefixed with `--sync.` and followed by the configured field names, connected with a dot (`.`). Array values are separated by commas (`,`).
+The argument names are prefixed with `--sync.` and followed by the configured field names, connected with a dot (`.`). Array values are separated by commas (`,`). Sentinel fields follow the same rule, for example `--sync.input.redis.sentinelOptions.masterName=order-redis`.
 
 For example, if the source Redis addresses are configured as follows in the configuration file:
 ```

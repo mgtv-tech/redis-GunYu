@@ -130,6 +130,21 @@ test-coverage: test-unit
 test-upgrade-rollback:
 	ARTIFACT_ROOT="$(ARTIFACT_ROOT)/upgrade-rollback" bash ./tests/integration/run_upgrade_rollback.sh
 
+.PHONY: test-sentinel-security
+test-sentinel-security:
+	ARTIFACT_ROOT="$(ARTIFACT_ROOT)/sentinel-security" bash ./tests/integration/run_sentinel_security_matrix.sh
+
+.PHONY: test-sentinel-ha
+test-sentinel-ha:
+	mkdir -p "$(ARTIFACT_ROOT)/sentinel-ha/sync" "$(ARTIFACT_ROOT)/sentinel-ha/pipeline"
+	KEEP_TMP=1 TMPDIR="$(ARTIFACT_ROOT)/sentinel-ha/sync" SENTINEL_REPLAY_MODE=sync bash ./tests/integration/run_sentinel_ha_competition.sh
+	KEEP_TMP=1 TMPDIR="$(ARTIFACT_ROOT)/sentinel-ha/pipeline" SENTINEL_PORT_BASE=33000 SENTINEL_REPLAY_MODE=pipeline bash ./tests/integration/run_sentinel_ha_competition.sh
+
+.PHONY: test-sentinel-upgrade-rollback
+test-sentinel-upgrade-rollback:
+	mkdir -p "$(ARTIFACT_ROOT)/sentinel-upgrade-rollback"
+	PREVIOUS_GUNYU_BIN="$(PREVIOUS_GUNYU_BIN)" TMPDIR="$(ARTIFACT_ROOT)/sentinel-upgrade-rollback" bash ./tests/integration/run_sentinel_upgrade_rollback.sh
+
 .PHONY: test-clean
 test-clean:
 	@if [[ -z "$(ARTIFACT_ROOT)" || "$(ARTIFACT_ROOT)" != "$(CURDIR)/.artifacts/tests"* ]]; then \

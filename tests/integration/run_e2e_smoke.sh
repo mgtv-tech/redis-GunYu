@@ -33,7 +33,7 @@ port_is_open() {
 candidate_is_free() {
   local base=$1
   local offset port
-  for offset in $(seq 0 60); do
+  for offset in $(seq 0 80); do
     port=$((base + offset))
     if port_is_open "${port}" || port_is_open "$((port + 10000))"; then
       return 1
@@ -45,7 +45,7 @@ choose_port_base() {
   local candidate attempt
   if [[ -n "${SMOKE_PORT_BASE}" ]]; then
     if ! candidate_is_free "${SMOKE_PORT_BASE}"; then
-      echo "smoke port block is occupied: ${SMOKE_PORT_BASE}-$((SMOKE_PORT_BASE + 60))" >&2
+      echo "smoke port block is occupied: ${SMOKE_PORT_BASE}-$((SMOKE_PORT_BASE + 80))" >&2
       return 1
     fi
     printf '%s\n' "${SMOKE_PORT_BASE}"
@@ -109,6 +109,14 @@ case ",${SMOKE_CASES}," in
       INITIAL_PAUSED_SRC_PORT=$((BASE + 52)) INITIAL_PAUSED_DST_PORT=$((BASE + 53)) \
       INITIAL_PAUSED_HTTP_PORT=$((BASE + 54)) \
       bash "${ROOT}/tests/integration/run_initial_paused.sh" || FAILURES=$((FAILURES + 1))
+
+		run_case nonbisync-sentinel-failover env \
+			SENTINEL_PORT_BASE=$((BASE + 55)) \
+			bash "${ROOT}/tests/integration/run_sentinel_e2e.sh" || FAILURES=$((FAILURES + 1))
+
+    run_case nonbisync-sentinel-ha env \
+      SENTINEL_PORT_BASE=$((BASE + 66)) SENTINEL_REPLAY_MODE=sync \
+      bash "${ROOT}/tests/integration/run_sentinel_ha_competition.sh" || FAILURES=$((FAILURES + 1))
     ;;
 esac
 

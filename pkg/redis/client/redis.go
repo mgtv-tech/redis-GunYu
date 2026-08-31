@@ -31,6 +31,20 @@ type Redis interface {
 }
 
 func NewRedis(cfg config.RedisConfig) (Redis, error) {
+	if cfg.Type == config.RedisTypeSentinel ||
+		(cfg.Otype == config.RedisTypeSentinel && cfg.SelectedRole() == config.RedisRoleMaster) {
+		discoveryCfg := cfg
+		if cfg.Type != config.RedisTypeSentinel {
+			discoveryCfg = cfg.SentinelDiscoveryConfig()
+		}
+		topology, err := ResolveSentinel(discoveryCfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Addresses = config.SliceString{topology.Master.Address}
+		cfg.Type = config.RedisTypeStandalone
+		cfg.Otype = config.RedisTypeSentinel
+	}
 	if cfg.IsCluster() {
 		return NewRedisCluster(cfg)
 	}

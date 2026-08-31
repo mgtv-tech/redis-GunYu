@@ -454,8 +454,13 @@ func parseRedisRoleFromReplicationInfo(content []byte) (config.RedisRole, error)
 }
 
 func getRedisRoleOnline(cli client.Redis, redisCfg *config.RedisConfig, address string) (config.RedisRole, error) {
-	if redisCfg.IsStanalone() && redisCfg.Otype != config.RedisTypeCluster {
-		if redisCfg.Address() != address {
+	if redisCfg.Otype != config.RedisTypeCluster && redisCfg.Type != config.RedisTypeCluster {
+		if redisCfg.IsSentinel() {
+			addresses := cli.Addresses()
+			if len(addresses) == 0 || addresses[0] != address {
+				return config.RedisRoleSlave, nil
+			}
+		} else if redisCfg.Address() != address {
 			return config.RedisRoleSlave, nil
 		}
 
@@ -674,8 +679,34 @@ func FixTopology(redisCfg *config.RedisConfig) error {
 		}
 		redisCfg.SetMigrating(migrating)
 	} else if redisCfg.Type == config.RedisTypeSentinel {
-		// @TODO
-		return errors.Errorf("unknown redis type : %v, %s", redisCfg.Type, redisCfg.Address())
+		if redisCfg.Otype != config.RedisTypeSentinel {
+			redisCfg.Otype = config.RedisTypeSentinel
+		}
+		if len(redisCfg.SentinelDiscoveryAddresses()) == 0 {
+			return errors.Errorf("no sentinel address")
+		}
+		redisCfg.SetSentinelDiscoveryAddresses(redisCfg.SentinelDiscoveryAddresses())
+		oldMaster := ""
+		if shards := redisCfg.GetClusterShards(); len(shards) > 0 {
+			oldMaster = shards[0].Master.Address
+		}
+		topology, err := client.ResolveSentinel(*redisCfg)
+		if err != nil {
+			return err
+		}
+		sort.Slice(topology.Replicas, func(i, j int) bool {
+			return topology.Replicas[i].Address < topology.Replicas[j].Address
+		})
+		redisCfg.SetClusterShards([]*config.RedisClusterShard{{
+			Slots:  config.RedisSlots{Ranges: []config.RedisSlotRange{{Left: 0, Right: 16383}}},
+			Master: topology.Master,
+			Slaves: topology.Replicas,
+		}})
+		if oldMaster != topology.Master.Address {
+			log.Infof("sentinel topology resolved : masterName(%s), sentinels(%v), sentinel(%s), oldMaster(%s), newMaster(%s)",
+				redisCfg.SentinelOptions.MasterName, redisCfg.SentinelDiscoveryAddresses(), topology.SentinelAddress, oldMaster, topology.Master.Address)
+		}
+		return nil
 	} else if redisCfg.Type == config.RedisTypeStandalone {
 		shards := []*config.RedisClusterShard{}
 		for _, addr := range redisCfg.Addresses {

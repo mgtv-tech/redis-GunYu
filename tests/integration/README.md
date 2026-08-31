@@ -17,6 +17,9 @@ development and GitHub Actions. All generated evidence is written below
 | `make test-nightly` | Core non-bisync and bisync category suites | longer-running |
 | `make test-etcd ETCD_BIN=/path/to/etcd` | Optional etcd control-plane suite | minutes |
 | `make test-upgrade-rollback PREVIOUS_GUNYU_BIN=/path/to/redisGunYu` | Checkpoint compatibility across previous/current/previous processes | minutes |
+| `make test-sentinel-ha` | Two-GunYu Sentinel election and handover with continuous writes | minutes |
+| `make test-sentinel-security` | Separate Sentinel/data ACL users and TLS permutation matrix | minutes |
+| `make test-sentinel-upgrade-rollback PREVIOUS_GUNYU_BIN=/path/to/redisGunYu` | Previous direct mode to current Sentinel mode and rollback | minutes |
 
 `redis-server` and `redis-cli` must be available in `PATH`. To select another
 server binary, set `REDIS_SERVER_BIN=/absolute/path/to/redis-server` and put its
@@ -43,10 +46,13 @@ pull-request workflow runs this gate on both Ubuntu and macOS.
 ## Runners
 
 - `run_go_integration.sh` starts one standalone and one 3-master/3-replica
-  cluster, exports the discovered topology, runs required integration tests
-  with `-count=1`, and rejects missing or skipped tests using `testjson_gate`.
+  cluster, exports the discovered topology, and runs required integration
+  tests with `-count=1`. The Sentinel client integration test additionally
+  creates and cleans up its own 3-Sentinel/1-master/2-replica topology. Missing
+  or skipped tests are rejected using `testjson_gate`.
 - `run_e2e_smoke.sh` runs representative standalone resume, cluster pipeline,
-  bidirectional sync, and bidirectional pipeline resume cases on dynamic ports.
+  Sentinel source/target failover, two-GunYu Sentinel handover, bidirectional
+  sync, and bidirectional pipeline resume cases on dynamic ports.
 - `run_nightly.sh` dispatches the core, resilience, security, module, and
   external-cluster suites selected with `NIGHTLY_SUITE`. The etcd suite is not
   part of any default aggregate; it requires `NIGHTLY_SUITE=etcd` together with
@@ -58,6 +64,11 @@ pull-request workflow runs this gate on both Ubuntu and macOS.
   `ALLOW_NON_LOOPBACK_REDIS_TESTS=1`.
 - `run_upgrade_rollback.sh` verifies that the same checkpoint/store can resume
   on previous, current, and previous binaries in sequence.
+- `run_sentinel_security_matrix.sh` verifies distinct Sentinel/data ACL users,
+  Sentinel-only TLS, data-only TLS, and combined TLS with real failovers.
+- `run_sentinel_upgrade_rollback.sh` verifies the supported rollback boundary:
+  previous releases use direct master addresses, while the current release uses
+  Sentinel discovery; rollback resolves the current masters before restart.
 
 Use `TEST_RUN_ID` to assign a reproducible run identifier and `ARTIFACT_ROOT`
 to relocate evidence. Every successful or failed run keeps logs, manifests,
