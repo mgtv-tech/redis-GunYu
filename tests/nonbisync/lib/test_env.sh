@@ -30,6 +30,15 @@ wait_for_ping() {
   return 1
 }
 
+dump_redis_log() {
+  local port=$1
+  local log_file=$2
+  if [[ -f "${log_file}" ]]; then
+    echo "--- redis.log port=${port} ---" >&2
+    cat "${log_file}" >&2 || true
+  fi
+}
+
 wait_for_cluster_ok() {
   local port=$1
   for _ in $(seq 1 100); do
@@ -98,7 +107,10 @@ start_cluster() {
   for port in "${ports[@]}"; do
     write_cluster_conf "${tmp_root}/${prefix}-${port}" "${port}"
     "${redis_server_bin}" "${tmp_root}/${prefix}-${port}/redis.conf"
-    wait_for_ping "${port}"
+    if ! wait_for_ping "${port}"; then
+      dump_redis_log "${port}" "${tmp_root}/${prefix}-${port}/redis.log"
+      return 1
+    fi
   done
 
   redis-cli --cluster create \
@@ -123,7 +135,10 @@ start_cluster_with_replicas() {
   for port in "${ports[@]}"; do
     write_cluster_conf "${tmp_root}/${prefix}-${port}" "${port}"
     "${redis_server_bin}" "${tmp_root}/${prefix}-${port}/redis.conf"
-    wait_for_ping "${port}"
+    if ! wait_for_ping "${port}"; then
+      dump_redis_log "${port}" "${tmp_root}/${prefix}-${port}/redis.log"
+      return 1
+    fi
   done
 
   redis-cli --cluster create \
@@ -146,7 +161,10 @@ start_standalone() {
 
   write_standalone_conf "${tmp_root}/${prefix}-${port}" "${port}" "${extra_conf}"
   "${redis_server_bin}" "${tmp_root}/${prefix}-${port}/redis.conf"
-  wait_for_ping "${port}"
+  if ! wait_for_ping "${port}"; then
+    dump_redis_log "${port}" "${tmp_root}/${prefix}-${port}/redis.log"
+    return 1
+  fi
 }
 
 build_nonbisync_binaries() {

@@ -45,8 +45,10 @@ choose_port_base() {
     return 0
   fi
 
+  # Keep data ports and Redis Cluster bus (port+10000) below the typical
+  # Linux ephemeral range (32768-60999).
   for attempt in $(seq 1 30); do
-    candidate=$((22000 + RANDOM % 18000))
+    candidate=$((11000 + RANDOM % 10000))
     if candidate_is_free "${candidate}"; then
       printf '%s\n' "${candidate}"
       return 0
