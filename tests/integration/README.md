@@ -23,7 +23,17 @@ development and GitHub Actions. All generated evidence is written below
 
 `redis-server` and `redis-cli` must be available in `PATH`. To select another
 server binary, set `REDIS_SERVER_BIN=/absolute/path/to/redis-server` and put its
-matching `redis-cli` directory first in `PATH`.
+matching `redis-cli` directory first in `PATH`. If `redis-cli` is not already on
+`PATH`, the helpers will use the `redis-cli` next to `REDIS_SERVER_BIN`.
+
+Cluster test configs set `cluster-port` explicitly so the Redis Cluster bus
+stays out of the typical Linux ephemeral range (32768-60999). The default
+`port+10000` bus can otherwise collide with outbound sockets from `go build`
+and `redis-cli` after those tools have run. `run_nightly.sh` also raises the
+Linux ephemeral floor to 49152-65535 when the environment allows it, because
+some leftover sockets may still sit in 32xxx-36xxx. Derived category listen
+blocks stay in 20000-22767 so both the data port and the default cluster bus
+remain below 32768.
 
 ## Platform support
 
@@ -56,7 +66,9 @@ pull-request workflow runs this gate on both Ubuntu and macOS.
 - `run_nightly.sh` dispatches the core, resilience, security, module, and
   external-cluster suites selected with `NIGHTLY_SUITE`. The etcd suite is not
   part of any default aggregate; it requires `NIGHTLY_SUITE=etcd` together with
-  `ENABLE_ETCD_TESTS=1`.
+  `ENABLE_ETCD_TESTS=1`. The `modules` suite requires `docker` with a running
+  daemon plus `redis-cli` (provided in GitHub Actions from the pinned Redis
+  artifact, same as the other nightly jobs).
 - `run_external_cluster_regression.sh` creates two disposable clusters before
   invoking runners that flush data. Direct use of those underlying runners
   requires `ALLOW_DESTRUCTIVE_REDIS_TESTS=1` and a non-empty

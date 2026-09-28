@@ -4,13 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat4"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 KEYSPEC_VERIFY_ADDRS="${KEYSPEC_VERIFY_ADDRS:-}"
 KEYSPEC_VERIFY_TAGS="${KEYSPEC_VERIFY_TAGS:-}"
 KEYSPEC_VERIFY_SAMPLES_FILE="${KEYSPEC_VERIFY_SAMPLES_FILE:-}"
 KEYSPEC_VERIFY_EXTRA_ARGS="${KEYSPEC_VERIFY_EXTRA_ARGS:-}"
 KEYSPEC_REDIS_SERVER_ARGS="${KEYSPEC_REDIS_SERVER_ARGS:-}"
 KEYSPEC_FAIL_ON_UNSUPPORTED="${KEYSPEC_FAIL_ON_UNSUPPORTED:-0}"
-LOCAL_CLUSTER_PORTS=("${KEYSPEC_PORT_1:-30100}" "${KEYSPEC_PORT_2:-30101}" "${KEYSPEC_PORT_3:-30102}")
+test_ports_derive bisync-category4
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+LOCAL_CLUSTER_PORTS=("${KEYSPEC_PORT_1:-$(test_port_at 0)}" "${KEYSPEC_PORT_2:-$(test_port_at 1)}" "${KEYSPEC_PORT_3:-$(test_port_at 2)}")
 STARTED_LOCAL_CLUSTER=0
 if [[ -z "${KEYSPEC_VERIFY_ADDRS}" && -n "${KEYSPEC_VERIFY_DEPLOY_ROOT:-}" ]]; then
   KEYSPEC_VERIFY_ADDRS="$(resolve_deploy_addrs KEYSPEC_VERIFY_DEPLOY_ROOT KEYSPEC_VERIFY_HOST)"
@@ -76,6 +84,7 @@ appendonly no
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 

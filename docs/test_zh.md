@@ -79,7 +79,7 @@
 
 测试RDB和AOF在不同版本之间兼容性；RDB回放测试RESTORE命令回放和非RESTORE命令回放两种。
 
-Bash 测试 runner 支持 Linux 和 macOS 的 amd64、arm64 环境。缺少工具时不再假设特定包管理器；未安装 `ripgrep` 时自动回退到 `grep -E`；临时目录遵循 `TMPDIR`；etcd 安装器会选择对应平台的发布包。etcd 测试默认禁用，只能通过 `make test-etcd` 或手工 Nightly 开关显式运行。PR 会在 Ubuntu 和 macOS 上执行静态兼容性门禁。暂不支持原生 Windows Shell，请使用 WSL 或 Linux 容器。
+Bash 测试 runner 支持 Linux 和 macOS 的 amd64、arm64 环境。缺少工具时不再假设特定包管理器;未安装 `ripgrep` 时自动回退到 `grep -E`;临时目录遵循 `TMPDIR`;etcd 安装器会选择对应平台的发布包。etcd 测试默认禁用,只能通过 `make test-etcd` 或手工 Nightly 开关显式运行。PR 会在 Ubuntu 和 macOS 上执行静态兼容性门禁。暂不支持原生 Windows Shell,请使用 WSL 或 Linux 容器。集群测试会显式设置 `cluster-port`,避免 Redis Cluster 总线落入 Linux 常见临时端口范围(32768-60999)。Nightly 在 runner 允许时仍会把该临时端口下限提到 49152-65535。各类别派生的监听块落在 20000-22767,使数据端口和默认 cluster bus(port+10000)都低于 32768;cluster 的 `*_BASE` 按 3 节点或 6 节点跨度占位,而不是相邻单端口。Redis Modules 的 Nightly/发布任务需要可用的 Docker 守护进程,以及与其它套件相同的 pinned Redis 安装中的 `redis-cli`。
 
 说明：代码层面已支持 Redis 8 的 RDB v13，以及 Redis 8 cluster RDB 中的 `SLOT_INFO` 元数据 opcode。Redis 8.6.2 已通过 standalone/cluster 基础同步、重启续传和双向 smoke；2h/4h/6h durability 尚未完成，因此 Redis 8 当前不作为长稳发布门禁版本。
 

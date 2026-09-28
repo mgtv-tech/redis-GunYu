@@ -4,21 +4,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat7"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
-SYNC_STD_SRC_PORT="${SYNC_STD_SRC_PORT:-33900}"
-SYNC_STD_DST_PORT="${SYNC_STD_DST_PORT:-34000}"
-SYNC_STD_HTTP_PORT="${SYNC_STD_HTTP_PORT:-33980}"
-SYNC_CLUSTER_SRC_BASE="${SYNC_CLUSTER_SRC_BASE:-34100}"
-SYNC_CLUSTER_DST_BASE="${SYNC_CLUSTER_DST_BASE:-34200}"
-SYNC_CLUSTER_HTTP_PORT="${SYNC_CLUSTER_HTTP_PORT:-34180}"
-PIPE_STD_SRC_PORT="${PIPE_STD_SRC_PORT:-34300}"
-PIPE_STD_DST_PORT="${PIPE_STD_DST_PORT:-34400}"
-PIPE_STD_HTTP_PORT="${PIPE_STD_HTTP_PORT:-34380}"
-PIPE_CLUSTER_SRC_BASE="${PIPE_CLUSTER_SRC_BASE:-34500}"
-PIPE_CLUSTER_DST_BASE="${PIPE_CLUSTER_DST_BASE:-34600}"
-PIPE_CLUSTER_HTTP_PORT="${PIPE_CLUSTER_HTTP_PORT:-34580}"
+test_ports_derive nonbisync-category7
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SYNC_STD_SRC_PORT="${SYNC_STD_SRC_PORT:-$(test_port_at 0)}"
+SYNC_STD_DST_PORT="${SYNC_STD_DST_PORT:-$(test_port_at 1)}"
+SYNC_STD_HTTP_PORT="${SYNC_STD_HTTP_PORT:-$(test_port_at 2)}"
+SYNC_CLUSTER_SRC_BASE="${SYNC_CLUSTER_SRC_BASE:-$(test_port_at 3)}"
+SYNC_CLUSTER_DST_BASE="${SYNC_CLUSTER_DST_BASE:-$(test_port_at 6)}"
+SYNC_CLUSTER_HTTP_PORT="${SYNC_CLUSTER_HTTP_PORT:-$(test_port_at 9)}"
+PIPE_STD_SRC_PORT="${PIPE_STD_SRC_PORT:-$(test_port_at 10)}"
+PIPE_STD_DST_PORT="${PIPE_STD_DST_PORT:-$(test_port_at 11)}"
+PIPE_STD_HTTP_PORT="${PIPE_STD_HTTP_PORT:-$(test_port_at 12)}"
+PIPE_CLUSTER_SRC_BASE="${PIPE_CLUSTER_SRC_BASE:-$(test_port_at 13)}"
+PIPE_CLUSTER_DST_BASE="${PIPE_CLUSTER_DST_BASE:-$(test_port_at 16)}"
+PIPE_CLUSTER_HTTP_PORT="${PIPE_CLUSTER_HTTP_PORT:-$(test_port_at 19)}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:cat7:$(date +%s)}"
 SYNCER_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"

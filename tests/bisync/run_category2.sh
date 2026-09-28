@@ -4,21 +4,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat2"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat2:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
-SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-29300}"
-SERIAL_DST_BASE="${SERIAL_DST_BASE:-29400}"
-SERIAL_FWD_HTTP_PORT="${SERIAL_FWD_HTTP_PORT:-29380}"
-SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-29480}"
-ORDERED_SRC_BASE="${ORDERED_SRC_BASE:-29500}"
-ORDERED_DST_BASE="${ORDERED_DST_BASE:-29600}"
-ORDERED_FWD_HTTP_PORT="${ORDERED_FWD_HTTP_PORT:-29580}"
-ORDERED_REV_HTTP_PORT="${ORDERED_REV_HTTP_PORT:-29680}"
-PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-29700}"
-PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-29800}"
-PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-29780}"
-PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-29880}"
+test_ports_derive bisync-category2
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-$(test_port_at 0)}"
+SERIAL_DST_BASE="${SERIAL_DST_BASE:-$(test_port_at 3)}"
+SERIAL_FWD_HTTP_PORT="${SERIAL_FWD_HTTP_PORT:-$(test_port_at 6)}"
+SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-$(test_port_at 7)}"
+ORDERED_SRC_BASE="${ORDERED_SRC_BASE:-$(test_port_at 8)}"
+ORDERED_DST_BASE="${ORDERED_DST_BASE:-$(test_port_at 11)}"
+ORDERED_FWD_HTTP_PORT="${ORDERED_FWD_HTTP_PORT:-$(test_port_at 14)}"
+ORDERED_REV_HTTP_PORT="${ORDERED_REV_HTTP_PORT:-$(test_port_at 15)}"
+PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-$(test_port_at 16)}"
+PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-$(test_port_at 19)}"
+PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-$(test_port_at 22)}"
+PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-$(test_port_at 23)}"
 FWD_PID=""
 REV_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
@@ -99,6 +107,7 @@ appendonly no
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 

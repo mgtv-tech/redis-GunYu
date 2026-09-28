@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl python3
 
 SOAK_TIER="${SOAK_TIER:-2h}"
@@ -44,14 +45,21 @@ MAX_RSS_GROWTH_PERCENT="${MAX_RSS_GROWTH_PERCENT:-80}"
 MAX_GOROUTINE_GROWTH_PERCENT="${MAX_GOROUTINE_GROWTH_PERCENT:-100}"
 ALLOW_UNSUPPORTED_REDIS="${ALLOW_UNSUPPORTED_REDIS:-0}"
 
-SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-32300}"
-SERIAL_DST_BASE="${SERIAL_DST_BASE:-32400}"
-SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-32380}"
-SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-32480}"
-PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-32500}"
-PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-32600}"
-PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-32580}"
-PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-32680}"
+test_ports_derive bisync-category9
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-$(test_port_at 0)}"
+SERIAL_DST_BASE="${SERIAL_DST_BASE:-$(test_port_at 6)}"
+SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-$(test_port_at 12)}"
+SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-$(test_port_at 13)}"
+PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-$(test_port_at 14)}"
+PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-$(test_port_at 20)}"
+PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-$(test_port_at 26)}"
+PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-$(test_port_at 27)}"
 
 FWD_PID=""
 REV_PID=""
@@ -161,6 +169,7 @@ appendfsync everysec
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 

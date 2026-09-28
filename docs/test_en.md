@@ -83,7 +83,14 @@ missing tools without assuming a specific package manager, use `grep -E` when
 release archives. Native Windows execution is not supported; use WSL or a Linux
 container. Pull requests run the static portability gate on both Ubuntu and
 macOS. etcd tests are disabled by default and only run through `make test-etcd`
-or the explicit Nightly workflow option.
+or the explicit Nightly workflow option. Cluster configs set `cluster-port` so
+the Redis Cluster bus stays out of the typical Linux ephemeral range
+(32768-60999). Nightly also raises that ephemeral floor to 49152-65535 when
+the runner allows it. Derived category listen blocks stay in 20000-22767 so
+both the data port and the default cluster bus (port+10000) remain below
+32768; a cluster `*_BASE` occupies a 3-node or 6-node span rather than a
+single adjacent slot. Redis Modules nightly/release jobs need a running Docker daemon
+and `redis-cli` from the same pinned Redis install as the other suites.
 
 Note: the codebase supports Redis 8 RDB version 13 and the Redis 8 cluster `SLOT_INFO` metadata opcode. Redis 8.6.2 has passed standalone/cluster sync, restart/resume, and bidirectional smoke tests. The 2h/4h/6h durability gates are not complete, so Redis 8 is not yet a durability-qualified release version.
 

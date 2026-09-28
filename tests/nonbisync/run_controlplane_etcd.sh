@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-etcd"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 
 if [[ "${ENABLE_ETCD_TESTS:-0}" != "1" ]]; then
   echo "etcd control-plane tests are disabled; set ENABLE_ETCD_TESTS=1 to run them"
@@ -14,10 +15,17 @@ require_test_commands go redis-server redis-cli curl
 ETCD_BIN="${ETCD_BIN:-$(command -v etcd || true)}"
 ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-23990}"
 ETCD_PEER_PORT="${ETCD_PEER_PORT:-23991}"
-SRC_PORT="${SRC_PORT:-36500}"
-DST_PORT="${DST_PORT:-36600}"
-HTTP_A="${HTTP_A:-36580}"
-HTTP_B="${HTTP_B:-36680}"
+test_ports_derive nonbisync-etcd
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE 'test_port_at [0-9]+' "$0" | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SRC_PORT="${SRC_PORT:-$(test_port_at 0)}"
+DST_PORT="${DST_PORT:-$(test_port_at 1)}"
+HTTP_A="${HTTP_A:-$(test_port_at 2)}"
+HTTP_B="${HTTP_B:-$(test_port_at 3)}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:etcd:$(date +%s)}"
 SYNCER_PID_A=""
 SYNCER_PID_B=""

@@ -4,17 +4,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat5"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat5:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
-SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-30300}"
-SERIAL_DST_BASE="${SERIAL_DST_BASE:-30400}"
-SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-30380}"
-SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-30480}"
-PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-30500}"
-PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-30600}"
-PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-30580}"
-PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-30680}"
+test_ports_derive bisync-category5
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SERIAL_SRC_BASE="${SERIAL_SRC_BASE:-$(test_port_at 0)}"
+SERIAL_DST_BASE="${SERIAL_DST_BASE:-$(test_port_at 6)}"
+SERIAL_HTTP_PORT="${SERIAL_HTTP_PORT:-$(test_port_at 12)}"
+SERIAL_REV_HTTP_PORT="${SERIAL_REV_HTTP_PORT:-$(test_port_at 13)}"
+PIPELINE_SRC_BASE="${PIPELINE_SRC_BASE:-$(test_port_at 14)}"
+PIPELINE_DST_BASE="${PIPELINE_DST_BASE:-$(test_port_at 20)}"
+PIPELINE_FWD_HTTP_PORT="${PIPELINE_FWD_HTTP_PORT:-$(test_port_at 26)}"
+PIPELINE_REV_HTTP_PORT="${PIPELINE_REV_HTTP_PORT:-$(test_port_at 27)}"
 FWD_PID=""
 REV_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
@@ -91,6 +99,7 @@ appendonly no
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 
@@ -293,7 +302,8 @@ force_failover() {
   local replica_port=$1
   redis-cli -p "${replica_port}" cluster failover force >/dev/null
   wait_for_role "${replica_port}" master
-  sleep 1
+  # checkRedisTypologyTicker is 2s; wait for GunYu to rebuild before INCRBY.
+  sleep 4
 }
 
 wait_for_converge() {
@@ -518,6 +528,8 @@ run_scenario() {
   source_replica_port=$(find_first_replica_port "${src_ports[@]}")
   force_failover "${source_replica_port}"
   wait_for_cluster_all_ok "${src_ports[@]}"
+  wait_for_syncer "${fwd_http_port}"
+  wait_for_syncer "${rev_http_port}"
   source_master_port=$(find_first_master_port "${src_ports[@]}")
   target_master_port=$(find_first_master_port "${dst_ports[@]}")
   write_left_phase "${prefix}" "${source_master_port}" 2
@@ -527,6 +539,8 @@ run_scenario() {
   target_replica_port=$(find_first_replica_port "${dst_ports[@]}")
   force_failover "${target_replica_port}"
   wait_for_cluster_all_ok "${dst_ports[@]}"
+  wait_for_syncer "${fwd_http_port}"
+  wait_for_syncer "${rev_http_port}"
   source_master_port=$(find_first_master_port "${src_ports[@]}")
   target_master_port=$(find_first_master_port "${dst_ports[@]}")
   write_left_phase "${prefix}" "${source_master_port}" 3

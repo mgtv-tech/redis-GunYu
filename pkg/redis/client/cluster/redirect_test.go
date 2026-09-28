@@ -279,9 +279,13 @@ func TestBatchPipelineDispatchPipelinesCommandsPerNode(t *testing.T) {
 			if got := normalizeCommand(t, reply); !reflect.DeepEqual(got, expected) {
 				return fmt.Errorf("unexpected command: got=%v want=%v", got, expected)
 			}
+			// Redis replies per command. Waiting for both commands before any
+			// reply deadlocks nodePipeline, which reads as soon as no send is queued.
+			if _, err := conn.Write([]byte("+OK\r\n")); err != nil {
+				return err
+			}
 		}
-		_, err := conn.Write([]byte("+OK\r\n+OK\r\n"))
-		return err
+		return nil
 	})
 
 	cluster := newRedirectTestCluster()

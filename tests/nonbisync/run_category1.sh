@@ -4,15 +4,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat1"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
-SYNC_SRC_BASE="${SYNC_SRC_BASE:-31100}"
-SYNC_DST_BASE="${SYNC_DST_BASE:-31200}"
-SYNC_HTTP_PORT="${SYNC_HTTP_PORT:-31180}"
-PIPE_SRC_BASE="${PIPE_SRC_BASE:-31300}"
-PIPE_DST_BASE="${PIPE_DST_BASE:-31400}"
-PIPE_HTTP_PORT="${PIPE_HTTP_PORT:-31380}"
+test_ports_derive nonbisync-category1
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SYNC_SRC_BASE="${SYNC_SRC_BASE:-$(test_port_at 0)}"
+SYNC_DST_BASE="${SYNC_DST_BASE:-$(test_port_at 3)}"
+SYNC_HTTP_PORT="${SYNC_HTTP_PORT:-$(test_port_at 6)}"
+PIPE_SRC_BASE="${PIPE_SRC_BASE:-$(test_port_at 7)}"
+PIPE_DST_BASE="${PIPE_DST_BASE:-$(test_port_at 10)}"
+PIPE_HTTP_PORT="${PIPE_HTTP_PORT:-$(test_port_at 13)}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:cat1:$(date +%s)}"
 SYNCER_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"

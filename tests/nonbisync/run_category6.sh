@@ -4,21 +4,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-cat6"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 
 SCENARIOS="${SCENARIOS:-sync,pipeline}"
-SYNC_C2S_SRC_BASE="${SYNC_C2S_SRC_BASE:-33100}"
-SYNC_C2S_DST_PORT="${SYNC_C2S_DST_PORT:-33200}"
-SYNC_C2S_HTTP_PORT="${SYNC_C2S_HTTP_PORT:-33180}"
-SYNC_S2C_SRC_PORT="${SYNC_S2C_SRC_PORT:-33300}"
-SYNC_S2C_DST_BASE="${SYNC_S2C_DST_BASE:-33400}"
-SYNC_S2C_HTTP_PORT="${SYNC_S2C_HTTP_PORT:-33380}"
-PIPE_C2S_SRC_BASE="${PIPE_C2S_SRC_BASE:-33500}"
-PIPE_C2S_DST_PORT="${PIPE_C2S_DST_PORT:-33600}"
-PIPE_C2S_HTTP_PORT="${PIPE_C2S_HTTP_PORT:-33580}"
-PIPE_S2C_SRC_PORT="${PIPE_S2C_SRC_PORT:-33700}"
-PIPE_S2C_DST_BASE="${PIPE_S2C_DST_BASE:-33800}"
-PIPE_S2C_HTTP_PORT="${PIPE_S2C_HTTP_PORT:-33780}"
+test_ports_derive nonbisync-category6
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SYNC_C2S_SRC_BASE="${SYNC_C2S_SRC_BASE:-$(test_port_at 0)}"
+SYNC_C2S_DST_PORT="${SYNC_C2S_DST_PORT:-$(test_port_at 6)}"
+SYNC_C2S_HTTP_PORT="${SYNC_C2S_HTTP_PORT:-$(test_port_at 7)}"
+SYNC_S2C_SRC_PORT="${SYNC_S2C_SRC_PORT:-$(test_port_at 8)}"
+SYNC_S2C_DST_BASE="${SYNC_S2C_DST_BASE:-$(test_port_at 9)}"
+SYNC_S2C_HTTP_PORT="${SYNC_S2C_HTTP_PORT:-$(test_port_at 15)}"
+PIPE_C2S_SRC_BASE="${PIPE_C2S_SRC_BASE:-$(test_port_at 16)}"
+PIPE_C2S_DST_PORT="${PIPE_C2S_DST_PORT:-$(test_port_at 22)}"
+PIPE_C2S_HTTP_PORT="${PIPE_C2S_HTTP_PORT:-$(test_port_at 23)}"
+PIPE_S2C_SRC_PORT="${PIPE_S2C_SRC_PORT:-$(test_port_at 24)}"
+PIPE_S2C_DST_BASE="${PIPE_S2C_DST_BASE:-$(test_port_at 25)}"
+PIPE_S2C_HTTP_PORT="${PIPE_S2C_HTTP_PORT:-$(test_port_at 31)}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:cat6:$(date +%s)}"
 SYNCER_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"

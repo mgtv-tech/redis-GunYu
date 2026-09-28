@@ -36,7 +36,7 @@ choose_base() {
   if [[ -n "${EXTERNAL_PORT_BASE}" ]]; then
     candidate=${EXTERNAL_PORT_BASE}
     for offset in 0 1 2 3 4 5; do
-      if port_is_open "$((candidate + offset))" || port_is_open "$((candidate + offset + 10000))"; then
+      if port_is_open "$((candidate + offset))" || port_is_open "$(cluster_bus_port "$((candidate + offset))")"; then
         echo "external cluster port block is occupied" >&2
         return 1
       fi
@@ -48,7 +48,7 @@ choose_base() {
     candidate=$((21000 + RANDOM % 17000))
     local free=1
     for offset in 0 1 2 3 4 5; do
-      if port_is_open "$((candidate + offset))" || port_is_open "$((candidate + offset + 10000))"; then
+      if port_is_open "$((candidate + offset))" || port_is_open "$(cluster_bus_port "$((candidate + offset))")"; then
         free=0
       fi
     done

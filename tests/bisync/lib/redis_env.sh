@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+# Port derivation is shared by every runner; declared_test_ports below re-runs a
+# runner's derivation to learn its ports, so the helpers must be available here.
+_redis_env_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib"
+# shellcheck source=tests/lib/test_ports.sh
+source "${_redis_env_lib_dir}/test_ports.sh"
+unset _redis_env_lib_dir
+
 require_command() {
   local tool=$1
   local install_hint=${2:-}
@@ -42,10 +49,23 @@ require_test_commands() {
         require_command "${tool}" "install Redis from https://redis.io/docs/latest/operate/oss_and_stack/install/, or set REDIS_SERVER_BIN/REDIS_DEPLOY_ROOT" || missing=1
         ;;
       redis-cli)
-        require_command "${tool}" "install Redis from https://redis.io/docs/latest/operate/oss_and_stack/install/ or your operating system package manager" || missing=1
+        if command -v redis-cli >/dev/null 2>&1; then
+          continue
+        fi
+        if [[ -n "${REDIS_SERVER_BIN:-}" && -x "$(dirname "${REDIS_SERVER_BIN}")/redis-cli" ]]; then
+          PATH="$(dirname "${REDIS_SERVER_BIN}"):${PATH}"
+          export PATH
+          continue
+        fi
+        require_command "${tool}" "install Redis from https://redis.io/docs/latest/operate/oss_and_stack/install/ or your operating system package manager, or put redis-cli next to REDIS_SERVER_BIN" || missing=1
         ;;
       docker)
         require_command "${tool}" "install Docker for your operating system and start its daemon" || missing=1
+        if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+          echo "docker daemon is not running" >&2
+          echo "hint: start Docker, then re-run the Redis Modules tests" >&2
+          missing=1
+        fi
         ;;
       python3)
         require_command "${tool}" "install Python 3 from https://www.python.org/downloads/ or your operating system package manager" || missing=1
@@ -141,6 +161,165 @@ resolve_redis_server_bin() {
 
   echo "redis-server not found in PATH; set ${bin_env_name} or ${root_env_name}" >&2
   return 1
+}
+
+# Redis defaults cluster-port to port+10000. On Linux the typical ephemeral
+# range is 32768-60999, so a data port of 31100 would bind 41100 and can
+# collide with outbound sockets from go build / redis-cli. Keep the bus
+# out of that range while staying unprivileged.
+cluster_bus_port() {
+  local port=$1
+  local bus=$((port + 10000))
+  if (( bus >= 32768 )); then
+    bus=$((port - 10000))
+  fi
+  if (( bus < 1024 || bus > 65535 )); then
+    echo "cluster bus port ${bus} for data port ${port} is out of range" >&2
+    return 1
+  fi
+  printf '%s\n' "${bus}"
+}
+
+# Several suites still listen on 32xxx-36xxx data/HTTP ports, which sit inside
+# the typical Linux ephemeral range. cluster-port remapping does not protect
+# those listen sockets. When permitted (GitHub Actions passwordless sudo, or a
+# writable sysctl), raise the ephemeral floor so outbound sockets cannot steal
+# them. Failure is ignored: local machines without privilege keep working.
+pin_linux_ephemeral_port_range() {
+  local sysctl_file=/proc/sys/net/ipv4/ip_local_port_range
+  [[ -f "${sysctl_file}" ]] || return 0
+  if [[ -w "${sysctl_file}" ]]; then
+    printf '49152 65535\n' > "${sysctl_file}" || true
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -n sysctl -w net.ipv4.ip_local_port_range="49152 65535" >/dev/null 2>&1 || true
+  fi
+}
+
+port_is_open() {
+  local port=$1
+  (echo >/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1
+}
+
+is_repo_test_script() {
+  local argument=$1
+  local root=$2
+  [[ "${argument}" == "${root}/tests/"*.sh || "${argument}" == "${root}/tests/"*/*.sh ]]
+}
+
+# Extract default listen ports from test runner assignments. Ignore incidental
+# PORT substrings such as FAIL_ON_UNSUPPORTED, and ignore values that cannot be
+# unprivileged listen ports.
+declared_test_ports() {
+  local script=$1
+  awk '
+    $0 ~ /_PORT|_BASE|PORTS=/ {
+      line=$0
+      while (match(line, /:-[0-9]+/)) {
+        n = substr(line, RSTART + 2, RLENGTH - 2) + 0
+        if (n >= 1024 && n <= 65535) print n
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "${script}" | sort -nu
+}
+
+# Print every integer that can plausibly be a listen port in a string.
+_test_ports_scan_numbers() {
+  awk '
+    {
+      line=$0
+      while (match(line, /[0-9]+/)) {
+        n = substr(line, RSTART, RLENGTH) + 0
+        if (n >= 1024 && n <= 65535) print n
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' | sort -nu
+}
+
+# Extract the ports a runner will actually listen on.
+#
+# Runners no longer declare literal defaults such as
+# SYNC_SRC_BASE="${SYNC_SRC_BASE:-32300}"; they derive them per run from
+# tests/lib/test_ports.sh, for example
+#   SYNC_SRC_BASE="${SYNC_SRC_BASE:-$(test_port_at 0)}"
+# so a textual scan of ":-<number>" finds nothing. Re-running the runner with a
+# test-only hook prints the resolved values without touching Redis.
+declared_test_ports() {
+  local script=$1
+
+  local resolved
+  if resolved=$(REDIS_GUNYU_TEST_PORTS_DUMP=1 bash "${script}" 2>/dev/null); then
+    local scanned
+    scanned="$(printf '%s\n' "${resolved}" | _test_ports_scan_numbers)"
+    if [[ -n "${scanned}" ]]; then
+      printf '%s\n' "${scanned}"
+      return 0
+    fi
+    # The runner exited successfully without reaching its hook, for example an
+    # optional suite that prints "tests are disabled" and returns early. Fall
+    # through and derive its ports statically instead.
+  fi
+
+  # Fallback for runners whose hook cannot run (for example a Modules case that
+  # refuses to start without Docker) and for runners that predate the hook.
+  # Derive the same block the runner would use, then map its declared slot
+  # indexes onto it.
+  local offset derived
+  derived=$(awk '
+    match($0, /test_ports_derive[ \t]+[^ \t]+/) {
+      name = substr($0, RSTART + 17, RLENGTH - 17)
+      gsub(/^[ \t]+|[ \t]+$/, "", name)
+      print name
+      exit
+    }
+  ' "${script}")
+  if [[ -n "${derived}" ]] && \
+     TEST_PORT_OFFSET="" TEST_PORT_BLOCK_END="" test_ports_derive "${derived}" >/dev/null 2>&1; then
+    offset=${TEST_PORT_OFFSET}
+    unset TEST_PORT_OFFSET TEST_PORT_BLOCK_END
+    awk -v base="${offset}" '
+      match($0, /test_port_at[ \t]+[0-9]+/) {
+        slot = substr($0, RSTART + 13, RLENGTH - 13) + 0
+        print base + slot
+      }
+    ' "${script}" | sort -nu
+    return 0
+  fi
+
+  # Last resort: read literal defaults.
+  awk '
+    $0 ~ /_PORT|_BASE|PORTS=/ {
+      line=$0
+      while (match(line, /:-[0-9]+/)) {
+        n = substr(line, RSTART + 2, RLENGTH - 2) + 0
+        if (n >= 1024 && n <= 65535) print n
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "${script}" | sort -nu
+}
+
+preflight_script_ports() {
+  local script=$1
+  local base offset port bus
+  while IFS= read -r base; do
+    [[ -n "${base}" ]] || continue
+    for offset in 0 1 2 3 4 5; do
+      port=$((base + offset))
+      if port_is_open "${port}"; then
+        echo "refusing to run ${script}: declared test port ${port} is already occupied" >&2
+        return 1
+      fi
+      bus=$(cluster_bus_port "${port}")
+      if port_is_open "${bus}"; then
+        echo "refusing to run ${script}: cluster bus candidate ${bus} is already occupied" >&2
+        return 1
+      fi
+    done
+  done < <(declared_test_ports "${script}")
 }
 
 choose_redis_host_from_conf() {

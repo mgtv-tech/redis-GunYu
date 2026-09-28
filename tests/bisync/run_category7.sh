@@ -4,14 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat7"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-cli curl
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat7:$(date +%s)}"
 SCENARIOS="${SCENARIOS:-sync,pipeline,parallel}"
 SOAK_DURATION="${SOAK_DURATION:-5m}"
 SOAK_KEY_SPACE="${SOAK_KEY_SPACE:-32}"
 SOAK_THROTTLE="${SOAK_THROTTLE:-0ms}"
-LEFT_PORTS=("${LEFT_PORT_1:-7000}" "${LEFT_PORT_2:-7001}" "${LEFT_PORT_3:-7002}")
-RIGHT_PORTS=("${RIGHT_PORT_1:-7100}" "${RIGHT_PORT_2:-7101}" "${RIGHT_PORT_3:-7102}")
+test_ports_derive bisync-category7
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+LEFT_PORTS=("${LEFT_PORT_1:-$(test_port_at 0)}" "${LEFT_PORT_2:-$(test_port_at 1)}" "${LEFT_PORT_3:-$(test_port_at 2)}")
+RIGHT_PORTS=("${RIGHT_PORT_1:-$(test_port_at 3)}" "${RIGHT_PORT_2:-$(test_port_at 4)}" "${RIGHT_PORT_3:-$(test_port_at 5)}")
 LEFT_ADDRS="${LEFT_ADDRS:-}"
 RIGHT_ADDRS="${RIGHT_ADDRS:-}"
 FWD_PID=""

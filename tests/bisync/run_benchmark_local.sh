@@ -28,6 +28,7 @@ appendonly no
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 

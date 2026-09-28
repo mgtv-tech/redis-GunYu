@@ -95,6 +95,7 @@ jobs:
           export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
           make test-upgrade-rollback
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # a transient GitHub-side upload error must not red a passing test job
         if: always()
         with:
           name: release-qualification-${{ inputs.redis_version }}
@@ -129,6 +130,7 @@ jobs:
           export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
           TMPDIR="${{ github.workspace }}/.artifacts/tests/release-soak" bash ./tests/bisync/run_category9.sh
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # a transient GitHub-side upload error must not red a passing test job
         if: always()
         with:
           name: release-durability-${{ inputs.redis_version }}-${{ inputs.soak_tier }}
@@ -164,6 +166,7 @@ jobs:
           export PATH="${{ github.workspace }}/.tools/redis/bin:${PATH}"
           TMPDIR="${{ github.workspace }}/.artifacts/tests/release-benchmark" bash ./tests/bisync/run_benchmark_local.sh
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # a transient GitHub-side upload error must not red a passing test job
         if: always()
         with:
           name: release-benchmark-${{ inputs.redis_version }}
@@ -179,12 +182,29 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run module release gates
+      - uses: actions/cache@v4
+        with:
+          path: .tools/redis/7.4.1
+          key: redis-source-${{ runner.os }}-7.4.1-v1
+      - name: Install build dependencies
+        if: ${{ hashFiles('.tools/redis/7.4.1/bin/redis-server') == '' }}
         run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+      - name: Build pinned Redis
+        if: ${{ hashFiles('.tools/redis/7.4.1/bin/redis-server') == '' }}
+        run: bash ./tests/integration/install_redis_source.sh 7.4.1 .tools/redis/7.4.1
+      - name: Run module release gates
+        env:
+          REDIS_SERVER_BIN: ${{ github.workspace }}/.tools/redis/7.4.1/bin/redis-server
+        run: |
+          chmod +x .tools/redis/7.4.1/bin/*
+          export PATH="${{ github.workspace }}/.tools/redis/7.4.1/bin:${PATH}"
           mkdir -p .artifacts/tests/release-modules
           TMPDIR="${{ github.workspace }}/.artifacts/tests/release-modules" KEEP_TMP=1 bash ./tests/bisync/run_category10.sh
           TMPDIR="${{ github.workspace }}/.artifacts/tests/release-modules" KEEP_TMP=1 bash ./tests/nonbisync/run_category11.sh
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # a transient GitHub-side upload error must not red a passing test job
         if: always()
         with:
           name: release-modules

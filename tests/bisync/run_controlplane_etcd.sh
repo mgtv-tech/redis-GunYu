@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-etcd"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 
 CONTROL_PLANE="${CONTROL_PLANE:-etcd}"
 CONTROL_PLANE=$(printf '%s' "${CONTROL_PLANE}" | tr '[:upper:]' '[:lower:]')
@@ -20,10 +21,17 @@ require_test_commands go redis-server redis-cli curl
 ETCD_BIN="${ETCD_BIN:-$(command -v etcd || true)}"
 ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-23990}"
 ETCD_PEER_PORT="${ETCD_PEER_PORT:-23991}"
-LEFT_PORT="${LEFT_PORT:-36500}"
-RIGHT_PORT="${RIGHT_PORT:-36600}"
-FWD_HTTP_PORT="${FWD_HTTP_PORT:-36580}"
-REV_HTTP_PORT="${REV_HTTP_PORT:-36680}"
+test_ports_derive bisync-etcd
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE 'test_port_at [0-9]+' "$0" | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+LEFT_PORT="${LEFT_PORT:-$(test_port_at 0)}"
+RIGHT_PORT="${RIGHT_PORT:-$(test_port_at 1)}"
+FWD_HTTP_PORT="${FWD_HTTP_PORT:-$(test_port_at 2)}"
+REV_HTTP_PORT="${REV_HTTP_PORT:-$(test_port_at 3)}"
 REPLAY_MODE="${REPLAY_MODE:-sync}"
 TEST_PREFIX="${TEST_PREFIX:-bisync:etcd:$(date +%s)}"
 FWD_PID=""

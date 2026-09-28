@@ -4,11 +4,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-bisync-cat1"
 source "${ROOT}/tests/bisync/lib/redis_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
-SRC_PORTS=("${SRC_PORT_1:-19100}" "${SRC_PORT_2:-19101}" "${SRC_PORT_3:-19102}")
-DST_PORTS=("${DST_PORT_1:-19200}" "${DST_PORT_2:-19201}" "${DST_PORT_3:-19202}")
-FWD_HTTP_PORT="${FWD_HTTP_PORT:-19180}"
-REV_HTTP_PORT="${REV_HTTP_PORT:-19280}"
+test_ports_derive bisync-category1
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE '\$\{?[A-Z0-9_]+:-\$\(test_port_at [0-9]+\)\}?' "$0"     | grep -oE 'test_port_at [0-9]+' | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
+SRC_PORTS=("${SRC_PORT_1:-$(test_port_at 0)}" "${SRC_PORT_2:-$(test_port_at 1)}" "${SRC_PORT_3:-$(test_port_at 2)}")
+DST_PORTS=("${DST_PORT_1:-$(test_port_at 3)}" "${DST_PORT_2:-$(test_port_at 4)}" "${DST_PORT_3:-$(test_port_at 5)}")
+FWD_HTTP_PORT="${FWD_HTTP_PORT:-$(test_port_at 6)}"
+REV_HTTP_PORT="${REV_HTTP_PORT:-$(test_port_at 7)}"
 TEST_PREFIX="${TEST_PREFIX:-bisync:cat1:$(date +%s)}"
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"
 
@@ -62,6 +70,7 @@ appendonly no
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 3000
+cluster-port $(cluster_bus_port "${port}")
 EOF
 }
 

@@ -33,9 +33,31 @@ stop_owned_processes() {
   done < <(find "${TMP_ROOT}" -type f -name redis.pid 2>/dev/null)
 }
 
+write_diagnostics() {
+  local port
+  {
+    echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    for port in "${SRC_SENTINEL_PORTS[@]}"; do
+      echo "source_sentinel=${port}"
+      redis_auth "${SENTINEL_PASSWORD}" "${port}" sentinel master "${SRC_MASTER_NAME}" 2>&1 || true
+    done
+    for port in "${DST_SENTINEL_PORTS[@]}"; do
+      echo "target_sentinel=${port}"
+      redis_auth "${SENTINEL_PASSWORD}" "${port}" sentinel master "${DST_MASTER_NAME}" 2>&1 || true
+    done
+    for port in "${SRC_MASTER_PORT}" "${SRC_REPLICA_PORT}" "${DST_MASTER_PORT}" "${DST_REPLICA_PORT}"; do
+      echo "redis_replication=${port}"
+      redis_auth "${DATA_PASSWORD}" "${port}" info replication 2>&1 || true
+    done
+  } >"${TMP_ROOT}/diagnostics.txt"
+}
+
 cleanup() {
   local code=$?
   set +e
+  if [[ ${code} -ne 0 && -d "${TMP_ROOT}" ]]; then
+    write_diagnostics
+  fi
   stop_pid "${SYNCER_PID:-}"
   stop_owned_processes
   if [[ "${KEEP_TMP:-0}" != "1" && -n "${TMP_ROOT}" && "${TMP_ROOT}" == */redisgunyu-sentinel-e2e ]]; then
@@ -80,6 +102,42 @@ wait_for_replica_up() {
   return 1
 }
 
+sentinel_master_field() {
+  local field=$1
+  awk -v field="${field}" '$0 == field { if (getline > 0) print; exit }'
+}
+
+wait_for_sentinel_group_ready() {
+  local master_name=$1
+  local expected_master_port=$2
+  shift 2
+  local port info reported_port flags replicas peers ready
+
+  for _ in $(seq 1 300); do
+    ready=1
+    for port in "$@"; do
+      info=$(redis_auth "${SENTINEL_PASSWORD}" "${port}" sentinel master "${master_name}" 2>/dev/null || true)
+      reported_port=$(printf '%s\n' "${info}" | sentinel_master_field port)
+      flags=$(printf '%s\n' "${info}" | sentinel_master_field flags)
+      replicas=$(printf '%s\n' "${info}" | sentinel_master_field num-slaves)
+      peers=$(printf '%s\n' "${info}" | sentinel_master_field num-other-sentinels)
+      if [[ "${reported_port}" != "${expected_master_port}" ||
+            "${flags}" == *s_down* || "${flags}" == *o_down* ||
+            ! "${replicas}" =~ ^[0-9]+$ || "${replicas}" -lt 1 ||
+            ! "${peers}" =~ ^[0-9]+$ || "${peers}" -lt 2 ]]; then
+        ready=0
+        break
+      fi
+    done
+    if [[ ${ready} -eq 1 ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "Sentinel group ${master_name} did not discover its replica and peers" >&2
+  return 1
+}
+
 start_data_group() {
   local prefix=$1
   local master_port=$2
@@ -87,7 +145,8 @@ start_data_group() {
   local master_dir="${TMP_ROOT}/${prefix}-master-${master_port}"
   local replica_dir="${TMP_ROOT}/${prefix}-replica-${replica_port}"
 
-  write_standalone_conf "${master_dir}" "${master_port}" "requirepass ${DATA_PASSWORD}"
+  write_standalone_conf "${master_dir}" "${master_port}" "requirepass ${DATA_PASSWORD}
+masterauth ${DATA_PASSWORD}"
   "${REDIS_SERVER_BIN}" "${master_dir}/redis.conf"
   wait_for_auth_ping "${DATA_PASSWORD}" "${master_port}"
 
@@ -126,6 +185,7 @@ EOF
     "${REDIS_SERVER_BIN}" "${dir}/sentinel.conf" --sentinel
     wait_for_auth_ping "${SENTINEL_PASSWORD}" "${port}"
   done
+  wait_for_sentinel_group_ready "${master_name}" "${master_port}" "$@"
 }
 
 sentinel_master_port() {
@@ -135,15 +195,32 @@ sentinel_master_port() {
 }
 
 wait_for_master_change() {
-  local sentinel_port=$1
-  local master_name=$2
-  local old_port=$3
-  local current
-  for _ in $(seq 1 200); do
-    current=$(sentinel_master_port "${sentinel_port}" "${master_name}" 2>/dev/null || true)
-    if [[ -n "${current}" && "${current}" != "${old_port}" ]]; then
-      printf '%s\n' "${current}"
-      return 0
+  local master_name=$1
+  local old_port=$2
+  shift 2
+  local port current candidate role ready
+  for _ in $(seq 1 300); do
+    candidate=""
+    ready=1
+    for port in "$@"; do
+      current=$(sentinel_master_port "${port}" "${master_name}" 2>/dev/null || true)
+      if [[ -z "${current}" || "${current}" == "${old_port}" ]]; then
+        ready=0
+        break
+      fi
+      if [[ -z "${candidate}" ]]; then
+        candidate="${current}"
+      elif [[ "${candidate}" != "${current}" ]]; then
+        ready=0
+        break
+      fi
+    done
+    if [[ ${ready} -eq 1 ]]; then
+      role=$(redis_auth "${DATA_PASSWORD}" "${candidate}" info replication 2>/dev/null | sed -n 's/^role:\([^[:space:]]*\).*/\1/p' | tr -d '\r' || true)
+      if [[ "${role}" == "master" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
     fi
     sleep 0.1
   done
@@ -235,7 +312,7 @@ redis_auth "${DATA_PASSWORD}" "${SRC_MASTER_PORT}" wait 1 5000 >/dev/null
 wait_for_value "${DST_MASTER_PORT}" sentinel:e2e:counter 3
 
 redis_auth "${SENTINEL_PASSWORD}" "${SRC_SENTINEL_PORTS[0]}" sentinel failover "${SRC_MASTER_NAME}" >/dev/null
-NEW_SRC_MASTER_PORT=$(wait_for_master_change "${SRC_SENTINEL_PORTS[1]}" "${SRC_MASTER_NAME}" "${SRC_MASTER_PORT}")
+NEW_SRC_MASTER_PORT=$(wait_for_master_change "${SRC_MASTER_NAME}" "${SRC_MASTER_PORT}" "${SRC_SENTINEL_PORTS[@]}")
 wait_for_auth_ping "${DATA_PASSWORD}" "${NEW_SRC_MASTER_PORT}"
 redis_auth "${DATA_PASSWORD}" "${NEW_SRC_MASTER_PORT}" set sentinel:e2e:value after-source-failover >/dev/null
 redis_auth "${DATA_PASSWORD}" "${NEW_SRC_MASTER_PORT}" incrby sentinel:e2e:counter 4 >/dev/null
@@ -245,7 +322,7 @@ wait_for_value "${DST_MASTER_PORT}" sentinel:e2e:value after-source-failover
 echo "[4/5] verifying target failover and checkpointed replay"
 redis_auth "${DATA_PASSWORD}" "${DST_MASTER_PORT}" wait 1 5000 >/dev/null
 redis_auth "${SENTINEL_PASSWORD}" "${DST_SENTINEL_PORTS[0]}" sentinel failover "${DST_MASTER_NAME}" >/dev/null
-NEW_DST_MASTER_PORT=$(wait_for_master_change "${DST_SENTINEL_PORTS[1]}" "${DST_MASTER_NAME}" "${DST_MASTER_PORT}")
+NEW_DST_MASTER_PORT=$(wait_for_master_change "${DST_MASTER_NAME}" "${DST_MASTER_PORT}" "${DST_SENTINEL_PORTS[@]}")
 wait_for_auth_ping "${DATA_PASSWORD}" "${NEW_DST_MASTER_PORT}"
 redis_auth "${DATA_PASSWORD}" "${NEW_SRC_MASTER_PORT}" incrby sentinel:e2e:counter 5 >/dev/null
 redis_auth "${DATA_PASSWORD}" "${NEW_SRC_MASTER_PORT}" set sentinel:e2e:value after-target-failover >/dev/null

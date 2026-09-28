@@ -4,20 +4,28 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/redisgunyu-nonbisync-security"
 source "${ROOT}/tests/nonbisync/lib/test_env.sh"
+source "${ROOT}/tests/lib/test_ports.sh"
 require_test_commands go redis-server redis-cli curl
 
 AUTH_PASSWORD="${AUTH_PASSWORD:-nonbisync-pass}"
 AUTH_USER="${AUTH_USER:-}"
+test_ports_derive nonbisync-security
+# Test-only hook: print the resolved listen ports and exit. The nightly runner
+# uses this to learn which ports a case will use before it runs.
+if [[ -n "${REDIS_GUNYU_TEST_PORTS_DUMP:-}" ]]; then
+  grep -oE 'test_port_at [0-9]+' "$0" | awk -v base="${TEST_PORT_OFFSET}" '{print base + $2}' | sort -nu
+  exit 0
+fi
 ENABLE_TLS="${ENABLE_TLS:-0}"
-TLS_SRC_PORT="${TLS_SRC_PORT:-36300}"
-TLS_DST_PORT="${TLS_DST_PORT:-36400}"
-TLS_HTTP_PORT="${TLS_HTTP_PORT:-36380}"
-AUTH_STD_SRC_PORT="${AUTH_STD_SRC_PORT:-35900}"
-AUTH_STD_DST_PORT="${AUTH_STD_DST_PORT:-36000}"
-AUTH_STD_HTTP_PORT="${AUTH_STD_HTTP_PORT:-35980}"
-AUTH_CLUSTER_SRC_BASE="${AUTH_CLUSTER_SRC_BASE:-36100}"
-AUTH_CLUSTER_DST_BASE="${AUTH_CLUSTER_DST_BASE:-36200}"
-AUTH_CLUSTER_HTTP_PORT="${AUTH_CLUSTER_HTTP_PORT:-36180}"
+TLS_SRC_PORT="${TLS_SRC_PORT:-$(test_port_at 0)}"
+TLS_DST_PORT="${TLS_DST_PORT:-$(test_port_at 1)}"
+TLS_HTTP_PORT="${TLS_HTTP_PORT:-$(test_port_at 2)}"
+AUTH_STD_SRC_PORT="${AUTH_STD_SRC_PORT:-$(test_port_at 3)}"
+AUTH_STD_DST_PORT="${AUTH_STD_DST_PORT:-$(test_port_at 4)}"
+AUTH_STD_HTTP_PORT="${AUTH_STD_HTTP_PORT:-$(test_port_at 5)}"
+AUTH_CLUSTER_SRC_BASE="${AUTH_CLUSTER_SRC_BASE:-$(test_port_at 6)}"
+AUTH_CLUSTER_DST_BASE="${AUTH_CLUSTER_DST_BASE:-$(test_port_at 9)}"
+AUTH_CLUSTER_HTTP_PORT="${AUTH_CLUSTER_HTTP_PORT:-$(test_port_at 12)}"
 TEST_PREFIX="${TEST_PREFIX:-nonbisync:security:$(date +%s)}"
 SYNCER_PID=""
 REDIS_SERVER_BIN="$(resolve_redis_server_bin REDIS_SERVER_BIN REDIS_DEPLOY_ROOT)"

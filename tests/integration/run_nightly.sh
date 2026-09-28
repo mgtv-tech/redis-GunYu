@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${ROOT}/tests/bisync/lib/redis_env.sh"
+pin_linux_ephemeral_port_range
 SUITE="${NIGHTLY_SUITE:-nonbisync-core}"
 if [[ "${SUITE}" == "etcd" && "${ENABLE_ETCD_TESTS:-0}" != "1" ]]; then
   echo "NIGHTLY_SUITE=etcd requires ENABLE_ETCD_TESTS=1" >&2
@@ -17,42 +19,35 @@ FAILURES=0
 : > "${ARTIFACT_ROOT}/reproduce.sh"
 chmod +x "${ARTIFACT_ROOT}/reproduce.sh"
 
-port_is_open() {
-  (echo >/dev/tcp/127.0.0.1/"$1") >/dev/null 2>&1
-}
-
-preflight_script_ports() {
+wait_for_ports_released() {
   local script=$1
   local base offset port
-  while IFS= read -r base; do
-    [[ -n "${base}" ]] || continue
-    for offset in 0 1 2 3 4 5; do
-      port=$((base + offset))
-      if port_is_open "${port}"; then
-        echo "refusing to run ${script}: declared test port ${port} is already occupied" >&2
-        return 1
-      fi
-      if port_is_open "$((port + 10000))"; then
-        echo "refusing to run ${script}: cluster bus candidate $((port + 10000)) is already occupied" >&2
-        return 1
-      fi
-    done
-  done < <(
-    awk '/(PORT|BASE)/ {
-      line=$0
-      while (match(line, /:-[0-9]+/)) {
-        print substr(line, RSTART + 2, RLENGTH - 2)
-        line=substr(line, RSTART + RLENGTH)
-      }
-    }' "${script}" | sort -nu
-  )
+  # Runners shut their own servers down, but a daemonized redis-server needs a
+  # moment to release its listen socket. Waiting here keeps the next case from
+  # tripping over the previous one's teardown instead of blaming the code.
+  for _ in $(seq 1 100); do
+    local busy=0
+    while IFS= read -r base; do
+      [[ -n "${base}" ]] || continue
+      for offset in 0 1 2 3 4 5; do
+        port=$((base + offset))
+        if port_is_open "${port}"; then
+          busy=1
+          break 2
+        fi
+      done
+    done < <(declared_test_ports "${script}")
+    [[ ${busy} -eq 0 ]] && return 0
+    sleep 0.5
+  done
+  return 1
 }
 
 run_case() {
   local name=$1
   shift
   local case_root="${ARTIFACT_ROOT}/${name}"
-  local argument variable value
+  local argument variable value script=""
   mkdir -p "${case_root}"
   {
     printf 'TMPDIR=%q KEEP_TMP=1 ' "${case_root}"
@@ -67,11 +62,18 @@ run_case() {
   } >> "${ARTIFACT_ROOT}/reproduce.sh"
   echo "[nightly] suite=${SUITE} case=${name}"
   for argument in "$@"; do
-    if [[ "${argument}" == "${ROOT}"/tests/*.sh ]] && ! preflight_script_ports "${argument}" >"${ARTIFACT_ROOT}/${name}.log" 2>&1; then
-      printf '%s\tFAIL\n' "${name}" >> "${ARTIFACT_ROOT}/status.tsv"
-      cat "${ARTIFACT_ROOT}/${name}.log" >&2
-      FAILURES=$((FAILURES + 1))
-      return 0
+    if is_repo_test_script "${argument}" "${ROOT}"; then
+      script="${argument}"
+      # The runner derives a run-unique port block, so an occupied declared
+      # port means a stale process or a genuine conflict. That is an
+      # environment failure, not a test failure: report it as such instead of
+      # recording a misleading FAIL for the case.
+      if ! wait_for_ports_released "${argument}"; then
+        echo "ERROR: declared test ports for ${argument} are still occupied after 50s" >&2
+        echo "ERROR: a previous case leaked a redis-server or syncer process" >&2
+        printf '%s\tENV_ERROR\n' "${name}" >> "${ARTIFACT_ROOT}/status.tsv"
+        return 1
+      fi
     fi
   done
   if TMPDIR="${case_root}" KEEP_TMP=1 "$@" >"${ARTIFACT_ROOT}/${name}.log" 2>&1; then
@@ -80,6 +82,9 @@ run_case() {
     printf '%s\tFAIL\n' "${name}" >> "${ARTIFACT_ROOT}/status.tsv"
     tail -n 100 "${ARTIFACT_ROOT}/${name}.log" >&2 || true
     FAILURES=$((FAILURES + 1))
+  fi
+  if [[ -n "${script}" ]] && ! wait_for_ports_released "${script}"; then
+    echo "WARNING: ${name} left a listener on a declared test port; next case may be affected" >&2
   fi
 }
 
